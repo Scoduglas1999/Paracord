@@ -129,6 +129,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Detect the local LAN IP for LiveKit ICE candidate filtering.
+    // This ensures LiveKit only advertises the real LAN IP (which maps to
+    // the public IP) instead of Docker/WSL/loopback addresses.
+    let detected_local_ip = livekit_proc::detect_local_ip();
+    if let Some(ref lip) = detected_local_ip {
+        tracing::info!("Detected local LAN IP: {}", lip);
+    }
+
     // Start managed LiveKit if no external one is configured
     let mut managed_livekit = None;
     let mut livekit_status = "External".to_string();
@@ -145,6 +153,7 @@ async fn main() -> Result<()> {
             livekit_port,
             bind_port,
             detected_external_ip.as_deref(),
+            detected_local_ip.as_deref(),
         ).await {
             Some(proc) => {
                 livekit_status = format!("Managed (port {})", livekit_port);

@@ -57,6 +57,23 @@ fn find_livekit_binary() -> Option<PathBuf> {
     None
 }
 
+/// Detect the local LAN IP address that routes to the internet.
+/// Connects a UDP socket to an external address (doesn't actually send data)
+/// and reads back the local address the OS chose.
+pub fn detect_local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // Connect to a public DNS server — no data is sent, we just need the OS
+    // to pick the right outbound interface.
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    let ip = addr.ip();
+    // Sanity-check: must not be loopback or unspecified
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    Some(ip.to_string())
+}
+
 /// Generate a minimal LiveKit config YAML and write it to a temp file.
 ///
 /// All client-facing traffic shares the single `server_port` (default 8080):
@@ -76,6 +93,7 @@ fn write_livekit_config(
     livekit_port: u16,
     server_port: u16,
     external_ip: Option<&str>,
+    local_ip: Option<&str>,
 ) -> std::io::Result<PathBuf> {
     let ice_tcp_port = livekit_port + 1; // 7881 — local ICE/TCP fallback
 
@@ -92,7 +110,13 @@ fn write_livekit_config(
     // This means only one port needs to be forwarded by the host.
     lines.push(format!("    udp_port: {server_port}"));
     lines.push(format!("    tcp_port: {ice_tcp_port}"));
-    lines.push("    enable_loopback_candidate: true".to_string());
+    // Filter ICE candidates to only the real LAN IP so LiveKit doesn't
+    // advertise Docker/WSL/loopback addresses that remote users can't reach.
+    if let Some(lip) = local_ip {
+        lines.push("    ips:".to_string());
+        lines.push("        includes:".to_string());
+        lines.push(format!("            - {lip}/32"));
+    }
     lines.push("keys:".to_string());
     lines.push(format!("    {api_key}: {api_secret}"));
     if let Some(ip) = external_ip {
@@ -103,6 +127,10 @@ fn write_livekit_config(
         // TURN relay also on the server port so it's reachable externally.
         lines.push(format!("    udp_port: {server_port}"));
         lines.push("    external_tls: false".to_string());
+        // Constrain TURN relay allocation to the same server port so
+        // relayed media also flows through the single forwarded port.
+        lines.push(format!("    relay_range_start: {server_port}"));
+        lines.push(format!("    relay_range_end: {server_port}"));
     }
     lines.push("logging:".to_string());
     lines.push("    level: info".to_string());
@@ -124,6 +152,7 @@ pub async fn start_livekit(
     port: u16,
     server_port: u16,
     external_ip: Option<&str>,
+    local_ip: Option<&str>,
 ) -> Option<LiveKitProcess> {
     let binary = match find_livekit_binary() {
         Some(path) => {
@@ -142,7 +171,7 @@ pub async fn start_livekit(
         }
     };
 
-    let config_path = match write_livekit_config(api_key, api_secret, port, server_port, external_ip) {
+    let config_path = match write_livekit_config(api_key, api_secret, port, server_port, external_ip, local_ip) {
         Ok(path) => path,
         Err(e) => {
             tracing::error!("Failed to write LiveKit config: {}", e);

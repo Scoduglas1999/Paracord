@@ -120,6 +120,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       room = new Room();
       const normalizedUrl = normalizeLivekitUrl(data.url);
 
+      // Read saved audio device preferences from user settings.
+      const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
+      const savedInputId = typeof notif['audioInputDeviceId'] === 'string' ? notif['audioInputDeviceId'] as string : undefined;
+      const savedOutputId = typeof notif['audioOutputDeviceId'] === 'string' ? notif['audioOutputDeviceId'] as string : undefined;
+
       // Prevent long client retries from making voice joins feel stuck.
       await Promise.race([
         room.connect(normalizedUrl, data.token),
@@ -128,7 +133,14 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         }),
       ]);
 
-      await room.localParticipant.setMicrophoneEnabled(true).catch(() => { });
+      // Apply saved audio output device before publishing so remote audio
+      // plays through the correct speakers/headphones.
+      if (savedOutputId) {
+        await room.switchActiveDevice('audiooutput', savedOutputId).catch(() => { });
+      }
+
+      // Enable microphone with the saved input device (or default if unset).
+      await room.localParticipant.setMicrophoneEnabled(true, savedInputId ? { deviceId: savedInputId } : undefined).catch(() => { });
 
       // Listen for active speaker changes to power the speaking indicator
       room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
@@ -279,8 +291,16 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       await room.disconnect();
       await room.connect(normalizedUrl, data.token);
 
-      // Re-enable microphone after reconnect
-      await room.localParticipant.setMicrophoneEnabled(!get().selfMute).catch(() => { });
+      // Restore saved audio devices after reconnect.
+      const streamNotif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
+      const streamOutputId = typeof streamNotif['audioOutputDeviceId'] === 'string' ? streamNotif['audioOutputDeviceId'] as string : undefined;
+      const streamInputId = typeof streamNotif['audioInputDeviceId'] === 'string' ? streamNotif['audioInputDeviceId'] as string : undefined;
+      if (streamOutputId) {
+        await room.switchActiveDevice('audiooutput', streamOutputId).catch(() => { });
+      }
+
+      // Re-enable microphone after reconnect with saved input device
+      await room.localParticipant.setMicrophoneEnabled(!get().selfMute, streamInputId ? { deviceId: streamInputId } : undefined).catch(() => { });
 
       // 3. Now that we have the right permissions, start screen share
       //    with resolution/framerate constraints matching the preset.
