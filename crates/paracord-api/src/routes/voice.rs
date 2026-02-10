@@ -108,6 +108,8 @@ pub async fn join_voice(
             "channel_id": channel_id.to_string(),
             "guild_id": channel.guild_id.map(|id| id.to_string()),
             "session_id": &session_id,
+            "username": &user.username,
+            "avatar_hash": user.avatar_hash,
         }),
         channel.guild_id,
     );
@@ -214,6 +216,11 @@ pub async fn leave_voice(
             let _ = state.voice.cleanup_room(channel_id).await;
         }
     }
+
+    let user = paracord_db::users::get_user_by_id(&state.db, auth.user_id)
+        .await
+        .ok()
+        .flatten();
     state.event_bus.dispatch(
         "VOICE_STATE_UPDATE",
         json!({
@@ -222,6 +229,8 @@ pub async fn leave_voice(
             "guild_id": guild_id.map(|id| id.to_string()),
             "self_mute": false,
             "self_deaf": false,
+            "username": user.as_ref().map(|u| u.username.as_str()),
+            "avatar_hash": user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
         }),
         guild_id,
     );
@@ -266,6 +275,11 @@ pub async fn livekit_webhook(
             let _ = state.voice.cleanup_room(channel_id).await;
         }
     }
+
+    let user = paracord_db::users::get_user_by_id(&state.db, user_id)
+        .await
+        .ok()
+        .flatten();
     state.event_bus.dispatch(
         "VOICE_STATE_UPDATE",
         json!({
@@ -274,6 +288,8 @@ pub async fn livekit_webhook(
             "guild_id": guild_id.map(|id| id.to_string()),
             "self_mute": false,
             "self_deaf": false,
+            "username": user.as_ref().map(|u| u.username.as_str()),
+            "avatar_hash": user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
         }),
         guild_id,
     );

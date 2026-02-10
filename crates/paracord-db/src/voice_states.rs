@@ -91,6 +91,37 @@ pub async fn remove_voice_state(
     Ok(())
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct VoiceStateWithUser {
+    pub user_id: i64,
+    pub guild_id: Option<i64>,
+    pub channel_id: i64,
+    pub session_id: String,
+    pub self_mute: bool,
+    pub self_deaf: bool,
+    pub self_stream: bool,
+    pub self_video: bool,
+    pub suppress: bool,
+    pub username: String,
+    pub avatar_hash: Option<String>,
+}
+
+pub async fn get_guild_voice_states(
+    pool: &DbPool,
+    guild_id: i64,
+) -> Result<Vec<VoiceStateWithUser>, DbError> {
+    let rows = sqlx::query_as::<_, VoiceStateWithUser>(
+        "SELECT vs.user_id, vs.guild_id, vs.channel_id, vs.session_id, vs.self_mute, vs.self_deaf, vs.self_stream, vs.self_video, vs.suppress, u.username, u.avatar_hash
+         FROM voice_states vs
+         JOIN users u ON u.id = vs.user_id
+         WHERE vs.guild_id = ?1"
+    )
+    .bind(guild_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 pub async fn update_voice_state(
     pool: &DbPool,
     user_id: i64,

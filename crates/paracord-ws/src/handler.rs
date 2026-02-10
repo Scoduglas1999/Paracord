@@ -122,12 +122,32 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
                 })
                 .collect();
 
+            let voice_states = paracord_db::voice_states::get_guild_voice_states(&state.db, gid)
+                .await
+                .unwrap_or_default();
+            let voice_states_json: Vec<Value> = voice_states
+                .iter()
+                .map(|vs| {
+                    json!({
+                        "user_id": vs.user_id.to_string(),
+                        "channel_id": vs.channel_id.to_string(),
+                        "guild_id": vs.guild_id.map(|id| id.to_string()),
+                        "session_id": &vs.session_id,
+                        "self_mute": vs.self_mute,
+                        "self_deaf": vs.self_deaf,
+                        "username": &vs.username,
+                        "avatar_hash": &vs.avatar_hash,
+                    })
+                })
+                .collect();
+
             if let Some(g) = guild {
                 guilds_json.push(json!({
                     "id": g.id.to_string(),
                     "name": g.name,
                     "owner_id": g.owner_id.to_string(),
                     "channels": channels_json,
+                    "voice_states": voice_states_json,
                 }));
             }
         }
@@ -168,6 +188,10 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
 
     // Ensure voice state is cleared if the client disconnects abruptly.
     if let Ok(states) = paracord_db::voice_states::get_all_user_voice_states(&state.db, session_user_id).await {
+        let dc_user = paracord_db::users::get_user_by_id(&state.db, session_user_id)
+            .await
+            .ok()
+            .flatten();
         for voice_state in states {
             let _ = paracord_db::voice_states::remove_voice_state(
                 &state.db,
@@ -192,6 +216,8 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
                     "guild_id": voice_state.guild_id.map(|id| id.to_string()),
                     "self_mute": false,
                     "self_deaf": false,
+                    "username": dc_user.as_ref().map(|u| u.username.as_str()),
+                    "avatar_hash": dc_user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
                 }),
                 voice_state.guild_id,
             );
@@ -417,6 +443,11 @@ async fn handle_client_message(
                     .and_then(|v| v.as_str())
                     .and_then(|raw| raw.parse::<i64>().ok());
 
+                let vs_user = paracord_db::users::get_user_by_id(&state.db, session.user_id)
+                    .await
+                    .ok()
+                    .flatten();
+
                 if d.get("channel_id").is_some() && d.get("channel_id").unwrap().is_null() {
                     // Explicit leave
                     let existing = paracord_db::voice_states::get_user_voice_state(
@@ -451,6 +482,8 @@ async fn handle_client_message(
                                 "guild_id": existing_state.guild_id.map(|id| id.to_string()),
                                 "self_mute": self_mute,
                                 "self_deaf": self_deaf,
+                                "username": vs_user.as_ref().map(|u| u.username.as_str()),
+                                "avatar_hash": vs_user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
                             }),
                             existing_state.guild_id,
                         );
@@ -487,6 +520,8 @@ async fn handle_client_message(
                                 "guild_id": guild_id.map(|id| id.to_string()),
                                 "self_mute": self_mute,
                                 "self_deaf": self_deaf,
+                                "username": vs_user.as_ref().map(|u| u.username.as_str()),
+                                "avatar_hash": vs_user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
                             }),
                             guild_id,
                         );

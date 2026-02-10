@@ -183,6 +183,8 @@ export interface VoiceState {
   self_stream: boolean;
   self_video: boolean;
   suppress: boolean;
+  username?: string;
+  avatar_hash?: string | null;
 }
 
 export interface Presence {

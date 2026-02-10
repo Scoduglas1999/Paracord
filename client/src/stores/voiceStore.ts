@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { VoiceState } from '../types';
 import { voiceApi } from '../api/voice';
-import { Room } from 'livekit-client';
+import { Room, RoomEvent, type Participant } from 'livekit-client';
 
 const INTERNAL_LIVEKIT_HOSTS = new Set([
   'host.docker.internal',
@@ -55,6 +55,10 @@ interface VoiceStoreState {
   selfVideo: boolean;
   // Voice states for all users in current channel, keyed by user ID
   participants: Map<string, VoiceState>;
+  // Global voice participants across all channels, keyed by channel ID
+  channelParticipants: Map<string, VoiceState[]>;
+  // Set of user IDs currently speaking (from LiveKit)
+  speakingUsers: Set<string>;
   // LiveKit connection info
   livekitToken: string | null;
   livekitUrl: string | null;
@@ -70,8 +74,12 @@ interface VoiceStoreState {
   toggleVideo: () => void;
   clearConnectionError: () => void;
 
-  // Gateway event handler
+  // Gateway event handlers
   handleVoiceStateUpdate: (state: VoiceState) => void;
+  // Load initial voice states from READY payload
+  loadVoiceStates: (states: VoiceState[]) => void;
+  // Speaking state from LiveKit
+  setSpeakingUsers: (userIds: string[]) => void;
 }
 
 export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
@@ -87,6 +95,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   selfStream: false,
   selfVideo: false,
   participants: new Map(),
+  channelParticipants: new Map(),
+  speakingUsers: new Set(),
   livekitToken: null,
   livekitUrl: null,
   roomName: null,
@@ -118,6 +128,13 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       ]);
 
       await room.localParticipant.setMicrophoneEnabled(true).catch(() => { });
+
+      // Listen for active speaker changes to power the speaking indicator
+      room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
+        const speakingIds = speakers.map((s) => s.identity);
+        get().setSpeakingUsers(speakingIds);
+      });
+
       set({
         connected: true,
         joining: false,
@@ -172,6 +189,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         selfStream: false,
         selfVideo: false,
         participants: new Map(),
+        speakingUsers: new Set<string>(),
         livekitToken: null,
         livekitUrl: null,
         roomName: null,
@@ -266,6 +284,43 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       } else {
         participants.delete(voiceState.user_id);
       }
-      return { participants };
+
+      // Update global channel participants
+      const channelParticipants = new Map(state.channelParticipants);
+      if (voiceState.channel_id) {
+        const existing = channelParticipants.get(voiceState.channel_id) || [];
+        const filtered = existing.filter((p) => p.user_id !== voiceState.user_id);
+        filtered.push(voiceState);
+        channelParticipants.set(voiceState.channel_id, filtered);
+      } else {
+        // User left — remove from all channels
+        for (const [chId, members] of channelParticipants) {
+          const filtered = members.filter((p) => p.user_id !== voiceState.user_id);
+          if (filtered.length === 0) {
+            channelParticipants.delete(chId);
+          } else if (filtered.length !== members.length) {
+            channelParticipants.set(chId, filtered);
+          }
+        }
+      }
+
+      return { participants, channelParticipants };
     }),
+
+  loadVoiceStates: (states) =>
+    set((prev) => {
+      const channelParticipants = new Map(prev.channelParticipants);
+      for (const vs of states) {
+        if (!vs.channel_id) continue;
+        const existing = channelParticipants.get(vs.channel_id) || [];
+        existing.push(vs);
+        channelParticipants.set(vs.channel_id, existing);
+      }
+      return { channelParticipants };
+    }),
+
+  setSpeakingUsers: (userIds) =>
+    set(() => ({
+      speakingUsers: new Set(userIds),
+    })),
 }));

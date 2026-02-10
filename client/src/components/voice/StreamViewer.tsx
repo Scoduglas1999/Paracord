@@ -32,7 +32,7 @@ export function StreamViewer({
   const [quality, setQuality] = useState<
     'auto' | 'low' | 'medium' | 'high' | 'source'
   >('auto');
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const room = useVoiceStore((s) => s.room);
   const selfStream = useVoiceStore((s) => s.selfStream);
@@ -61,14 +61,15 @@ export function StreamViewer({
     return `${m}:${String(s).padStart(2, '0')}`;
   };
 
-  // Fullscreen tracking
+  // Escape key exits maximized mode
   useEffect(() => {
-    const onFullscreenChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
+    if (!isMaximized) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMaximized(false);
     };
-    document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
-  }, []);
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isMaximized]);
 
   // Attach video track
   const attachTrack = useCallback(() => {
@@ -152,26 +153,18 @@ export function StreamViewer({
     };
   }, [room, attachTrack]);
 
-  const toggleFullscreen = async () => {
-    const container = containerRef.current;
-    if (!container) return;
-    try {
-      if (!document.fullscreenElement) {
-        await container.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch {
-      // Ignore fullscreen API failures.
-    }
-  };
+  const toggleMaximized = () => setIsMaximized((prev) => !prev);
 
   const showVideo = hasActiveTrack && !(isOwnStream && hideSelfPreview);
 
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full flex-col overflow-hidden"
+      className={
+        isMaximized
+          ? 'fixed inset-0 z-50 flex flex-col overflow-hidden'
+          : 'relative flex h-full w-full flex-col overflow-hidden'
+      }
       style={{ backgroundColor: 'var(--bg-tertiary)' }}
     >
       {/* ── Top bar ── */}
@@ -246,13 +239,13 @@ export function StreamViewer({
             </button>
           )}
 
-          {/* Fullscreen */}
+          {/* Maximize within app */}
           <button
-            onClick={() => void toggleFullscreen()}
+            onClick={toggleMaximized}
             className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            title={isMaximized ? 'Restore' : 'Maximize'}
           >
-            {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+            {isMaximized ? <Minimize size={16} /> : <Maximize size={16} />}
           </button>
 
           {/* Stop stream (only streamer) */}

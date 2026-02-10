@@ -151,6 +151,10 @@ class GatewayConnection {
               created_at: c.created_at ?? new Date().toISOString(),
             });
           });
+          // Load initial voice states for this guild
+          if (g.voice_states?.length) {
+            useVoiceStore.getState().loadVoiceStates(g.voice_states);
+          }
         });
         break;
 

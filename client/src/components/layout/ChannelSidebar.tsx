@@ -5,6 +5,7 @@ import { useChannelStore } from '../../stores/channelStore';
 import { useGuildStore } from '../../stores/guildStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useRelationshipStore } from '../../stores/relationshipStore';
+import { useVoiceStore } from '../../stores/voiceStore';
 import { VoiceControls } from '../voice/VoiceControls';
 import { InviteModal } from '../guild/InviteModal';
 import { Permissions, hasPermission, type Channel } from '../../types/index';
@@ -42,6 +43,8 @@ export function ChannelSidebar() {
   const relationships = useRelationshipStore((s) => s.relationships);
   const fetchRelationships = useRelationshipStore((s) => s.fetchRelationships);
   const { connected, channelId: activeVoiceChannelId, joinChannel, leaveChannel, selfMute, selfDeaf, toggleMute, toggleDeaf } = useVoice();
+  const channelParticipants = useVoiceStore((s) => s.channelParticipants);
+  const speakingUsers = useVoiceStore((s) => s.speakingUsers);
 
   const effectiveGuildId = guildId || selectedGuildId;
   const currentGuild = guilds.find(g => g.id === effectiveGuildId);
@@ -345,61 +348,95 @@ export function ChannelSidebar() {
             {!collapsedCategories.has(cat.id || '') && cat.channels.sort((a, b) => a.position - b.position).map(ch => {
               const isSelected = selectedChannelId === ch.id;
               const isVoice = ch.type === 2 || ch.channel_type === 2;
+              const voiceMembers = isVoice ? (channelParticipants.get(ch.id) || []) : [];
               return (
-                <div
-                  key={ch.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleChannelClick(ch)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      void handleChannelClick(ch);
-                    }
-                  }}
-                  className={cn(
-                    'group mb-1.5 flex w-full cursor-pointer items-center rounded-xl border px-3.5 py-2.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary',
-                    isSelected
-                      ? 'border-border-strong bg-bg-mod-subtle text-text-primary'
-                      : 'border-transparent text-text-secondary hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary'
-                  )}
-                >
-                  {isVoice ? (
-                    <Volume2 size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
-                  ) : (
-                    <Hash size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
-                  )}
-                  <span className={cn('truncate text-[15px] font-medium', isSelected ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary')}>
-                    {ch.name || 'unknown'}
-                  </span>
-                  {!isVoice && canManageChannels && (
-                    <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100">
-                      <Tooltip content="Edit Channel" side="top">
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          className="inline-flex rounded p-1 text-text-muted transition-colors hover:bg-bg-mod-subtle hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const gid = guildId || selectedGuildId;
-                            if (gid) {
-                              navigate(`/app/guilds/${gid}/settings?section=channels&channelId=${ch.id}`);
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
+                <div key={ch.id}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleChannelClick(ch)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        void handleChannelClick(ch);
+                      }
+                    }}
+                    className={cn(
+                      'group mb-0.5 flex w-full cursor-pointer items-center rounded-xl border px-3.5 py-2.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary',
+                      isSelected
+                        ? 'border-border-strong bg-bg-mod-subtle text-text-primary'
+                        : 'border-transparent text-text-secondary hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary'
+                    )}
+                  >
+                    {isVoice ? (
+                      <Volume2 size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
+                    ) : (
+                      <Hash size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
+                    )}
+                    <span className={cn('truncate text-[15px] font-medium', isSelected ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary')}>
+                      {ch.name || 'unknown'}
+                    </span>
+                    {!isVoice && canManageChannels && (
+                      <div className="ml-auto opacity-0 transition-opacity group-hover:opacity-100">
+                        <Tooltip content="Edit Channel" side="top">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="inline-flex rounded p-1 text-text-muted transition-colors hover:bg-bg-mod-subtle hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary"
+                            onClick={(e) => {
                               e.stopPropagation();
                               const gid = guildId || selectedGuildId;
                               if (gid) {
                                 navigate(`/app/guilds/${gid}/settings?section=channels&channelId=${ch.id}`);
                               }
-                            }
-                          }}
-                        >
-                          <Settings size={14} />
-                        </span>
-                      </Tooltip>
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const gid = guildId || selectedGuildId;
+                                if (gid) {
+                                  navigate(`/app/guilds/${gid}/settings?section=channels&channelId=${ch.id}`);
+                                }
+                              }
+                            }}
+                          >
+                            <Settings size={14} />
+                          </span>
+                        </Tooltip>
+                      </div>
+                    )}
+                  </div>
+                  {isVoice && voiceMembers.length > 0 && (
+                    <div className="mb-2 ml-8 mt-0.5 space-y-1">
+                      {voiceMembers.map((vs) => {
+                        const isSpeaking = speakingUsers.has(vs.user_id);
+                        return (
+                          <div
+                            key={vs.user_id}
+                            className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5"
+                          >
+                            <div
+                              className={cn(
+                                'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white transition-shadow duration-200',
+                                isSpeaking
+                                  ? 'ring-2 ring-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]'
+                                  : ''
+                              )}
+                              style={{ backgroundColor: 'var(--accent-primary)' }}
+                            >
+                              {(vs.username || vs.user_id).charAt(0).toUpperCase()}
+                            </div>
+                            <span className="truncate text-[13px] font-medium text-text-secondary">
+                              {vs.username || `User ${vs.user_id.slice(0, 6)}`}
+                            </span>
+                            <div className="ml-auto flex items-center gap-1">
+                              {vs.self_mute && <MicOff size={13} className="text-text-muted" />}
+                              {vs.self_deaf && <HeadphoneOff size={13} className="text-text-muted" />}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
