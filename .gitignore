@@ -39,3 +39,17 @@ desktop.ini
 
 # Logs
 *.log
+
+# Claude
+CLAUDE.md
+
+# Build artifacts
+*.tsbuildinfo
+/dist/
+livekit*.zip
+livekit-extracted/
+
+# Dev dumps
+client/ui_dump.html
+client/ui_mock_dump.html
+client/ui_mock_screenshot.png
