@@ -38,7 +38,7 @@ pub struct PaginationParams {
 
 impl PaginationParams {
     pub fn limit(&self) -> i32 {
-        self.limit.unwrap_or(50).min(100).max(1)
+        self.limit.unwrap_or(50).clamp(1, 100)
     }
 }
 
