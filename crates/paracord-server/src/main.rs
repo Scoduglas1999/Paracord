@@ -27,6 +27,10 @@ async fn main() -> Result<()> {
     // ── Auto-create data directories ─────────────────────────────────────────
     ensure_data_dirs(&config);
 
+    // ── Windows firewall auto-allow ──────────────────────────────────────────
+    #[cfg(target_os = "windows")]
+    ensure_firewall_rule();
+
     // CLI --web-dir overrides config file
     let web_dir: Option<PathBuf> = args
         .web_dir
@@ -279,6 +283,52 @@ async fn load_runtime_settings(db: &paracord_db::DbPool) -> paracord_core::Runti
     }
 
     settings
+}
+
+/// On Windows, ensure a firewall rule exists so inbound connections are not blocked.
+/// Uses `netsh advfirewall` to add an allow-rule for the current executable.
+/// Silently ignored if the rule already exists or if the user lacks admin rights.
+#[cfg(target_os = "windows")]
+fn ensure_firewall_rule() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let exe_str = exe.display().to_string();
+    let rule_name = "Paracord Server";
+
+    // Check if rule already exists
+    let check = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", &format!("name={}", rule_name)])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if let Ok(status) = check {
+        if status.success() {
+            return; // Rule already exists
+        }
+    }
+
+    // Add inbound rule allowing TCP connections to this executable
+    let result = std::process::Command::new("netsh")
+        .args([
+            "advfirewall", "firewall", "add", "rule",
+            &format!("name={}", rule_name),
+            "dir=in",
+            "action=allow",
+            &format!("program={}", exe_str),
+            "protocol=TCP",
+            "enable=yes",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match result {
+        Ok(s) if s.success() => tracing::info!("Windows Firewall rule added for Paracord"),
+        _ => tracing::debug!("Could not add firewall rule (may need admin rights)"),
+    }
 }
 
 fn print_startup_banner(
