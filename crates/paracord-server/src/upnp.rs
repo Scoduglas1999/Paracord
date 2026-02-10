@@ -1,145 +1,267 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
-/// Ports that Paracord needs forwarded for full functionality.
-struct PortMapping {
-    internal: u16,
-    external: u16,
-    protocol: igd_next::PortMappingProtocol,
-    description: &'static str,
-}
-
-/// Result of a successful UPnP setup.
+/// Result of a successful port-forwarding setup.
 pub struct UpnpResult {
     pub external_ip: IpAddr,
     pub server_port: u16,
     pub livekit_port: u16,
+    pub method: &'static str,
 }
 
-/// Discover the UPnP gateway, forward all required ports, and return the external IP.
+/// Discover the gateway and forward all required ports.
 ///
-/// `server_port` is the external port for the Paracord HTTP server.
-/// `livekit_port` is the external port for the LiveKit signaling server.
-/// `lease_seconds` is how long each mapping lasts (0 = permanent on some routers).
+/// Tries three methods in order:
+///   1. UPnP IGD (most routers)
+///   2. NAT-PMP / PCP via crab_nat (Apple, many gaming routers)
+///   3. External IP detection only (user must forward ports manually)
 pub async fn setup_upnp(
     server_port: u16,
     livekit_port: u16,
     lease_seconds: u32,
 ) -> anyhow::Result<UpnpResult> {
-    tracing::info!("Discovering UPnP gateway on your network...");
+    // ── Method 1: UPnP IGD ──────────────────────────────────────────────────
+    tracing::info!("Attempting UPnP port forwarding...");
+    match try_upnp_igd(server_port, livekit_port, lease_seconds).await {
+        Ok(result) => return Ok(result),
+        Err(e) => tracing::info!("UPnP IGD unavailable: {}", e),
+    }
 
+    // ── Method 2: NAT-PMP / PCP ─────────────────────────────────────────────
+    tracing::info!("Attempting NAT-PMP/PCP port forwarding...");
+    match try_nat_pmp(server_port, livekit_port, lease_seconds).await {
+        Ok(result) => return Ok(result),
+        Err(e) => tracing::info!("NAT-PMP/PCP unavailable: {}", e),
+    }
+
+    // ── Method 3: Just detect external IP ───────────────────────────────────
+    tracing::info!("No automatic port forwarding available, detecting external IP...");
+    match detect_external_ip().await {
+        Ok(ip) => {
+            tracing::warn!(
+                "Could not auto-forward ports. You may need to manually forward port {} (TCP) in your router to this machine.",
+                server_port
+            );
+            Ok(UpnpResult {
+                external_ip: ip,
+                server_port,
+                livekit_port,
+                method: "External IP only (manual port forwarding needed)",
+            })
+        }
+        Err(e) => anyhow::bail!(
+            "No port forwarding method available and could not detect external IP: {}",
+            e
+        ),
+    }
+}
+
+// ── UPnP IGD ────────────────────────────────────────────────────────────────
+
+async fn try_upnp_igd(
+    server_port: u16,
+    livekit_port: u16,
+    lease_seconds: u32,
+) -> anyhow::Result<UpnpResult> {
     let gateway = igd_next::aio::tokio::search_gateway(igd_next::SearchOptions {
-        timeout: Some(std::time::Duration::from_secs(5)),
+        timeout: Some(std::time::Duration::from_secs(8)),
         ..Default::default()
     })
     .await
-    .map_err(|e| anyhow::anyhow!("UPnP gateway not found: {}. You may need to forward ports manually.", e))?;
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let external_ip = gateway.get_external_ip().await
-        .map_err(|e| anyhow::anyhow!("Could not get external IP from router: {}", e))?;
+    let external_ip = gateway
+        .get_external_ip()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     tracing::info!("UPnP gateway found! External IP: {}", external_ip);
 
-    // Get local IP by finding which address we use to reach the gateway
     let local_ip = get_local_ip(gateway.addr)?;
 
-    let mappings = vec![
-        PortMapping {
-            internal: server_port,
-            external: server_port,
-            protocol: igd_next::PortMappingProtocol::TCP,
-            description: "Paracord Server",
-        },
-        PortMapping {
-            internal: livekit_port,
-            external: livekit_port,
-            protocol: igd_next::PortMappingProtocol::TCP,
-            description: "Paracord LiveKit Signaling",
-        },
-        PortMapping {
-            internal: livekit_port + 1,
-            external: livekit_port + 1,
-            protocol: igd_next::PortMappingProtocol::TCP,
-            description: "Paracord LiveKit TURN",
-        },
-    ];
+    // Map server port
+    add_upnp_mapping(
+        &gateway, local_ip, server_port, lease_seconds,
+        "Paracord Server", igd_next::PortMappingProtocol::TCP,
+    ).await;
 
-    // Add UDP ports for LiveKit media (7882-7892)
-    let udp_start = livekit_port + 2;
-    let udp_end = livekit_port + 12;
+    // Map LiveKit TCP ports
+    add_upnp_mapping(
+        &gateway, local_ip, livekit_port, lease_seconds,
+        "Paracord LiveKit", igd_next::PortMappingProtocol::TCP,
+    ).await;
+    add_upnp_mapping(
+        &gateway, local_ip, livekit_port + 1, lease_seconds,
+        "Paracord LiveKit TURN", igd_next::PortMappingProtocol::TCP,
+    ).await;
 
-    for port in udp_start..=udp_end {
-        let local_addr = SocketAddr::new(local_ip, port);
-        match gateway
-            .add_port(
-                igd_next::PortMappingProtocol::UDP,
-                port,
-                local_addr,
-                lease_seconds,
-                "Paracord LiveKit Media",
-            )
-            .await
-        {
-            Ok(()) => {}
-            Err(igd_next::AddPortError::PortInUse) => {
-                tracing::debug!("UDP port {} already mapped (likely ours)", port);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to map UDP port {}: {}", port, e);
-            }
-        }
+    // Map LiveKit UDP media ports (7882-7892)
+    for port in (livekit_port + 2)..=(livekit_port + 12) {
+        add_upnp_mapping(
+            &gateway, local_ip, port, lease_seconds,
+            "Paracord LiveKit Media", igd_next::PortMappingProtocol::UDP,
+        ).await;
     }
 
-    // Map TCP ports
-    for mapping in &mappings {
-        let local_addr = SocketAddr::new(local_ip, mapping.internal);
-        match gateway
-            .add_port(
-                mapping.protocol,
-                mapping.external,
-                local_addr,
-                lease_seconds,
-                mapping.description,
-            )
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    "  Forwarded {} port {} -> {}:{}",
-                    match mapping.protocol {
-                        igd_next::PortMappingProtocol::TCP => "TCP",
-                        igd_next::PortMappingProtocol::UDP => "UDP",
-                    },
-                    mapping.external,
-                    local_ip,
-                    mapping.internal
-                );
-            }
-            Err(igd_next::AddPortError::PortInUse) => {
-                tracing::debug!(
-                    "Port {} already mapped (likely ours from a previous run)",
-                    mapping.external
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to forward {} port {}: {}",
-                    mapping.description,
-                    mapping.external,
-                    e
-                );
-            }
-        }
-    }
-
-    tracing::info!(
-        "UPnP port forwarding complete. UDP range {}-{} forwarded.", udp_start, udp_end
-    );
+    tracing::info!("UPnP port forwarding complete.");
 
     Ok(UpnpResult {
         external_ip,
         server_port,
         livekit_port,
+        method: "UPnP IGD",
     })
+}
+
+async fn add_upnp_mapping(
+    gateway: &igd_next::aio::Gateway<igd_next::aio::tokio::Tokio>,
+    local_ip: IpAddr,
+    port: u16,
+    lease_seconds: u32,
+    description: &str,
+    protocol: igd_next::PortMappingProtocol,
+) {
+    let local_addr = SocketAddr::new(local_ip, port);
+    match gateway.add_port(protocol, port, local_addr, lease_seconds, description).await {
+        Ok(()) => {
+            let proto = match protocol {
+                igd_next::PortMappingProtocol::TCP => "TCP",
+                igd_next::PortMappingProtocol::UDP => "UDP",
+            };
+            tracing::info!("  Forwarded {} port {} -> {}:{}", proto, port, local_ip, port);
+        }
+        Err(igd_next::AddPortError::PortInUse) => {
+            tracing::debug!("Port {} already mapped (likely ours)", port);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to forward {} port {}: {}", description, port, e);
+        }
+    }
+}
+
+// ── NAT-PMP / PCP ───────────────────────────────────────────────────────────
+
+async fn try_nat_pmp(
+    server_port: u16,
+    livekit_port: u16,
+    lease_seconds: u32,
+) -> anyhow::Result<UpnpResult> {
+    let gateway_ip = detect_gateway_ip()?;
+    let local_ip = get_local_ip_for(gateway_ip)?;
+
+    let options = crab_nat::PortMappingOptions {
+        external_port: None,
+        lifetime_seconds: Some(lease_seconds),
+        timeout_config: Some(crab_nat::TimeoutConfig {
+            initial_timeout: std::time::Duration::from_millis(500),
+            max_retries: 5,
+            max_retry_timeout: Some(std::time::Duration::from_secs(4)),
+        }),
+    };
+
+    let gw: IpAddr = gateway_ip.into();
+    let client: IpAddr = local_ip.into();
+
+    // Map the server port — this is the one that must succeed
+    let _mapping = crab_nat::PortMapping::new(
+        gw, client,
+        crab_nat::InternetProtocol::Tcp,
+        std::num::NonZeroU16::new(server_port).unwrap(),
+        options,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("NAT-PMP mapping failed: {:?}", e))?;
+
+    tracing::info!("NAT-PMP/PCP: mapped server port {}", server_port);
+
+    // Best-effort LiveKit ports (don't fail if these don't work)
+    let lk_options = crab_nat::PortMappingOptions {
+        lifetime_seconds: Some(lease_seconds),
+        ..Default::default()
+    };
+    let _ = crab_nat::PortMapping::new(
+        gw, client,
+        crab_nat::InternetProtocol::Tcp,
+        std::num::NonZeroU16::new(livekit_port).unwrap(),
+        lk_options,
+    ).await;
+
+    for port in (livekit_port + 2)..=(livekit_port + 12) {
+        let udp_options = crab_nat::PortMappingOptions {
+            lifetime_seconds: Some(lease_seconds),
+            ..Default::default()
+        };
+        let _ = crab_nat::PortMapping::new(
+            gw, client,
+            crab_nat::InternetProtocol::Udp,
+            std::num::NonZeroU16::new(port).unwrap(),
+            udp_options,
+        ).await;
+    }
+
+    tracing::info!("NAT-PMP/PCP port forwarding complete.");
+
+    // NAT-PMP gives us the gateway IP, not the public IP — fetch the real one
+    let public_ip = detect_external_ip()
+        .await
+        .unwrap_or(IpAddr::V4(gateway_ip));
+
+    Ok(UpnpResult {
+        external_ip: public_ip,
+        server_port,
+        livekit_port,
+        method: "NAT-PMP/PCP",
+    })
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Detect external/public IP using HTTP APIs.
+async fn detect_external_ip() -> anyhow::Result<IpAddr> {
+    let services = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://ifconfig.me/ip",
+    ];
+
+    for url in services {
+        if let Ok(resp) = reqwest::get(url).await {
+            if let Ok(text) = resp.text().await {
+                if let Ok(ip) = text.trim().parse::<IpAddr>() {
+                    return Ok(ip);
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("Could not detect external IP from any service")
+}
+
+/// Guess the default gateway by assuming .1 on our local subnet.
+fn detect_gateway_ip() -> anyhow::Result<Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect("8.8.8.8:53")?;
+    if let IpAddr::V4(ip) = socket.local_addr()?.ip() {
+        let octets = ip.octets();
+        Ok(Ipv4Addr::new(octets[0], octets[1], octets[2], 1))
+    } else {
+        anyhow::bail!("IPv6 not supported for NAT-PMP gateway detection")
+    }
+}
+
+/// Detect our local IP by connecting a UDP socket toward the gateway.
+fn get_local_ip(gateway_addr: SocketAddr) -> anyhow::Result<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(gateway_addr)?;
+    Ok(socket.local_addr()?.ip())
+}
+
+fn get_local_ip_for(gateway: Ipv4Addr) -> anyhow::Result<Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    socket.connect(SocketAddrV4::new(gateway, 1))?;
+    match socket.local_addr()?.ip() {
+        IpAddr::V4(ip) => Ok(ip),
+        _ => anyhow::bail!("Expected IPv4 local address"),
+    }
 }
 
 /// Remove UPnP port mappings on shutdown.
@@ -160,19 +282,10 @@ pub async fn cleanup_upnp(server_port: u16, livekit_port: u16) {
             .remove_port(igd_next::PortMappingProtocol::TCP, port)
             .await;
     }
-    let udp_start = livekit_port + 2;
-    let udp_end = livekit_port + 12;
-    for port in udp_start..=udp_end {
+    for port in (livekit_port + 2)..=(livekit_port + 12) {
         let _ = gateway
             .remove_port(igd_next::PortMappingProtocol::UDP, port)
             .await;
     }
     tracing::info!("UPnP port mappings removed.");
-}
-
-/// Detect our local IP by connecting a UDP socket to the gateway address.
-fn get_local_ip(gateway_addr: SocketAddr) -> anyhow::Result<IpAddr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    socket.connect(gateway_addr)?;
-    Ok(socket.local_addr()?.ip())
 }

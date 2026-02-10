@@ -75,13 +75,13 @@ async fn main() -> Result<()> {
     let mut upnp_server_port = bind_port;
     let mut upnp_livekit_port = livekit_port;
     let mut upnp_status = "Disabled".to_string();
+    let mut needs_manual_forwarding = false;
     if config.network.upnp {
         match upnp::setup_upnp(bind_port, livekit_port, config.network.upnp_lease_seconds).await {
             Ok(result) => {
                 upnp_server_port = result.server_port;
                 upnp_livekit_port = result.livekit_port;
                 let ip = result.external_ip;
-                upnp_status = format!("Enabled (external IP: {})", ip);
 
                 // Auto-configure public URLs if not explicitly set
                 if config.server.public_url.is_none() {
@@ -92,10 +92,17 @@ async fn main() -> Result<()> {
                     let url = format!("ws://{}:{}", ip, upnp_livekit_port);
                     config.livekit.public_url = Some(url);
                 }
+
+                if result.method.contains("manual") {
+                    needs_manual_forwarding = true;
+                    upnp_status = format!("Manual (external IP: {})", ip);
+                } else {
+                    upnp_status = format!("{} (external IP: {})", result.method, ip);
+                }
             }
             Err(e) => {
                 tracing::warn!("{}", e);
-                upnp_status = "Failed (ports may need manual forwarding)".to_string();
+                upnp_status = "Failed (could not detect external IP)".to_string();
             }
         }
     }
@@ -211,6 +218,8 @@ async fn main() -> Result<()> {
         &config.database.url,
         &upnp_status,
         &web_ui_status,
+        needs_manual_forwarding,
+        bind_port,
     );
 
     // Graceful shutdown: clean up UPnP on ctrl-c
@@ -331,6 +340,7 @@ fn ensure_firewall_rule() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_startup_banner(
     bind_address: &str,
     public_url: &Option<String>,
@@ -338,6 +348,8 @@ fn print_startup_banner(
     db_url: &str,
     upnp_status: &str,
     web_ui: &str,
+    needs_manual_forwarding: bool,
+    server_port: u16,
 ) {
     println!();
     println!("  ____                                     _");
@@ -357,7 +369,21 @@ fn print_startup_banner(
     println!();
     println!("  Database:    {}", db_url);
     println!("  LiveKit:     {}", livekit_status);
-    println!("  UPnP:        {}", upnp_status);
+    println!("  Port Fwd:    {}", upnp_status);
     println!("  Web UI:      {}", web_ui);
+
+    if needs_manual_forwarding {
+        println!();
+        println!("  ╔══════════════════════════════════════════════════╗");
+        println!("  ║  ⚠  Port forwarding required for remote access  ║");
+        println!("  ║                                                  ║");
+        println!("  ║  Forward port {:<5} (TCP) in your router to    ║", server_port);
+        println!("  ║  this machine. Most routers have this under:     ║");
+        println!("  ║  Settings > Firewall > Port Forwarding           ║");
+        println!("  ║                                                  ║");
+        println!("  ║  Tip: Enable UPnP in your router settings       ║");
+        println!("  ║  to skip this step next time.                    ║");
+        println!("  ╚══════════════════════════════════════════════════╝");
+    }
     println!();
 }

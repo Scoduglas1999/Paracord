@@ -27,6 +27,7 @@ paracord-media = { workspace = true }
 anyhow = { workspace = true }
 tower-http = { workspace = true }
 igd-next = { workspace = true }
+crab_nat = { workspace = true }
 reqwest = { workspace = true }
 which = { workspace = true }
 rand = { workspace = true }
