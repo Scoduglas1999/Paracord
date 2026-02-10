@@ -122,4 +122,4 @@ paracord/
 
 ## License
 
-AGPL-3.0-or-later
+Source-available. See [LICENSE](LICENSE) for full terms. You may use, study, and modify the software for personal use, and share official releases. Redistribution of modified versions and derivative works is not permitted without written permission.

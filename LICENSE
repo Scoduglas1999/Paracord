@@ -1,0 +1,212 @@
+PARACORD SOURCE-AVAILABLE LICENSE
+Version 1.0, February 2026
+
+Copyright (c) 2026 Sean Douglas. All rights reserved.
+
+TERMS AND CONDITIONS
+
+1. DEFINITIONS
+
+   "Software" refers to Paracord, including all source code, object code,
+   documentation, assets, and any associated files in this repository.
+
+   "Author" refers to Sean Douglas, the sole copyright holder.
+
+   "You" refers to any individual or entity accessing, viewing, or using
+   the Software.
+
+   "Official Release" means any binary, installer, or compiled version of
+   the Software distributed directly by the Author through official channels
+   (GitHub releases, the official website, or other Author-designated sources).
+
+   "Derivative Work" means any work that is based on or derived from the
+   Software, including but not limited to modifications, translations,
+   adaptations, extensions, or any software that incorporates portions of
+   the Software's source code.
+
+2. GRANT OF RIGHTS
+
+   Subject to the terms of this License, the Author grants You a free,
+   non-exclusive, worldwide right to:
+
+   a) USE the Software for any purpose, including personal, educational,
+      and commercial use (e.g., hosting a Paracord server for your
+      community, organization, or business).
+
+   b) VIEW, DOWNLOAD, AND STUDY the source code for personal learning,
+      reference, security auditing, or to understand how the Software works.
+
+   c) MODIFY the source code for Your own personal use on devices You own
+      or control. You may compile and run modified versions privately.
+
+   d) SHARE Official Releases with others, provided they are unmodified
+      and include this License. You may freely distribute the official
+      installers and server packages to friends, communities, or
+      organizations.
+
+   e) CONTRIBUTE improvements, bug fixes, features, or documentation back
+      to the Author via pull requests or other means designated by the Author.
+
+3. RESTRICTIONS
+
+   You expressly MAY NOT, without prior written permission from the Author:
+
+   a) DISTRIBUTE MODIFIED VERSIONS of the Software to any third party.
+      You may not share, publish, upload, or make available any version
+      of the Software that You have modified, whether as source code or
+      compiled binaries.
+
+   b) CREATE OR DISTRIBUTE DERIVATIVE WORKS based on the Software. This
+      includes forks intended for public use, alternative versions, or
+      any software that incorporates substantial portions of the Software.
+
+   c) RELEASE UPDATES OR NEW VERSIONS of the Software. Only the Author
+      may publish official updates, releases, or new versions.
+
+   d) USE THE SOURCE CODE in other projects or products. You may not copy,
+      adapt, or incorporate any portion of the source code, algorithms,
+      architecture, or designs into other software.
+
+   e) SELL, SUBLICENSE, OR COMMERCIALLY EXPLOIT the Software itself. While
+      You may use the Software commercially (e.g., hosting a server for
+      paid communities), You may not sell access to the Software, offer it
+      as a hosted service to third parties, or charge others to use it.
+
+   f) REMOVE OR ALTER copyright notices, license terms, attribution, or
+      branding contained in the Software or Official Releases.
+
+   g) MISREPRESENT the origin of the Software or claim authorship of the
+      Software or any substantial portion thereof.
+
+4. CONTRIBUTIONS
+
+   If You submit contributions to the Software (including but not limited
+   to code, documentation, bug fixes, or feature implementations):
+
+   a) You grant the Author a perpetual, irrevocable, worldwide, royalty-free,
+      non-exclusive license to use, reproduce, modify, distribute, sublicense,
+      and incorporate Your contributions into the Software in any way the
+      Author sees fit, including under different license terms.
+
+   b) You retain ownership of Your contributions, but You agree that the
+      Author may use them without restriction or obligation to You.
+
+   c) You represent that You have the right to make such contributions and
+      that they do not infringe any third-party rights.
+
+   d) You understand that the Author has no obligation to accept, use,
+      credit, or acknowledge Your contributions.
+
+   e) You will not be entitled to any compensation for contributions unless
+      separately agreed in writing.
+
+5. INTELLECTUAL PROPERTY
+
+   a) The Software, including all intellectual property rights therein,
+      is and shall remain the sole and exclusive property of the Author.
+
+   b) This License does not grant You any rights to the "Paracord" name,
+      trademarks, service marks, trade names, logos, or branding.
+
+   c) Nothing in this License grants any patent rights held by the Author.
+
+6. SUPPORT AND UPDATES
+
+   a) The Software is provided without any obligation of support, updates,
+      or maintenance from the Author.
+
+   b) Voluntary support for the project (such as Patreon or other platforms)
+      is appreciated but does not create any additional rights or obligations
+      beyond this License.
+
+7. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+   THE AUTHOR MAKES NO WARRANTY THAT THE SOFTWARE WILL BE ERROR-FREE,
+   UNINTERRUPTED, SECURE, OR FREE OF HARMFUL COMPONENTS.
+
+   YOU USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHOR IS NOT RESPONSIBLE
+   FOR ANY DAMAGE TO YOUR EQUIPMENT, DATA LOSS, OR OTHER HARM ARISING
+   FROM USE OF THE SOFTWARE.
+
+8. LIMITATION OF LIABILITY
+
+   IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING
+   BUT NOT LIMITED TO PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+   OF USE, DATA, OR PROFITS; EQUIPMENT DAMAGE; OR BUSINESS INTERRUPTION)
+   HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+   STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+   IN ANY WAY OUT OF THE USE OF THE SOFTWARE, EVEN IF ADVISED OF THE
+   POSSIBILITY OF SUCH DAMAGE.
+
+9. TERMINATION
+
+   a) This License is effective until terminated.
+
+   b) Your rights under this License will terminate automatically and
+      immediately if You fail to comply with any of its terms.
+
+   c) Upon termination, You must cease all use of the Software and delete
+      any copies in Your possession, except that You may retain Official
+      Releases previously obtained for personal archival purposes.
+
+   d) Sections 4, 5, 7, 8, and 10 survive termination.
+
+10. GENERAL PROVISIONS
+
+    a) SEVERABILITY: If any provision of this License is held unenforceable,
+       the remaining provisions continue in full force and effect.
+
+    b) WAIVER: Failure to enforce any provision does not constitute a
+       waiver of that provision or the right to enforce it later.
+
+    c) ENTIRE AGREEMENT: This License constitutes the entire agreement
+       regarding the Software and supersedes all prior agreements.
+
+    d) GOVERNING LAW: This License shall be governed by the laws of the
+       United States, without regard to conflict of law provisions.
+
+    e) AMENDMENTS: The Author may publish updated versions of this License.
+       Any such updates apply only to versions of the Software released
+       after the updated License is published. Your use of previously
+       obtained versions continues under the License terms in effect at
+       the time You obtained them. Material changes will be noted in the
+       repository.
+
+11. CONTACT
+
+    For licensing inquiries, permissions, contribution questions, or to
+    support the project:
+
+    Sean Douglas
+    Email: scdouglas1999@gmail.com
+    GitHub: https://github.com/Scoduglas1999
+
+---
+
+BY ACCESSING, VIEWING, DOWNLOADING, COMPILING, OR USING THE SOFTWARE,
+YOU ACKNOWLEDGE THAT YOU HAVE READ, UNDERSTOOD, AND AGREE TO BE BOUND
+BY THE TERMS AND CONDITIONS OF THIS LICENSE.
+
+IF YOU DO NOT AGREE TO THESE TERMS, YOU MUST NOT ACCESS, VIEW, DOWNLOAD,
+OR USE THE SOFTWARE.
+
+---
+
+QUICK REFERENCE (not legally binding, see above for full terms):
+
+  + Use Paracord for any purpose (personal, educational, commercial hosting)
+  + View and study the source code
+  + Modify the code for your own personal use
+  + Share official unmodified releases with others
+  + Submit contributions (bug fixes, features) via pull requests
+
+  - Distribute modified versions
+  - Create forks or derivative works for public use
+  - Release your own updates or versions
+  - Use the source code in other projects
+  - Sell or sublicense the software
