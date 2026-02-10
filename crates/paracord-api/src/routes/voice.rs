@@ -39,6 +39,12 @@ pub async fn join_voice(
     auth: AuthUser,
     Path(channel_id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
+    if !state.config.livekit_available {
+        return Err(ApiError::ServiceUnavailable(
+            "Voice chat is not available — LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
+        ));
+    }
+
     let channel = paracord_db::channels::get_channel(&state.db, channel_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
@@ -120,6 +126,12 @@ pub async fn start_stream(
     Path(channel_id): Path<i64>,
     body: Option<Json<StartStreamRequest>>,
 ) -> Result<Json<Value>, ApiError> {
+    if !state.config.livekit_available {
+        return Err(ApiError::ServiceUnavailable(
+            "Streaming is not available — LiveKit server binary not found.".into(),
+        ));
+    }
+
     let channel = paracord_db::channels::get_channel(&state.db, channel_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?

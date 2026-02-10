@@ -20,6 +20,8 @@ pub enum ApiError {
     Conflict(String),
     #[error("rate limited")]
     RateLimited,
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("internal server error")]
     Internal(#[from] anyhow::Error),
 }
@@ -33,6 +35,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate limited".to_string()),
+            ApiError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             ApiError::Internal(err) => {
                 tracing::error!("API internal error: {err:#}");
                 (

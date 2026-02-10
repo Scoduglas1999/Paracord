@@ -173,6 +173,7 @@ async fn main() -> Result<()> {
             livekit_url: config.livekit.url.clone(),
             livekit_http_url: config.livekit.http_url.clone(),
             livekit_public_url,
+            livekit_available: managed_livekit.is_some() || livekit_status == "External",
             public_url: config.server.public_url.clone(),
             media_storage_path: config.media.storage_path.clone(),
             media_max_file_size: config.media.max_file_size,

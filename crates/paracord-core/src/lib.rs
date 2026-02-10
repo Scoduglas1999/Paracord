@@ -65,6 +65,8 @@ pub struct AppConfig {
     pub livekit_http_url: String,
     /// The LiveKit URL sent to clients. Falls back to `livekit_url` if not set.
     pub livekit_public_url: String,
+    /// Whether a LiveKit server is available for voice/video.
+    pub livekit_available: bool,
     /// The public URL of this server (e.g., https://chat.example.com).
     /// Used for CORS auto-configuration and invite links.
     pub public_url: Option<String>,
