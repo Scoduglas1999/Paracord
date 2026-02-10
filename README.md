@@ -2,7 +2,7 @@
   <img src="docs/logo-banner.svg" alt="Paracord" width="800"/>
 </p>
 
-A decentralized, self-hostable, open-source Discord alternative. Take back control of your communication.
+A decentralized, self-hostable, open-source Discord alternative.
 
 ## Features
 
