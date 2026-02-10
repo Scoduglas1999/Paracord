@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo-banner.svg" alt="Paracord" width="600"/>
+  <img src="docs/logo-banner.svg" alt="Paracord" width="800"/>
 </p>
 
 A decentralized, self-hostable, open-source Discord alternative. Take back control of your communication.
