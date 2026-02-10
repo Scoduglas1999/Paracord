@@ -248,33 +248,14 @@ pub fn build_router() -> Router<AppState> {
 }
 
 fn build_cors_layer() -> tower_http::cors::CorsLayer {
-    let configured = std::env::var("PARACORD_CORS_ORIGINS").unwrap_or_default();
-    let mut origins = Vec::new();
-    for origin in configured.split(',').map(str::trim).filter(|o| !o.is_empty()) {
-        if let Ok(value) = origin.parse::<axum::http::HeaderValue>() {
-            origins.push(value);
-        }
-    }
-
-    // Auto-include the public URL in CORS origins when configured
-    if let Ok(public_url) = std::env::var("PARACORD_PUBLIC_URL") {
-        let url = public_url.trim_end_matches('/');
-        if let Ok(value) = url.parse::<axum::http::HeaderValue>() {
-            if !origins.contains(&value) {
-                origins.push(value);
-            }
-        }
-    }
-
-    let base = tower_http::cors::CorsLayer::new()
+    // Always allow any origin. Paracord is a self-hosted server designed for
+    // desktop clients (Tauri) which send origins like `tauri://localhost` or
+    // `http://tauri.localhost`. Restricting origins would break remote desktop
+    // clients while providing no real security benefit for this use case.
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
-        .allow_headers(tower_http::cors::Any);
-
-    if origins.is_empty() {
-        base.allow_origin(tower_http::cors::Any)
-    } else {
-        base.allow_origin(origins)
-    }
+        .allow_headers(tower_http::cors::Any)
 }
 
 async fn health() -> impl IntoResponse {

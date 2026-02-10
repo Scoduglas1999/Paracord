@@ -147,11 +147,6 @@ async fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| config.livekit.url.clone());
 
-    // Set PARACORD_PUBLIC_URL env var so CORS layer can pick it up
-    if let Some(ref public_url) = config.server.public_url {
-        std::env::set_var("PARACORD_PUBLIC_URL", public_url);
-    }
-
     let state = paracord_core::AppState {
         db,
         event_bus: paracord_core::events::EventBus::default(),
