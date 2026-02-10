@@ -58,31 +58,41 @@ fn find_livekit_binary() -> Option<PathBuf> {
 }
 
 /// Generate a minimal LiveKit config YAML and write it to a temp file.
+///
+/// All client-facing traffic shares the single `server_port` (default 8080):
+///   - TCP signaling is proxied through the main Paracord HTTP server
+///     (`/livekit` WebSocket route).
+///   - UDP media uses a UDP mux bound to the same `server_port`.  Since the
+///     Paracord HTTP server only binds TCP on that port, LiveKit can bind
+///     UDP on the same port number without conflict.  This means the server
+///     host only needs to forward **one port** (TCP + UDP) for everything.
+///
+/// Internal ports (not exposed externally):
+///   - `livekit_port` (7880) TCP — LiveKit HTTP API + WS (local only)
+///   - `livekit_port + 1` (7881) TCP — ICE/TCP fallback (local only)
 fn write_livekit_config(
     api_key: &str,
     api_secret: &str,
-    port: u16,
+    livekit_port: u16,
+    server_port: u16,
     external_ip: Option<&str>,
 ) -> std::io::Result<PathBuf> {
-    // If we know the external IP, pin it in the RTC config so LiveKit
-    // doesn't rely on STUN (which can fail on Windows).  Also enable
-    // the built-in TURN server so clients behind strict NATs can relay
-    // media through TCP.
-    let turn_port = port + 1;
-    let udp_start = port + 2;
-    let udp_end = port + 12;
+    let ice_tcp_port = livekit_port + 1; // 7881 — local ICE/TCP fallback
 
     let mut lines = vec![
-        format!("port: {port}"),
+        format!("port: {livekit_port}"),
         "rtc:".to_string(),
         "    use_external_ip: true".to_string(),
     ];
     if let Some(ip) = external_ip {
         lines.push(format!("    node_ip: {ip}"));
     }
-    lines.push(format!("    port_range_start: {udp_start}"));
-    lines.push(format!("    port_range_end: {udp_end}"));
-    lines.push(format!("    tcp_port: {turn_port}"));
+    // UDP mux on the server port (e.g. 8080).  Paracord only binds TCP
+    // on this port, so LiveKit can use the UDP side for all WebRTC media.
+    // This means only one port needs to be forwarded by the host.
+    lines.push(format!("    udp_port: {server_port}"));
+    lines.push(format!("    tcp_port: {ice_tcp_port}"));
+    lines.push("    enable_loopback_candidate: true".to_string());
     lines.push("keys:".to_string());
     lines.push(format!("    {api_key}: {api_secret}"));
     if let Some(ip) = external_ip {
@@ -90,7 +100,8 @@ fn write_livekit_config(
         lines.push("    enabled: true".to_string());
         lines.push(format!("    domain: {ip}"));
         lines.push("    tls_port: 0".to_string());
-        lines.push(format!("    udp_port: {turn_port}"));
+        // TURN relay also on the server port so it's reachable externally.
+        lines.push(format!("    udp_port: {server_port}"));
         lines.push("    external_tls: false".to_string());
     }
     lines.push("logging:".to_string());
@@ -111,6 +122,7 @@ pub async fn start_livekit(
     api_key: &str,
     api_secret: &str,
     port: u16,
+    server_port: u16,
     external_ip: Option<&str>,
 ) -> Option<LiveKitProcess> {
     let binary = match find_livekit_binary() {
@@ -130,7 +142,7 @@ pub async fn start_livekit(
         }
     };
 
-    let config_path = match write_livekit_config(api_key, api_secret, port, external_ip) {
+    let config_path = match write_livekit_config(api_key, api_secret, port, server_port, external_ip) {
         Ok(path) => path,
         Err(e) => {
             tracing::error!("Failed to write LiveKit config: {}", e);
@@ -150,11 +162,25 @@ pub async fn start_livekit(
 
     tracing::info!("Starting managed LiveKit server on port {}...", port);
 
+    // Write LiveKit output to a log file so we can diagnose connection issues.
+    let log_path = std::env::temp_dir().join("paracord-livekit.log");
+    let (lk_stdout, lk_stderr) = match std::fs::File::create(&log_path) {
+        Ok(f) => {
+            let f2 = f.try_clone().unwrap_or_else(|_| {
+                std::fs::File::create(std::env::temp_dir().join("paracord-livekit-err.log"))
+                    .expect("fallback log")
+            });
+            (Stdio::from(f), Stdio::from(f2))
+        }
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+    tracing::info!("LiveKit log file: {}", log_path.display());
+
     let child = match Command::new(&binary)
         .arg("--config")
         .arg(&config_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(lk_stdout)
+        .stderr(lk_stderr)
         .kill_on_drop(true)
         .spawn()
     {

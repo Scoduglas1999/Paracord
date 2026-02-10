@@ -78,29 +78,17 @@ async fn try_upnp_igd(
 
     let local_ip = get_local_ip(gateway.addr)?;
 
-    // Map server port
+    // Only one port needs forwarding: the server port handles everything.
+    // TCP: HTTP API, WebSocket signaling, LiveKit proxy
+    // UDP: WebRTC media via LiveKit UDP mux on the same port number
     add_upnp_mapping(
         &gateway, local_ip, server_port, lease_seconds,
         "Paracord Server", igd_next::PortMappingProtocol::TCP,
     ).await;
-
-    // Map LiveKit TCP ports
     add_upnp_mapping(
-        &gateway, local_ip, livekit_port, lease_seconds,
-        "Paracord LiveKit", igd_next::PortMappingProtocol::TCP,
+        &gateway, local_ip, server_port, lease_seconds,
+        "Paracord Media UDP", igd_next::PortMappingProtocol::UDP,
     ).await;
-    add_upnp_mapping(
-        &gateway, local_ip, livekit_port + 1, lease_seconds,
-        "Paracord LiveKit TURN", igd_next::PortMappingProtocol::TCP,
-    ).await;
-
-    // Map LiveKit UDP media ports (7882-7892)
-    for port in (livekit_port + 2)..=(livekit_port + 12) {
-        add_upnp_mapping(
-            &gateway, local_ip, port, lease_seconds,
-            "Paracord LiveKit Media", igd_next::PortMappingProtocol::UDP,
-        ).await;
-    }
 
     tracing::info!("UPnP port forwarding complete.");
 
@@ -173,30 +161,17 @@ async fn try_nat_pmp(
 
     tracing::info!("NAT-PMP/PCP: mapped server port {}", server_port);
 
-    // Best-effort LiveKit ports (don't fail if these don't work)
-    let lk_options = crab_nat::PortMappingOptions {
+    // UDP on the server port for WebRTC media (LiveKit UDP mux shares the port)
+    let udp_options = crab_nat::PortMappingOptions {
         lifetime_seconds: Some(lease_seconds),
         ..Default::default()
     };
     let _ = crab_nat::PortMapping::new(
         gw, client,
-        crab_nat::InternetProtocol::Tcp,
-        std::num::NonZeroU16::new(livekit_port).unwrap(),
-        lk_options,
+        crab_nat::InternetProtocol::Udp,
+        std::num::NonZeroU16::new(server_port).unwrap(),
+        udp_options,
     ).await;
-
-    for port in (livekit_port + 2)..=(livekit_port + 12) {
-        let udp_options = crab_nat::PortMappingOptions {
-            lifetime_seconds: Some(lease_seconds),
-            ..Default::default()
-        };
-        let _ = crab_nat::PortMapping::new(
-            gw, client,
-            crab_nat::InternetProtocol::Udp,
-            std::num::NonZeroU16::new(port).unwrap(),
-            udp_options,
-        ).await;
-    }
 
     tracing::info!("NAT-PMP/PCP port forwarding complete.");
 
@@ -265,7 +240,7 @@ fn get_local_ip_for(gateway: Ipv4Addr) -> anyhow::Result<Ipv4Addr> {
 }
 
 /// Remove UPnP port mappings on shutdown.
-pub async fn cleanup_upnp(server_port: u16, livekit_port: u16) {
+pub async fn cleanup_upnp(server_port: u16, _livekit_port: u16) {
     let gateway = match igd_next::aio::tokio::search_gateway(igd_next::SearchOptions {
         timeout: Some(std::time::Duration::from_secs(3)),
         ..Default::default()
@@ -276,16 +251,11 @@ pub async fn cleanup_upnp(server_port: u16, livekit_port: u16) {
         Err(_) => return,
     };
 
-    let tcp_ports = [server_port, livekit_port, livekit_port + 1];
-    for port in tcp_ports {
-        let _ = gateway
-            .remove_port(igd_next::PortMappingProtocol::TCP, port)
-            .await;
-    }
-    for port in (livekit_port + 2)..=(livekit_port + 12) {
-        let _ = gateway
-            .remove_port(igd_next::PortMappingProtocol::UDP, port)
-            .await;
-    }
+    let _ = gateway
+        .remove_port(igd_next::PortMappingProtocol::TCP, server_port)
+        .await;
+    let _ = gateway
+        .remove_port(igd_next::PortMappingProtocol::UDP, server_port)
+        .await;
     tracing::info!("UPnP port mappings removed.");
 }

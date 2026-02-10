@@ -143,6 +143,7 @@ async fn main() -> Result<()> {
             &config.livekit.api_key,
             &config.livekit.api_secret,
             livekit_port,
+            bind_port,
             detected_external_ip.as_deref(),
         ).await {
             Some(proc) => {
