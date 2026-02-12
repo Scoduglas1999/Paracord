@@ -89,6 +89,7 @@ export function UnifiedSidebar() {
   const { connected, channelId: activeVoiceChannelId, joinChannel, selfMute, selfDeaf, toggleMute, toggleDeaf } = useVoice();
   const channelParticipants = useVoiceStore((s) => s.channelParticipants);
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
+  const selfStream = useVoiceStore((s) => s.selfStream);
   const watchedStreamerId = useVoiceStore((s) => s.watchedStreamerId);
   const setWatchedStreamer = useVoiceStore((s) => s.setWatchedStreamer);
   const setPreviewStreamer = useVoiceStore((s) => s.setPreviewStreamer);
@@ -562,7 +563,8 @@ export function UnifiedSidebar() {
                                         <div className="ml-4 mt-1 mb-1.5 p-1.5 space-y-0.5">
                                           {voiceMembers.map((vs) => {
                                             const isSpeaking = speakingUsers.has(vs.user_id);
-                                            const isStreaming = Boolean(vs.self_stream);
+                                            const isSelfUser = user?.id === vs.user_id;
+                                            const isStreaming = Boolean(vs.self_stream) || (isSelfUser && selfStream);
                                             const isWatched = watchedStreamerId === vs.user_id;
                                             const displayName = vs.username || `User ${vs.user_id.slice(0, 6)}`;
                                             return (

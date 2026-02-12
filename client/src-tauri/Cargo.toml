@@ -20,6 +20,11 @@ wasapi = "0.22"
 webview2-com = "0.38"
 windows-core = "0.61"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+libpulse-binding = "2"
+libpulse-simple-binding = "2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

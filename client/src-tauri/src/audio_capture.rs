@@ -53,6 +53,10 @@ pub fn stop_system_audio_capture() -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Windows: WASAPI loopback capture
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
 fn capture_loop(
     channel: &Channel<AudioChunk>,
     stop_flag: &Arc<AtomicBool>,
@@ -70,11 +74,8 @@ fn capture_loop(
     let bits_per_sample = format.get_bitspersample() as usize;
     let bytes_per_sample = bits_per_sample / 8;
 
-    // Get device period for buffer sizing.
     let (_default_period, min_period) = audio_client.get_device_period()?;
 
-    // Initialize in loopback mode: render device + capture direction = loopback.
-    // EventsShared mode uses event-driven notification for efficient waiting.
     let mode = wasapi::StreamMode::EventsShared {
         autoconvert: true,
         buffer_duration_hns: min_period,
@@ -84,7 +85,6 @@ fn capture_loop(
     let h_event = audio_client.set_get_eventhandle()?;
     let capture_client = audio_client.get_audiocaptureclient()?;
 
-    // Allocate a buffer large enough for the maximum packet from the device.
     let buffer_size_frames = audio_client.get_buffer_size()?;
     let buffer_size_bytes = buffer_size_frames as usize * block_align;
     let mut buffer = vec![0u8; buffer_size_bytes];
@@ -92,17 +92,15 @@ fn capture_loop(
     audio_client.start_stream()?;
 
     eprintln!(
-        "[audio_capture] Started: {}Hz, {} ch, {} bits/sample",
+        "[audio_capture] Started WASAPI: {}Hz, {} ch, {} bits/sample",
         sample_rate, num_channels, bits_per_sample
     );
 
     while !stop_flag.load(Ordering::Relaxed) {
-        // Wait for audio data with a short timeout so we can check the stop flag.
         if h_event.wait_for_event(100).is_err() {
             continue;
         }
 
-        // Read interleaved PCM bytes from the loopback device.
         let (frames_read, _info) = match capture_client.read_from_device(&mut buffer) {
             Ok(result) => result,
             Err(e) => {
@@ -130,7 +128,103 @@ fn capture_loop(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Linux: PulseAudio monitor source capture
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
+fn capture_loop(
+    channel: &Channel<AudioChunk>,
+    stop_flag: &Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use libpulse_binding::sample::{Format, Spec};
+    use libpulse_binding::stream::Direction;
+    use libpulse_simple_binding::Simple;
+
+    let sample_rate: u32 = 48000;
+    let num_channels: u8 = 1;
+
+    let spec = Spec {
+        format: Format::F32le,
+        channels: num_channels,
+        rate: sample_rate,
+    };
+
+    if !spec.is_valid() {
+        return Err("Invalid PulseAudio sample spec".into());
+    }
+
+    // @DEFAULT_MONITOR@ captures the default output sink's monitor source,
+    // which provides system audio loopback.
+    let pulse = Simple::new(
+        None,                    // default server
+        "Paracord",              // app name
+        Direction::Record,       // recording
+        Some("@DEFAULT_MONITOR@"), // monitor source for loopback
+        "System Audio Capture",  // stream description
+        &spec,
+        None,                    // default channel map
+        None,                    // default buffering attributes
+    ).map_err(|e| format!("Failed to connect to PulseAudio: {e}"))?;
+
+    // Read buffer: 20ms of mono f32 audio at 48kHz = 960 frames * 4 bytes = 3840 bytes
+    let frames_per_chunk: usize = 960;
+    let mut buffer = vec![0u8; frames_per_chunk * 4]; // f32 = 4 bytes
+
+    eprintln!(
+        "[audio_capture] Started PulseAudio: {}Hz, {} ch, f32",
+        sample_rate, num_channels
+    );
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        if let Err(e) = pulse.read(&mut buffer) {
+            eprintln!("[audio_capture] PulseAudio read error: {e}");
+            break;
+        }
+
+        // Convert raw f32le bytes to Vec<f32>
+        let samples: Vec<f32> = buffer
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        if !samples.is_empty() {
+            let _ = channel.send(AudioChunk {
+                samples,
+                sample_rate,
+            });
+        }
+    }
+
+    eprintln!("[audio_capture] Stopped");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// macOS: stub (not yet implemented)
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+fn capture_loop(
+    _channel: &Channel<AudioChunk>,
+    _stop_flag: &Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("Native system audio capture is not yet supported on macOS. \
+         Audio from screen shares will still work via browser APIs."
+        .into())
+}
+
+// ---------------------------------------------------------------------------
+// Fallback for other platforms
+// ---------------------------------------------------------------------------
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn capture_loop(
+    _channel: &Channel<AudioChunk>,
+    _stop_flag: &Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("System audio capture is not supported on this platform.".into())
+}
+
 /// Convert interleaved raw PCM bytes to a mono f32 vector by averaging all channels.
+#[allow(dead_code)]
 fn interleaved_to_mono_f32(data: &[u8], num_channels: usize, bytes_per_sample: usize) -> Vec<f32> {
     let frame_size = num_channels * bytes_per_sample;
     if frame_size == 0 {

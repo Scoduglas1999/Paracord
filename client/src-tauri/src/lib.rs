@@ -1,4 +1,3 @@
-#[cfg(windows)]
 mod audio_capture;
 #[cfg(windows)]
 use windows_core::Interface;
@@ -10,8 +9,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // Accept self-signed TLS certificates in WebView2 so the desktop
-            // app can connect to Paracord servers that use auto-generated certs.
+            // Accept self-signed TLS certificates so the desktop app can
+            // connect to Paracord servers that use auto-generated certs.
+
             #[cfg(windows)]
             {
                 use tauri::Manager;
@@ -47,21 +47,38 @@ pub fn run() {
                     }
                 }).expect("with_webview failed");
             }
+
+            #[cfg(target_os = "linux")]
+            {
+                use tauri::Manager;
+                let webview = app.get_webview_window("main")
+                    .expect("main window not found");
+                webview.with_webview(|platform_webview| {
+                    use webkit2gtk::{WebViewExt, WebContextExt, TLSErrorsPolicy};
+                    let wk_webview = platform_webview.inner().clone();
+                    if let Some(context) = wk_webview.web_context() {
+                        context.set_tls_errors_policy(TLSErrorsPolicy::Ignore);
+                    }
+                }).expect("with_webview failed");
+            }
+
+            // macOS (WKWebView) does not expose a simple API to ignore TLS
+            // certificate errors. WKWebView requires implementing a custom
+            // WKNavigationDelegate with
+            // `webView:didReceiveAuthenticationChallenge:completionHandler:`
+            // which would need objc runtime calls to swizzle Tauri's existing
+            // delegate. For now, macOS users must install self-signed CA certs
+            // into the system Keychain and mark them as trusted, or use a
+            // properly signed certificate.
+
             Ok(())
         });
 
-    #[cfg(windows)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         commands::greet,
         commands::get_app_version,
         audio_capture::start_system_audio_capture,
         audio_capture::stop_system_audio_capture,
-    ]);
-
-    #[cfg(not(windows))]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        commands::greet,
-        commands::get_app_version,
     ]);
 
     builder
