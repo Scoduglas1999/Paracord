@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAccountStore } from '../stores/accountStore';
+import { useServerListStore } from '../stores/serverListStore';
 import { hasAccount } from '../lib/account';
+import { getStoredServerUrl, getCurrentOriginServerUrl, setStoredServerUrl } from '../lib/apiBaseUrl';
+import { connectionManager } from '../lib/connectionManager';
 
 export function AccountUnlockPage() {
   const [password, setPassword] = useState('');
@@ -14,7 +17,7 @@ export function AccountUnlockPage() {
 
   useEffect(() => {
     if (!hasAccount()) {
-      navigate('/setup');
+      navigate('/login');
     }
   }, [navigate]);
 
@@ -24,6 +27,35 @@ export function AccountUnlockPage() {
     setLoading(true);
     try {
       await unlock(password);
+
+      const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
+      if (serverUrl) {
+        setStoredServerUrl(serverUrl);
+        const serverStore = useServerListStore.getState();
+        const existingServer = serverStore.getServerByUrl(serverUrl);
+        const token = localStorage.getItem('token') || undefined;
+
+        let serverName = serverUrl;
+        try {
+          serverName = new URL(serverUrl).host;
+        } catch {
+          // Keep raw URL as name if parsing fails.
+        }
+
+        const serverId = existingServer
+          ? existingServer.id
+          : serverStore.addServer(serverUrl, serverName, token);
+
+        const server = useServerListStore.getState().getServer(serverId);
+        if (!server?.token) {
+          try {
+            await connectionManager.connectServer(serverId);
+          } catch {
+            // Non-fatal. User can still proceed and add/fix server details manually.
+          }
+        }
+      }
+
       navigate('/app');
     } catch {
       setError('Incorrect password. Please try again.');

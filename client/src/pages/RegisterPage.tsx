@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useServerListStore } from '../stores/serverListStore';
-import { getStoredServerUrl } from '../lib/apiBaseUrl';
+import { getStoredServerUrl, getCurrentOriginServerUrl, setStoredServerUrl } from '../lib/apiBaseUrl';
 import { hasAccount } from '../lib/account';
 import { authApi } from '../api/auth';
 import { MIN_PASSWORD_LENGTH } from '../lib/constants';
@@ -47,12 +47,22 @@ export function RegisterPage() {
       }
 
       // Add to server list if not already there
-      const serverUrl = getStoredServerUrl();
+      const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
       if (serverUrl) {
-        const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
+        setStoredServerUrl(serverUrl);
+        const serverStore = useServerListStore.getState();
+        const existingServer = serverStore.getServerByUrl(serverUrl);
+        const token = localStorage.getItem('token');
         if (!existingServer) {
-          const token = localStorage.getItem('token');
-          useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
+          let serverName = serverUrl;
+          try {
+            serverName = new URL(serverUrl).host;
+          } catch {
+            // Keep raw URL as name if parsing fails.
+          }
+          serverStore.addServer(serverUrl, serverName, token || undefined);
+        } else if (token) {
+          serverStore.updateToken(existingServer.id, token);
         }
       }
 

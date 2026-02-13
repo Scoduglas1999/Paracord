@@ -25,6 +25,7 @@ pub struct UserSettingsRow {
     pub custom_css: Option<String>,
     pub locale: String,
     pub message_display: String,
+    pub crypto_auth_enabled: bool,
     pub notifications: serde_json::Value,
     pub keybinds: serde_json::Value,
     pub updated_at: DateTime<Utc>,
@@ -131,7 +132,7 @@ pub async fn update_user(
 
 pub async fn get_user_settings(pool: &DbPool, user_id: i64) -> Result<Option<UserSettingsRow>, DbError> {
     let row = sqlx::query_as::<_, UserSettingsRow>(
-        "SELECT user_id, theme, custom_css, locale, message_display, notifications, keybinds, updated_at
+        "SELECT user_id, theme, custom_css, locale, message_display, crypto_auth_enabled, notifications, keybinds, updated_at
          FROM user_settings WHERE user_id = ?1"
     )
     .bind(user_id)
@@ -190,27 +191,30 @@ pub async fn upsert_user_settings(
     locale: &str,
     message_display: &str,
     custom_css: Option<&str>,
+    crypto_auth_enabled: Option<bool>,
     notifications: Option<&serde_json::Value>,
     keybinds: Option<&serde_json::Value>,
 ) -> Result<UserSettingsRow, DbError> {
     let row = sqlx::query_as::<_, UserSettingsRow>(
-        "INSERT INTO user_settings (user_id, theme, locale, message_display, custom_css, notifications, keybinds)
-         VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, '{}'), COALESCE(?7, '{}'))
+        "INSERT INTO user_settings (user_id, theme, locale, message_display, custom_css, crypto_auth_enabled, notifications, keybinds)
+         VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, FALSE), COALESCE(?7, '{}'), COALESCE(?8, '{}'))
          ON CONFLICT (user_id) DO UPDATE SET
             theme = ?2,
             locale = ?3,
             message_display = ?4,
             custom_css = ?5,
-            notifications = COALESCE(?6, user_settings.notifications),
-            keybinds = COALESCE(?7, user_settings.keybinds),
+            crypto_auth_enabled = COALESCE(?6, user_settings.crypto_auth_enabled),
+            notifications = COALESCE(?7, user_settings.notifications),
+            keybinds = COALESCE(?8, user_settings.keybinds),
             updated_at = datetime('now')
-         RETURNING user_id, theme, custom_css, locale, message_display, notifications, keybinds, updated_at"
+         RETURNING user_id, theme, custom_css, locale, message_display, crypto_auth_enabled, notifications, keybinds, updated_at"
     )
     .bind(user_id)
     .bind(theme)
     .bind(locale)
     .bind(message_display)
     .bind(custom_css)
+    .bind(crypto_auth_enabled)
     .bind(notifications)
     .bind(keybinds)
     .fetch_one(pool)

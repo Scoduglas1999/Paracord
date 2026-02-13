@@ -63,39 +63,27 @@ function useServerStatus() {
 }
 
 /**
- * Route guard: requires an unlocked account.
- * If no account exists, redirect to setup.
- * If account exists but is locked, redirect to unlock.
- */
-function AccountRoute({ children }: { children: React.ReactNode }) {
-  const isUnlocked = useAccountStore((s) => s.isUnlocked);
-  const accountExists = hasAccount();
-
-  if (!accountExists) {
-    return <Navigate to="/setup" />;
-  }
-  if (!isUnlocked) {
-    return <Navigate to="/unlock" />;
-  }
-  return <>{children}</>;
-}
-
-/**
- * Route guard for the main app: requires unlocked account + at least one server.
- * Falls back to legacy auth (token-based) for backward compatibility.
+ * Route guard for the main app.
+ *
+ * Default mode is username/password auth. Device key unlock is only enforced
+ * when the user has explicitly enabled crypto auth in server-side account settings.
  */
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isUnlocked = useAccountStore((s) => s.isUnlocked);
   const servers = useServerListStore((s) => s.servers);
   const token = useAuthStore((s) => s.token);
+  const settings = useAuthStore((s) => s.settings);
+  const hasFetchedSettings = useAuthStore((s) => s.hasFetchedSettings);
+  const fetchSettings = useAuthStore((s) => s.fetchSettings);
   const serverStatus = useServerStatus();
+  const cryptoAuthEnabled = settings?.crypto_auth_enabled === true;
 
-  // New account system: unlocked + has servers
-  if (isUnlocked && servers.length > 0) {
-    return <>{children}</>;
-  }
+  useEffect(() => {
+    if (token && !hasFetchedSettings) {
+      void fetchSettings();
+    }
+  }, [token, hasFetchedSettings, fetchSettings]);
 
-  // Legacy path: token-based auth with single server
   if (serverStatus === 'loading') {
     return (
       <div className="auth-shell">
@@ -104,22 +92,44 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
+  if (token && !hasFetchedSettings) {
+    return (
+      <div className="auth-shell">
+        <p className="text-text-muted">Loading account settings...</p>
+      </div>
+    );
+  }
+
+  // Optional crypto-auth mode (server-controlled, default false).
+  if (cryptoAuthEnabled) {
+    if (!hasAccount()) {
+      return <Navigate to="/setup" />;
+    }
+    if (!isUnlocked) {
+      return <Navigate to="/unlock" />;
+    }
+    if (servers.length > 0 || (token && serverStatus === 'ready')) {
+      return <>{children}</>;
+    }
+    if (!token) {
+      return <Navigate to="/login" />;
+    }
+    if (servers.length === 0 && serverStatus !== 'ready') {
+      return <Navigate to="/connect" />;
+    }
+    return <Navigate to="/connect" />;
+  }
+
+  // Password mode: valid token can enter directly.
   if (token && serverStatus === 'ready') {
     return <>{children}</>;
   }
 
-  // No account at all — go to setup
-  if (!hasAccount()) {
-    return <Navigate to="/setup" />;
+  // Password mode without token.
+  if (serverStatus === 'needed') {
+    return <Navigate to="/connect" />;
   }
-
-  // Account exists but locked
-  if (!isUnlocked) {
-    return <Navigate to="/unlock" />;
-  }
-
-  // Unlocked but no servers
-  return <Navigate to="/connect" />;
+  return <Navigate to="/login" />;
 }
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
@@ -145,17 +155,18 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
  */
 function useAutoConnect() {
   const isUnlocked = useAccountStore((s) => s.isUnlocked);
+  const cryptoAuthEnabled = useAuthStore((s) => s.settings?.crypto_auth_enabled === true);
   const servers = useServerListStore((s) => s.servers);
 
   useEffect(() => {
-    if (!isUnlocked || servers.length === 0) return;
+    if (!cryptoAuthEnabled || !isUnlocked || servers.length === 0) return;
     connectionManager.connectAll().catch(() => {
-      // Individual server connection errors are handled per-server
+      // Individual server connection errors are handled per-server.
     });
     return () => {
       connectionManager.disconnectAll();
     };
-  }, [isUnlocked, servers.length]);
+  }, [cryptoAuthEnabled, isUnlocked, servers.length]);
 }
 
 export default function App() {
@@ -163,15 +174,15 @@ export default function App() {
 
   return (
     <Routes>
-      {/* Account management */}
+      {/* Optional device crypto identity */}
       <Route path="/setup" element={<AccountSetupPage />} />
       <Route path="/unlock" element={<AccountUnlockPage />} />
       <Route path="/recover" element={<AccountRecoverPage />} />
 
       {/* Server connection */}
-      <Route path="/connect" element={<AccountRoute><ServerConnectPage /></AccountRoute>} />
+      <Route path="/connect" element={<ServerConnectPage />} />
 
-      {/* Legacy auth routes (kept for backward compat) */}
+      {/* Password auth */}
       <Route path="/login" element={<AuthRoute><LoginPage /></AuthRoute>} />
       <Route path="/register" element={<AuthRoute><RegisterPage /></AuthRoute>} />
 

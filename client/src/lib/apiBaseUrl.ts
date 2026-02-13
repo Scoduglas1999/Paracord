@@ -18,6 +18,18 @@ export function getStoredServerUrl(): string | null {
   }
 }
 
+/**
+ * Returns the current browser origin as a server URL when running from a
+ * deployed Paracord server. Skips local dev to avoid pinning Vite origins.
+ */
+export function getCurrentOriginServerUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  if (import.meta.env.DEV) return null;
+  if (!/^https?:$/.test(window.location.protocol)) return null;
+  if (!window.location.host) return null;
+  return `${window.location.protocol}//${window.location.host}`;
+}
+
 export function setStoredServerUrl(url: string): void {
   window.localStorage.setItem(SERVER_URL_KEY, url);
 }

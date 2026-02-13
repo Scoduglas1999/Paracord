@@ -36,57 +36,49 @@
 
     <!--
       WEAVING STRATEGY:
-      The rope path snakes across the text in a sine wave.
-      We split it into segments. At each letter boundary, the rope
-      alternates between being BEHIND and IN FRONT of the text.
+      The rope snakes across the text in a sine wave, alternating
+      between behind and in front at each letter. Transitions happen
+      at the CENTER of the 10px letter-spacing gaps so the switch
+      never falls within a letter stroke.
 
-      Layer order for weaving:
-      1. Rope segments that go BEHIND the text
+      Layer order:
+      1. Rope segments BEHIND the text (clipped to behind-letter columns)
       2. The text itself
-      3. Rope segments that go IN FRONT of the text
+      3. Rope segments IN FRONT of the text (clipped to front-letter columns)
 
-      The rope goes:
-        - BEHIND the P (enters from left, dips behind)
-        - IN FRONT between P-A
-        - BEHIND the A
-        - IN FRONT between A-R
-        - BEHIND the R
-        - IN FRONT between R-A
-        - BEHIND the second A
-        - IN FRONT between A-C
-        - BEHIND the C
-        - IN FRONT between C-O
-        - BEHIND the O (threads through the hole)
-        - IN FRONT between O-R
-        - BEHIND the R
-        - IN FRONT between R-D
-        - Exits behind D
+      Alternating pattern (odd letters behind, even letters in front):
+        P (1st) — BEHIND     A (2nd) — IN FRONT
+        R (3rd) — BEHIND     A (4th) — IN FRONT
+        C (5th) — BEHIND     O (6th) — IN FRONT
+        R (7th) — BEHIND     D (8th) — IN FRONT
     -->
 
-    <!-- Full rope path definition (used by all rope layers) -->
-    <!-- The rope weaves sinusoidally, centered on y=105 (text baseline area) -->
-
-    <!-- Clip paths for rope weaving through text -->
-    <!-- Letter approximate x-positions at font-size 88, centered at x=450:
-         P: 187-242, A: 252-312, R: 322-377, A: 387-447,
-         C: 457-507, O: 517-577, R: 587-642, D: 652-712
+    <!-- Clip path boundaries placed at gap centers between letters.
+         Approximate letter positions at font-size 88, weight 800,
+         letter-spacing 10, text-anchor middle at x=450:
+           P: 182-234   gap center 239
+           A: 244-306   gap center 311
+           R: 316-372   gap center 377
+           A: 382-444   gap center 449
+           C: 454-510   gap center 515
+           O: 520-582   gap center 587
+           R: 592-648   gap center 653
+           D: 658-718
     -->
     <clipPath id="behindLetters">
-      <!-- Covers letter regions where rope goes behind -->
-      <rect x="182" y="0" width="65" height="200"/>   <!-- P -->
-      <rect x="317" y="0" width="65" height="200"/>   <!-- R1 -->
-      <rect x="452" y="0" width="60" height="200"/>   <!-- C -->
-      <rect x="582" y="0" width="60" height="200"/>   <!-- R2 -->
-      <rect x="652" y="0" width="65" height="200"/>   <!-- D -->
+      <!-- Odd letters: P, R1, C, R2 — rope passes behind these -->
+      <rect x="182" y="0" width="57"  height="200"/>  <!-- P:  182-239 -->
+      <rect x="311" y="0" width="66"  height="200"/>  <!-- R1: 311-377 -->
+      <rect x="449" y="0" width="66"  height="200"/>  <!-- C:  449-515 -->
+      <rect x="587" y="0" width="66"  height="200"/>  <!-- R2: 587-653 -->
     </clipPath>
     <clipPath id="inFrontOfLetters">
-      <!-- Covers regions between/over letters where rope is in front -->
-      <rect x="0" y="0" width="182" height="200"/>    <!-- before P -->
-      <rect x="247" y="0" width="70" height="200"/>   <!-- A1 -->
-      <rect x="382" y="0" width="70" height="200"/>   <!-- A2 -->
-      <rect x="512" y="0" width="70" height="200"/>   <!-- O -->
-      <rect x="642" y="0" width="10" height="200"/>   <!-- between R2-D -->
-      <rect x="717" y="0" width="183" height="200"/>  <!-- after D -->
+      <!-- Even letters + edges: A1, A2, O, D — rope passes in front -->
+      <rect x="0"   y="0" width="182" height="200"/>  <!-- before P -->
+      <rect x="239" y="0" width="72"  height="200"/>  <!-- A1: 239-311 -->
+      <rect x="377" y="0" width="72"  height="200"/>  <!-- A2: 377-449 -->
+      <rect x="515" y="0" width="72"  height="200"/>  <!-- O:  515-587 -->
+      <rect x="653" y="0" width="247" height="200"/>  <!-- D + after: 653-900 -->
     </clipPath>
   </defs>
 

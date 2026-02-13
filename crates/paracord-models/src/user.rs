@@ -25,4 +25,5 @@ pub struct UserSettings {
     pub custom_css: Option<String>,
     pub status: String,
     pub custom_status: Option<String>,
+    pub crypto_auth_enabled: bool,
 }

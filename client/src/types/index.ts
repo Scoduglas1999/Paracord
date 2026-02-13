@@ -24,6 +24,7 @@ export interface UserSettings {
   custom_css?: string;
   status: 'online' | 'idle' | 'dnd' | 'invisible';
   custom_status?: string;
+  crypto_auth_enabled: boolean;
   notifications?: Record<string, unknown>;
   keybinds?: Record<string, unknown>;
 }

@@ -12,9 +12,21 @@ import { isPortableLink, decodePortableLink } from '../lib/portableLinks';
 function normaliseServerUrl(raw: string): string {
   let serverUrl = raw.trim();
   if (!/^https?:\/\//i.test(serverUrl)) {
-    const hostPart = serverUrl.split(':')[0].split('/')[0];
+    const hostAndPort = serverUrl.split('/')[0];
+    const hostPart = hostAndPort.split(':')[0];
+    const hasExplicitPort = /:\d+$/.test(hostAndPort);
+    if (
+      typeof window !== 'undefined' &&
+      hostPart.toLowerCase() === window.location.hostname.toLowerCase() &&
+      !hasExplicitPort
+    ) {
+      return window.location.origin.replace(/\/+$/, '');
+    }
+
     const isIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostPart) || hostPart === 'localhost';
-    serverUrl = (isIp ? 'http://' : 'https://') + serverUrl;
+    const preferHttps =
+      typeof window !== 'undefined' && window.location.protocol.toLowerCase() === 'https:';
+    serverUrl = ((isIp && !preferHttps) ? 'http://' : 'https://') + serverUrl;
   }
   return serverUrl.replace(/\/+$/, '');
 }

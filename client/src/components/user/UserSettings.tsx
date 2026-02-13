@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, Monitor, Sun, Moon } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
+import { useAccountStore } from '../../stores/accountStore';
 import { useUIStore } from '../../stores/uiStore';
 import { useVoiceStore } from '../../stores/voiceStore';
 import { useMediaDevices } from '../../hooks/useMediaDevices';
 import { APP_NAME } from '../../lib/constants';
+import { hasAccount as hasLocalCryptoAccount } from '../../lib/account';
 import { isAdmin } from '../../types';
 import { adminApi } from '../../api/admin';
 import { cn } from '../../lib/utils';
@@ -26,6 +29,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; adminOnly?: boolean }[] =
 ];
 
 export function UserSettings({ onClose }: UserSettingsProps) {
+  const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState<SettingsSection>('account');
   const user = useAuthStore(s => s.user);
   const settings = useAuthStore(s => s.settings);
@@ -33,6 +37,8 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   const fetchSettings = useAuthStore(s => s.fetchSettings);
   const updateSettings = useAuthStore(s => s.updateSettings);
   const updateUser = useAuthStore(s => s.updateUser);
+  const accountPublicKey = useAccountStore((s) => s.publicKey);
+  const accountUnlocked = useAccountStore((s) => s.isUnlocked);
   const setThemeUI = useUIStore((s) => s.setTheme);
   const [theme, setTheme] = useState<'dark' | 'light' | 'amoled'>('dark');
   const [displayName, setDisplayName] = useState('');
@@ -44,6 +50,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   const [capturingKeybind, setCapturingKeybind] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [statusText, setStatusText] = useState<string | null>(null);
+  const cryptoAuthEnabled = settings?.crypto_auth_enabled === true;
   const {
     audioInputDevices,
     audioOutputDevices,
@@ -58,6 +65,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   const userIsAdmin = user ? isAdmin(user.flags ?? 0) : false;
   const [restartConfirm, setRestartConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const localCryptoAccountReady = Boolean(accountPublicKey) || hasLocalCryptoAccount();
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 768px)').matches;
@@ -165,6 +173,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         theme,
         locale,
         message_display_compact: messageCompact,
+        crypto_auth_enabled: cryptoAuthEnabled,
         notifications: {
           ...mergedNotifications,
           audioInputDeviceId: selectedAudioInput,
@@ -176,6 +185,30 @@ export function UserSettings({ onClose }: UserSettingsProps) {
       setStatusText('Settings saved.');
     } catch {
       setStatusText('Failed to save settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCryptoSecurityToggle = async (enabled: boolean) => {
+    if (!localCryptoAccountReady) return;
+    setSaving(true);
+    try {
+      await updateSettings({
+        theme,
+        locale,
+        message_display_compact: messageCompact,
+        crypto_auth_enabled: enabled,
+        notifications: {
+          ...mergedNotifications,
+          audioInputDeviceId: selectedAudioInput,
+          audioOutputDeviceId: selectedAudioOutput,
+        },
+        keybinds: mergedKeybinds,
+      });
+      setStatusText(enabled ? 'Device crypto security enabled.' : 'Device crypto security disabled.');
+    } catch {
+      setStatusText('Failed to update device crypto security.');
     } finally {
       setSaving(false);
     }
@@ -339,6 +372,54 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                       {messageCompact ? 'Compact' : 'Comfortable'}
                     </div>
                   </div>
+                </div>
+                <div className="mt-6 rounded-2xl border border-border-subtle bg-bg-tertiary/80 p-6">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                        Device Crypto Security (Optional)
+                      </div>
+                      <div className="mt-1 text-sm text-text-muted">
+                        When enabled, this account can use local key unlock and challenge-response sign-in.
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      on={cryptoAuthEnabled}
+                      onToggle={() => handleCryptoSecurityToggle(!cryptoAuthEnabled)}
+                      disabled={!localCryptoAccountReady || saving}
+                    />
+                  </div>
+
+                  {!localCryptoAccountReady && (
+                    <div className="rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+                      <div className="text-sm text-text-muted">
+                        You have not set up a local crypto identity for this account yet.
+                      </div>
+                      <button
+                        className="btn-primary mt-3"
+                        onClick={() => {
+                          onClose();
+                          navigate('/setup?migrate=1');
+                        }}
+                      >
+                        Set Up Local Identity
+                      </button>
+                    </div>
+                  )}
+
+                  {localCryptoAccountReady && (
+                    <div className="rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5 text-sm">
+                      {cryptoAuthEnabled ? (
+                        <span className="text-text-primary">
+                          Security mode is enabled. {accountUnlocked ? 'Identity is currently unlocked.' : 'Identity is currently locked.'}
+                        </span>
+                      ) : (
+                        <span className="text-text-muted">
+                          Security mode is disabled. This account signs in with username/password only.
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -627,14 +708,21 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   );
 }
 
-function ToggleSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+function ToggleSwitch({ on, onToggle, disabled = false }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onToggle}
+      disabled={disabled}
       className="relative h-6 w-11 rounded-full border transition-colors"
       style={{
-        backgroundColor: on ? 'var(--accent-success)' : 'var(--interactive-muted)',
+        backgroundColor: disabled
+          ? 'var(--interactive-muted)'
+          : on
+            ? 'var(--accent-success)'
+            : 'var(--interactive-muted)',
         borderColor: on ? 'color-mix(in srgb, var(--accent-success) 75%, white 25%)' : 'var(--border-subtle)',
+        opacity: disabled ? 0.6 : 1,
+        cursor: disabled ? 'not-allowed' : 'pointer',
       }}
     >
       <div

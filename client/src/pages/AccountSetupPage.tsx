@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAccountStore } from '../stores/accountStore';
 import { useAuthStore } from '../stores/authStore';
 import { useServerListStore } from '../stores/serverListStore';
-import { getStoredServerUrl } from '../lib/apiBaseUrl';
+import { getStoredServerUrl, getCurrentOriginServerUrl, setStoredServerUrl } from '../lib/apiBaseUrl';
 import { authApi } from '../api/auth';
 import { MIN_PASSWORD_LENGTH } from '../lib/constants';
 
@@ -68,10 +68,17 @@ export function AccountSetupPage() {
         }
 
         // Add current server to multi-server list
-        const serverUrl = getStoredServerUrl();
+        const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
         if (serverUrl) {
+          setStoredServerUrl(serverUrl);
           const token = localStorage.getItem('token');
-          useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
+          let serverName = serverUrl;
+          try {
+            serverName = new URL(serverUrl).host;
+          } catch {
+            // Keep raw URL as name if parsing fails.
+          }
+          useServerListStore.getState().addServer(serverUrl, serverName, token || undefined);
         }
       }
 
@@ -147,12 +154,12 @@ export function AccountSetupPage() {
       <form onSubmit={handleCreate} className="auth-card mx-auto w-full max-w-md">
         <div className="mb-7 text-center">
           <h1 className="text-3xl font-bold leading-tight text-text-primary">
-            {isMigration ? 'Secure Your Account' : 'Create Your Account'}
+            {isMigration ? 'Secure Your Account' : 'Set Up Local Identity'}
           </h1>
           <p className="mt-1.5 text-sm text-text-muted">
             {isMigration
               ? 'Set up a cryptographic identity for your existing account. This lets you sign in to any server without a password.'
-              : 'Your account is a cryptographic identity stored on your device. No email needed.'}
+              : 'Optional: create a cryptographic identity on this device for challenge-response sign-in.'}
           </p>
         </div>
 
@@ -225,7 +232,7 @@ export function AccountSetupPage() {
         </label>
 
         <button type="submit" disabled={loading} className="btn-primary w-full min-h-[2.9rem]">
-          {loading ? 'Creating...' : isMigration ? 'Secure Account' : 'Create Account'}
+          {loading ? 'Creating...' : isMigration ? 'Secure Account' : 'Create Identity'}
         </button>
 
         {!isMigration && (

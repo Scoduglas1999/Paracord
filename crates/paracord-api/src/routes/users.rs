@@ -81,6 +81,7 @@ pub async fn get_settings(
             "custom_css": s.custom_css,
             "status": "online",
             "custom_status": null,
+            "crypto_auth_enabled": s.crypto_auth_enabled,
             "notifications": s.notifications,
             "keybinds": s.keybinds,
         })))
@@ -93,6 +94,7 @@ pub async fn get_settings(
             "custom_css": null,
             "status": "online",
             "custom_status": null,
+            "crypto_auth_enabled": false,
             "notifications": {},
             "keybinds": {},
         })))
@@ -107,6 +109,7 @@ pub struct UpdateSettingsRequest {
     pub custom_css: Option<String>,
     pub status: Option<String>,
     pub custom_status: Option<String>,
+    pub crypto_auth_enabled: Option<bool>,
     pub notifications: Option<serde_json::Value>,
     pub keybinds: Option<serde_json::Value>,
 }
@@ -116,10 +119,32 @@ pub async fn update_settings(
     auth: AuthUser,
     Json(body): Json<UpdateSettingsRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let theme = body.theme.as_deref().unwrap_or("dark");
-    let locale = body.locale.as_deref().unwrap_or("en-US");
-    let message_display = if body.message_display_compact.unwrap_or(false) {
-        "compact"
+    let existing = paracord_db::users::get_user_settings(&state.db, auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let theme = body
+        .theme
+        .as_deref()
+        .or_else(|| existing.as_ref().map(|s| s.theme.as_str()))
+        .unwrap_or("dark");
+    let locale = body
+        .locale
+        .as_deref()
+        .or_else(|| existing.as_ref().map(|s| s.locale.as_str()))
+        .unwrap_or("en-US");
+    let message_display = if let Some(is_compact) = body.message_display_compact {
+        if is_compact {
+            "compact"
+        } else {
+            "cozy"
+        }
+    } else if let Some(existing_settings) = existing.as_ref() {
+        if existing_settings.message_display == "compact" {
+            "compact"
+        } else {
+            "cozy"
+        }
     } else {
         "cozy"
     };
@@ -131,6 +156,7 @@ pub async fn update_settings(
         locale,
         message_display,
         body.custom_css.as_deref(),
+        body.crypto_auth_enabled,
         body.notifications.as_ref(),
         body.keybinds.as_ref(),
     )
@@ -145,6 +171,7 @@ pub async fn update_settings(
         "custom_css": settings.custom_css,
         "status": body.status.unwrap_or_else(|| "online".to_string()),
         "custom_status": body.custom_status,
+        "crypto_auth_enabled": settings.crypto_auth_enabled,
         "notifications": settings.notifications,
         "keybinds": settings.keybinds,
     })))

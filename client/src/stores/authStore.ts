@@ -7,6 +7,7 @@ interface AuthState {
   token: string | null;
   user: User | null;
   settings: UserSettings | null;
+  hasFetchedSettings: boolean;
   isLoading: boolean;
   error: string | null;
 
@@ -26,6 +27,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       user: null,
       settings: null,
+      hasFetchedSettings: false,
       isLoading: false,
       error: null,
 
@@ -66,7 +68,7 @@ export const useAuthStore = create<AuthState>()(
 
       logout: () => {
         localStorage.removeItem('token');
-        set({ token: null, user: null, settings: null });
+        set({ token: null, user: null, settings: null, hasFetchedSettings: false });
       },
 
       fetchUser: async () => {
@@ -86,15 +88,15 @@ export const useAuthStore = create<AuthState>()(
       fetchSettings: async () => {
         try {
           const { data } = await authApi.getSettings();
-          set({ settings: data });
+          set({ settings: data, hasFetchedSettings: true });
         } catch {
-          /* ignore */
+          set({ hasFetchedSettings: true });
         }
       },
 
       updateSettings: async (settingsData) => {
         const { data } = await authApi.updateSettings(settingsData);
-        set({ settings: data });
+        set({ settings: data, hasFetchedSettings: true });
       },
 
       clearError: () => set({ error: null }),

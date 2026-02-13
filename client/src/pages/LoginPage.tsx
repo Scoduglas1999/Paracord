@@ -3,7 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useAccountStore } from '../stores/accountStore';
 import { useServerListStore } from '../stores/serverListStore';
-import { getStoredServerUrl, clearStoredServerUrl } from '../lib/apiBaseUrl';
+import {
+  getStoredServerUrl,
+  getCurrentOriginServerUrl,
+  setStoredServerUrl,
+  clearStoredServerUrl,
+} from '../lib/apiBaseUrl';
 import { hasAccount } from '../lib/account';
 import { authApi } from '../api/auth';
 
@@ -14,7 +19,7 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
-  const serverUrl = getStoredServerUrl();
+  const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
 
   const handleChangeServer = () => {
     clearStoredServerUrl();
@@ -42,10 +47,20 @@ export function LoginPage() {
 
       // Add to server list if not already there
       if (serverUrl) {
-        const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
+        setStoredServerUrl(serverUrl);
+        const serverStore = useServerListStore.getState();
+        const existingServer = serverStore.getServerByUrl(serverUrl);
+        const token = localStorage.getItem('token');
         if (!existingServer) {
-          const token = localStorage.getItem('token');
-          useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
+          let serverName = serverUrl;
+          try {
+            serverName = new URL(serverUrl).host;
+          } catch {
+            // Keep raw URL as name if parsing fails.
+          }
+          serverStore.addServer(serverUrl, serverName, token || undefined);
+        } else if (token) {
+          serverStore.updateToken(existingServer.id, token);
         }
       }
 
