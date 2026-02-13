@@ -147,23 +147,20 @@ jobs:
             - livekit-server
           EOF
 
-          (
-            cd dist
-            zip -r "paracord-server-linux-x64-${version}.zip" paracord-server
-          )
+          tar -czf "dist/paracord-server-linux-x64-${version}.tar.gz" -C dist paracord-server
 
-      - name: Verify LiveKit included in Linux zip
+      - name: Verify LiveKit included in Linux tarball
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          unzip -l "dist/paracord-server-linux-x64-${version}.zip" | grep -q "livekit-server"
+          tar -tzf "dist/paracord-server-linux-x64-${version}.tar.gz" | grep -q "livekit-server"
 
       - name: Upload server artifact (Linux)
         uses: actions/upload-artifact@v4
         with:
           name: server-linux
-          path: dist/paracord-server-linux-x64-*.zip
+          path: dist/paracord-server-linux-x64-*.tar.gz
 
   build-client-windows:
     name: Build Client (Windows x64)
@@ -297,14 +294,14 @@ jobs:
             | Component | File |
             |-----------|------|
             | Server (Windows x64) | `paracord-server-windows-x64-*.zip` |
-            | Server (Linux x64) | `paracord-server-linux-x64-*.zip` |
+            | Server (Linux x64) | `paracord-server-linux-x64-*.tar.gz` |
             | Client Installer (Windows) | `Paracord-Setup-*.exe` |
             | Client MSI (Windows) | `Paracord_*_x64_en-US.msi` |
             | Client AppImage (Linux) | `Paracord_*.AppImage` |
             | Client deb (Linux) | `paracord_*_amd64.deb` |
           files: |
             artifacts/server-windows/*.zip
-            artifacts/server-linux/*.zip
+            artifacts/server-linux/*.tar.gz
             artifacts/client-windows-installer/*.exe
             artifacts/client-windows-msi/*.msi
             artifacts/client-linux-appimage/*.AppImage
