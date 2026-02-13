@@ -15,6 +15,8 @@
 
 ---
 
+> **NOTE**: This app is in its infancy, and was literally made in my free time after my real job in around 72 hours. I will continue updating it as I actually see potential, but just know that for the time being things won't be perfect. There may be bugs, UI elements might feel like they're not totally fleshed out. For now, just kind of roll with it. If you do have any feature suggestions, by all means I'm all ears. 
+
 ## The Why
 
 On February 9th, 2026, Discord's CEO announced that they would be starting to roll out age verification in the coming month. This meant that all accounts would be labeled as "teen" and one would have to prove they were an adult through an AI powered face scan or uploading government issued ID. The privacy implications of this should be incredibly obvious, and at least my group of friends that regularly used Discord were 100% against giving Discord any of this information, and frankly, didn't feel they should have to. But Discord doesn't have any magic that makes them untouchable in the software space, so here we are, a completely decentralized Discord alternative, gotten up and running in under a week from their announcement. Many new features will be coming to Paracord at breakneck speed, and it already includes many of Nitro's big features like high resolution streaming, just without the paywall :).
