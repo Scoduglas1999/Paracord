@@ -17,4 +17,6 @@ export const voiceApi = {
     channelId: string,
     options?: { title?: string; quality_preset?: string }
   ) => apiClient.post<VoiceJoinResponse>(`/voice/${channelId}/stream`, options),
+  stopStream: (channelId: string) =>
+    apiClient.post(`/voice/${channelId}/stream/stop`),
 };

@@ -9,6 +9,7 @@ import { useGuildStore } from '../../stores/guildStore';
 import { useAuthStore } from '../../stores/authStore';
 import type { AuditLogEntry, Ban, Channel, Guild, Invite, Member, Role } from '../../types';
 import { isAllowedImageMimeType, isSafeImageDataUrl } from '../../lib/security';
+import { cn } from '../../lib/utils';
 
 interface GuildSettingsProps {
   guildId: string;
@@ -58,6 +59,10 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
   const [iconDataUrl, setIconDataUrl] = useState<string | null>(null);
   const [banReasonInput, setBanReasonInput] = useState('');
   const [banConfirmUserId, setBanConfirmUserId] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') onClose();
@@ -134,6 +139,15 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       setActiveSection(requested);
     }
   }, [location.search]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const updateIsMobile = () => setIsMobile(mediaQuery.matches);
+    updateIsMobile();
+    mediaQuery.addEventListener('change', updateIsMobile);
+    return () => mediaQuery.removeEventListener('change', updateIsMobile);
+  }, []);
 
   const filteredMembers = useMemo(() => {
     if (!memberSearch.trim()) return members;
@@ -298,43 +312,79 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
 
   return (
     <div
-      className="fixed inset-0 z-50 flex bg-bg-tertiary/95 backdrop-blur-sm"
+      className={cn(
+        'fixed inset-0 z-50 bg-bg-tertiary/95 backdrop-blur-sm',
+        isMobile ? 'flex flex-col' : 'flex'
+      )}
       onKeyDown={handleKeyDown}
       tabIndex={-1}
     >
       <div className="pointer-events-none absolute -left-20 top-0 h-72 w-72 rounded-full bg-accent-primary/20 blur-[120px]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full bg-accent-success/10 blur-[140px]" />
-      <div className="relative z-10 w-72 shrink-0 overflow-y-auto border-r border-border-subtle/70 bg-bg-secondary/65 px-4 py-10">
-        <div className="ml-auto w-full max-w-[236px]">
-          <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-            {guild?.name || guildName}
-          </div>
-          {NAV_ITEMS.map(item => (
-            <button
-              key={item.id}
-              onClick={() => setActiveSection(item.id)}
-              className={`settings-nav-item ${activeSection === item.id ? 'active' : ''}`}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </div>
 
-      <div className="relative z-10 flex-1 overflow-y-auto px-6 py-10">
-        <div className="w-full">
-        <div className="fixed right-6 top-5 z-20 flex flex-col items-center gap-1">
-          <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
-            <X size={18} />
-          </button>
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+      {isMobile ? (
+        <div className="relative z-10 border-b border-border-subtle/70 bg-bg-secondary/70 px-3 pb-2.5 pt-[calc(var(--safe-top)+0.75rem)]">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="truncate text-xs font-semibold uppercase tracking-wide text-text-muted">
+              {guild?.name || guildName}
+            </div>
+            <button onClick={onClose} className="command-icon-btn h-9 w-9 rounded-full border border-border-strong bg-bg-secondary/75">
+              <X size={17} />
+            </button>
+          </div>
+          <div className="scrollbar-thin flex items-center gap-2 overflow-x-auto pb-1">
+            {NAV_ITEMS.map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={cn(
+                  'inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-sm font-semibold transition-colors',
+                  activeSection === item.id
+                    ? 'border-border-strong bg-bg-mod-strong text-text-primary'
+                    : 'border-border-subtle/70 bg-bg-mod-subtle text-text-secondary'
+                )}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
+      ) : (
+        <div className="relative z-10 w-72 shrink-0 overflow-y-auto border-r border-border-subtle/70 bg-bg-secondary/65 px-4 py-10">
+          <div className="ml-auto w-full max-w-[236px]">
+            <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+              {guild?.name || guildName}
+            </div>
+            {NAV_ITEMS.map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={`settings-nav-item ${activeSection === item.id ? 'active' : ''}`}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className={cn('relative z-10 flex-1 overflow-y-auto', isMobile ? 'px-3 pb-[calc(var(--safe-bottom)+1rem)] pt-3' : 'px-6 py-10')}>
+        <div className="w-full">
+        {!isMobile && (
+          <div className="fixed right-6 top-5 z-20 flex flex-col items-center gap-1">
+            <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
+              <X size={18} />
+            </button>
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+          </div>
+        )}
 
         {error && (
           <div className="mb-3 rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-3 py-2 text-sm font-medium text-accent-danger">{error}</div>
         )}
-        <div className="mb-5 flex items-center gap-2.5">
+        <div className="mb-5 flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => void refreshAll()}
             className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle px-4 text-sm font-semibold text-text-secondary hover:bg-bg-mod-strong hover:text-text-primary"
@@ -346,9 +396,9 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         </div>
 
         {activeSection === 'overview' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Server Overview</h2>
-            <div className="flex gap-6">
+            <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
               <div className="flex-shrink-0">
                 <label className="cursor-pointer">
                   <input type="file" accept="image/*" className="hidden" onChange={onGuildIconChange} />
@@ -386,7 +436,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 </label>
               </div>
             </div>
-            <div className="mt-6 flex items-center gap-2.5">
+            <div className="mt-6 flex flex-wrap items-center gap-2.5">
               <button className="btn-primary" onClick={() => void saveOverview()}>Save Changes</button>
               {guild && authUser && guild.owner_id !== authUser.id && (
                 <button className="btn-ghost" onClick={() => void handleLeaveGuild()}>
@@ -419,7 +469,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'roles' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Roles</h2>
             <div className="space-y-2.5">
               {roles.map((role) => {
@@ -427,7 +477,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 const isEditing = editingRoleId === role.id;
                 return (
                   <div key={role.id}>
-                    <div className="flex items-center gap-3.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+                    <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
                       <GripVertical size={16} style={{ color: 'var(--text-muted)' }} />
                       <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 border border-border-subtle" style={{ backgroundColor: roleColor }} />
                       <input
@@ -456,7 +506,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                       )}
                     </div>
                     {isEditing && (
-                      <div className="ml-8 mt-2 rounded-xl border border-border-subtle bg-bg-primary/60 p-4 space-y-4">
+                      <div className="ml-0 mt-2 rounded-xl border border-border-subtle bg-bg-primary/60 p-4 space-y-4 sm:ml-8">
                         <div className="flex items-center gap-4">
                           <label className="block">
                             <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Color</span>
@@ -477,7 +527,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                             </div>
                           </label>
                         </div>
-                        <div className="flex items-center gap-6">
+                        <div className="flex flex-wrap items-center gap-4 sm:gap-6">
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
@@ -499,7 +549,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                         </div>
                         <div>
                           <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Permissions</span>
-                          <div className="mt-2 grid grid-cols-2 gap-2">
+                          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                             {[
                               { name: 'Manage Channels', flag: 1 << 4 },
                               { name: 'Manage Server', flag: 1 << 5 },
@@ -545,7 +595,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 );
               })}
             </div>
-            <div className="mt-6 flex items-center gap-3">
+            <div className="mt-6 flex flex-wrap items-center gap-3">
               <input className="input-field flex-1" placeholder="New role name" value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} />
               <input
                 type="color"
@@ -560,13 +610,13 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'members' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-4">Members</h2>
             <input type="text" placeholder="Search members" className="input-field mb-4" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
             <div className="space-y-2">
               {filteredMembers.map((member) => (
                 <div key={member.user.id}>
-                  <div className="flex items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
+                  <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
                     <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ backgroundColor: 'var(--accent-primary)' }}>
                       {member.user.username.charAt(0).toUpperCase()}
                     </div>
@@ -580,7 +630,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="ml-auto flex items-center gap-1">
                       {member.roles && member.roles.length > 0 && (
                         <div className="hidden sm:flex items-center gap-1 mr-2">
                           {member.roles.slice(0, 3).map((roleId) => {
@@ -650,7 +700,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'channels' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-4">Channels</h2>
             <div className="space-y-2">
               {channels.sort((a, b) => a.position - b.position).map((channel) => (
@@ -661,7 +711,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                   <button className="icon-btn" onClick={() => void deleteChannel(channel.id)}><Trash2 size={14} /></button>
                 </div>
               ))}
-              <div className="mt-2 flex items-center gap-2.5">
+              <div className="mt-2 flex flex-wrap items-center gap-2.5">
                 <input className="input-field flex-1" placeholder="New channel name" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} />
                 <select className="select-field min-w-[8.75rem]" value={newChannelType} onChange={(e) => setNewChannelType(e.target.value as 'text' | 'voice')}>
                   <option value="text">Text</option>
@@ -674,25 +724,25 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'invites' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
-            <div className="flex items-center justify-between mb-4">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <h2 className="settings-section-title !mb-0">Invites</h2>
               <button className="btn-primary text-sm" onClick={() => void createInvite()}>
                 Create Invite
               </button>
             </div>
             <div className="overflow-hidden rounded-xl border border-border-subtle">
-              <div className="flex items-center bg-bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-text-muted">
+              <div className="hidden items-center bg-bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-text-muted sm:flex">
                 <span className="flex-1">Code</span>
                 <span className="w-24">Uses</span>
                 <span className="w-24">Expires</span>
                 <span className="w-16"></span>
               </div>
               {invites.map((invite) => (
-                <div key={invite.code} className="flex items-center gap-2 px-4 py-3 text-sm" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  <span className="flex-1" style={{ color: 'var(--text-primary)' }}>{invite.code}</span>
-                  <span className="w-24" style={{ color: 'var(--text-muted)' }}>{invite.uses}/{invite.max_uses || 'inf'}</span>
-                  <span className="w-24" style={{ color: 'var(--text-muted)' }}>{invite.max_age || 'never'}</span>
+                <div key={invite.code} className="flex flex-col items-start gap-1.5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-2" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                  <span className="flex-1 font-semibold sm:font-normal" style={{ color: 'var(--text-primary)' }}>{invite.code}</span>
+                  <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Uses: {invite.uses}/{invite.max_uses || 'inf'}</span>
+                  <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Expires: {invite.max_age || 'never'}</span>
                   <button
                     className="inline-flex h-9 items-center justify-center rounded-lg border border-transparent px-3 text-sm font-semibold text-accent-danger transition-colors hover:border-accent-danger/35 hover:bg-accent-danger/12"
                     onClick={() => void revokeInvite(invite.code)}
@@ -712,11 +762,11 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'bans' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-4">Bans</h2>
             <div className="space-y-2">
               {bans.map((ban) => (
-                <div key={ban.user.id} className="flex items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
+                <div key={ban.user.id} className="flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
                   <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0" style={{ backgroundColor: 'var(--accent-danger)' }}>
                     {ban.user.username.charAt(0).toUpperCase()}
                   </div>
@@ -740,7 +790,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )}
 
         {activeSection === 'audit-log' && (
-          <div className="settings-surface-card min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-4">Audit Log</h2>
             <div className="space-y-2">
               {auditEntries.map((entry) => (
@@ -766,3 +816,4 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     </div>
   );
 }
+

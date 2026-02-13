@@ -28,9 +28,8 @@ export function LoginPage() {
     try {
       await login(email, password);
 
-      // Check if user already has a local keypair
+      // If the user already has a local keypair, attach it to this server account.
       if (hasAccount()) {
-        // Already has a client-side account — attach the pubkey to this server account
         const account = useAccountStore.getState();
         if (account.isUnlocked && account.publicKey) {
           try {
@@ -39,22 +38,20 @@ export function LoginPage() {
             // Non-fatal: pubkey may already be attached or server may not support it yet
           }
         }
-
-        // Also add to server list if not already there
-        if (serverUrl) {
-          const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
-          if (!existingServer) {
-            const token = localStorage.getItem('token');
-            useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
-          }
-        }
-
-        navigate('/app');
-      } else {
-        // No local keypair — send to account setup in migration mode
-        // This will create a keypair and attach it to their existing server account
-        navigate('/setup?migrate=1');
       }
+
+      // Add to server list if not already there
+      if (serverUrl) {
+        const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
+        if (!existingServer) {
+          const token = localStorage.getItem('token');
+          useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
+        }
+      }
+
+      // Go straight to the app — legacy token auth works without a local
+      // keypair. Users can set up a local crypto identity later in Settings.
+      navigate('/app');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Invalid email or password');
     } finally {

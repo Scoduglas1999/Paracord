@@ -11,16 +11,26 @@ class SystemAudioProcessor extends AudioWorkletProcessor {
   }
   process(_inputs, outputs) {
     const output = outputs[0];
-    if (!output || output.length === 0) return true;
-    const channel = output[0];
-    const needed = channel.length;
-    if (this._buffer.length >= needed) {
-      const chunk = this._buffer.splice(0, needed);
-      channel.set(chunk);
+    if (!output || output.length < 2) return true;
+    const left = output[0];
+    const right = output[1];
+    const needed = left.length;
+    // Buffer contains interleaved stereo: L, R, L, R, ...
+    const samplesNeeded = needed * 2;
+    if (this._buffer.length >= samplesNeeded) {
+      const chunk = this._buffer.splice(0, samplesNeeded);
+      for (let i = 0; i < needed; i++) {
+        left[i] = chunk[i * 2];
+        right[i] = chunk[i * 2 + 1];
+      }
     } else {
-      const available = this._buffer.length;
-      if (available > 0) {
-        channel.set(this._buffer.splice(0, available));
+      const pairs = Math.floor(this._buffer.length / 2);
+      if (pairs > 0) {
+        const chunk = this._buffer.splice(0, pairs * 2);
+        for (let i = 0; i < pairs; i++) {
+          left[i] = chunk[i * 2];
+          right[i] = chunk[i * 2 + 1];
+        }
       }
     }
     return true;
@@ -48,10 +58,11 @@ export class SystemAudioBridge {
     this.workletNode = new AudioWorkletNode(this.ctx, 'system-audio-processor', {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [1],
+      outputChannelCount: [2],
     });
 
     this.destination = this.ctx.createMediaStreamDestination();
+
     this.workletNode.connect(this.destination);
 
     return this.destination.stream.getAudioTracks()[0];

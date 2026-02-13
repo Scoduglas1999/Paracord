@@ -1,6 +1,6 @@
 [package]
 name = "paracord-desktop"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.85"
 
@@ -19,6 +19,15 @@ serde_json = "1"
 wasapi = "0.22"
 webview2-com = "0.38"
 windows-core = "0.61"
+windows = { version = "0.61", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"

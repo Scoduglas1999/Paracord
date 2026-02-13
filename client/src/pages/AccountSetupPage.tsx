@@ -230,15 +230,15 @@ export function AccountSetupPage() {
 
         {!isMigration && (
           <p className="mt-5 text-center text-sm text-text-muted">
-            Already have an account?{' '}
+            Already have a server account?{' '}
             <button
               type="button"
-              onClick={() => navigate('/unlock')}
+              onClick={() => navigate('/login')}
               className="font-semibold text-text-link hover:underline"
             >
               Sign in
             </button>
-            {' or '}
+            {' \u00b7 '}
             <button
               type="button"
               onClick={() => navigate('/recover')}

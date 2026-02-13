@@ -20,7 +20,7 @@ export async function startNativeSystemAudio(): Promise<MediaStreamTrack | null>
     await invoke('start_system_audio_capture', { onAudio: channel });
 
     activeBridge = bridge;
-    console.info('[voice] Native system audio capture started');
+    console.info('[voice] Native system audio capture started (stereo)');
     return track;
   } catch (err) {
     console.warn('[voice] Failed to start native system audio capture:', err);
@@ -46,3 +46,4 @@ export async function stopNativeSystemAudio(): Promise<void> {
   activeBridge = null;
   console.info('[voice] Native system audio capture stopped');
 }
+

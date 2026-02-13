@@ -81,15 +81,15 @@ export function InviteModal({ guildName, channelId, onClose }: InviteModalProps)
     <div
       className="modal-overlay"
       onClick={onClose}
-      style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
+      style={{ position: 'fixed', inset: 0, width: '100vw', height: '100dvh' }}
     >
       <div
-        className="glass-modal modal-content w-[min(92vw,32rem)] overflow-hidden rounded-2xl border"
+        className="glass-modal modal-content max-h-[min(86dvh,42rem)] w-[min(92vw,32rem)] overflow-auto rounded-2xl border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="relative px-7 pt-7 pb-3">
-          <button onClick={onClose} className="icon-btn absolute right-5 top-5">
+        <div className="relative px-4 pb-3 pt-5 sm:px-7 sm:pt-7">
+          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5">
             <X size={20} />
           </button>
           <h2 className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -98,7 +98,7 @@ export function InviteModal({ guildName, channelId, onClose }: InviteModalProps)
         </div>
 
         {/* Body */}
-        <div className="px-7 pb-7">
+        <div className="px-4 pb-5 sm:px-7 sm:pb-7">
           {/* Portable invite link (primary) */}
           <div className="mt-3">
             <label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>

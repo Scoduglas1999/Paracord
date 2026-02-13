@@ -267,6 +267,37 @@ pub async fn start_stream(
         .await
         .map_err(ApiError::Internal)?;
 
+    // Persist stream state in DB and notify all guild members.
+    let _ = paracord_db::voice_states::update_voice_state(
+        &state.db,
+        auth.user_id,
+        Some(guild_id),
+        false,
+        false,
+        true,
+        false,
+    )
+    .await;
+
+    state.event_bus.dispatch(
+        "VOICE_STATE_UPDATE",
+        json!({
+            "user_id": auth.user_id.to_string(),
+            "channel_id": channel_id.to_string(),
+            "guild_id": Some(guild_id.to_string()),
+            "self_mute": false,
+            "self_deaf": false,
+            "self_stream": true,
+            "self_video": false,
+            "suppress": false,
+            "mute": false,
+            "deaf": false,
+            "username": &user.username,
+            "avatar_hash": user.avatar_hash,
+        }),
+        Some(guild_id),
+    );
+
     let livekit_url = resolve_livekit_client_url(&headers, &state.config.livekit_public_url);
 
     Ok(Json(json!({
@@ -275,6 +306,66 @@ pub async fn start_stream(
         "room_name": stream_resp.room_name,
         "quality_preset": requested_quality,
     })))
+}
+
+pub async fn stop_stream(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(channel_id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    let channel = paracord_db::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+
+    if channel.channel_type != 2 {
+        return Err(ApiError::BadRequest("Not a voice channel".into()));
+    }
+
+    let guild_id = channel.guild_id();
+
+    // Clear stream state in the voice manager.
+    state.voice.stop_stream(channel_id, auth.user_id).await;
+
+    // Update DB voice state.
+    if let Some(gid) = guild_id {
+        let _ = paracord_db::voice_states::update_voice_state(
+            &state.db,
+            auth.user_id,
+            Some(gid),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+    }
+
+    // Notify all guild members that the stream ended.
+    let user = paracord_db::users::get_user_by_id(&state.db, auth.user_id)
+        .await
+        .ok()
+        .flatten();
+    state.event_bus.dispatch(
+        "VOICE_STATE_UPDATE",
+        json!({
+            "user_id": auth.user_id.to_string(),
+            "channel_id": channel_id.to_string(),
+            "guild_id": guild_id.map(|id| id.to_string()),
+            "self_mute": false,
+            "self_deaf": false,
+            "self_stream": false,
+            "self_video": false,
+            "suppress": false,
+            "mute": false,
+            "deaf": false,
+            "username": user.as_ref().map(|u| u.username.as_str()),
+            "avatar_hash": user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
+        }),
+        guild_id,
+    );
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn leave_voice(

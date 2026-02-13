@@ -443,6 +443,16 @@ impl VoiceManager {
         }
     }
 
+    /// Check whether a participant is currently streaming in a channel.
+    pub async fn get_participant_stream_state(&self, channel_id: i64, user_id: i64) -> bool {
+        let rooms = self.rooms.read().await;
+        rooms
+            .get(&channel_id)
+            .and_then(|r| r.participants.get(&user_id))
+            .map(|p| p.self_stream)
+            .unwrap_or(false)
+    }
+
     /// Get the LiveKit room name for a channel, if active.
     pub async fn get_room_name(&self, channel_id: i64) -> Option<String> {
         let lk_rooms = self.active_livekit_rooms.read().await;

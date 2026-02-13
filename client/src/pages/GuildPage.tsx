@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Monitor, MonitorOff, PhoneOff, Users } from 'lucide-react';
+import { EyeOff, LayoutList, Monitor, MonitorOff, PanelLeft, PhoneOff, PictureInPicture2, Users } from 'lucide-react';
 import { RoomEvent, Track } from 'livekit-client';
 import { TopBar } from '../components/layout/TopBar';
 import { MessageList } from '../components/message/MessageList';
@@ -46,6 +46,8 @@ function getStreamErrorMessage(error: unknown): string {
   return `Unable to start stream. ${rawMessage || 'Check browser permissions and try again.'}`;
 }
 
+type VideoLayout = 'top' | 'side' | 'pip' | 'hidden';
+
 export function GuildPage() {
   const { guildId, channelId } = useParams();
   const selectGuild = useGuildStore((s) => s.selectGuild);
@@ -74,7 +76,12 @@ export function GuildPage() {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [streamStarting, setStreamStarting] = useState(false);
   const [captureQuality, setCaptureQuality] = useState('1080p60');
+  const [videoLayout, setVideoLayout] = useState<VideoLayout>('top');
   const [activeStreamers, setActiveStreamers] = useState<string[]>([]);
+  const [isPhoneLayout, setIsPhoneLayout] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
   const room = useVoiceStore((s) => s.room);
 
   const channelName = channel?.name || 'general';
@@ -145,7 +152,12 @@ export function GuildPage() {
         next.add(participant.identity);
       }
 
-      setActiveStreamers(Array.from(next));
+      setActiveStreamers((prev) => {
+        if (prev.length === next.size && prev.every((id) => next.has(id))) {
+          return prev;
+        }
+        return Array.from(next);
+      });
     };
 
     recomputeActiveStreamers();
@@ -184,10 +196,35 @@ export function GuildPage() {
     if (watchingSelf && selfStream) {
       return;
     }
-    if (!activeStreamerSet.has(watchedStreamerId)) {
-      setWatchedStreamer(null);
+    if (activeStreamerSet.has(watchedStreamerId)) {
+      return;
     }
+
+    // Track publication/unpublication can briefly flap during reconnects or
+    // source switches. Delay auto-clear to avoid visible viewer flicker.
+    const timeoutId = window.setTimeout(() => {
+      if (!activeStreamerSet.has(watchedStreamerId)) {
+        setWatchedStreamer(null);
+      }
+    }, 1200);
+
+    return () => window.clearTimeout(timeoutId);
   }, [watchedStreamerId, activeStreamerSet, currentUserId, selfStream, setWatchedStreamer]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const updateIsPhoneLayout = () => setIsPhoneLayout(mediaQuery.matches);
+    updateIsPhoneLayout();
+    mediaQuery.addEventListener('change', updateIsPhoneLayout);
+    return () => mediaQuery.removeEventListener('change', updateIsPhoneLayout);
+  }, []);
+
+  useEffect(() => {
+    if (isPhoneLayout && videoLayout === 'side') {
+      setVideoLayout('top');
+    }
+  }, [isPhoneLayout, videoLayout]);
 
   if (isLoading) {
     return (
@@ -204,6 +241,24 @@ export function GuildPage() {
     );
   }
 
+  const streamViewerElement = watchedStreamerId ? (
+    <StreamViewer
+      streamerId={watchedStreamerId}
+      streamerName={watchedStreamerName}
+      expectingStream={Boolean(
+        currentUserId != null &&
+        watchedStreamerId === currentUserId &&
+        selfStream &&
+        !activeStreamerSet.has(watchedStreamerId)
+      )}
+      onStopWatching={() => setWatchedStreamer(null)}
+      onStopStream={() => {
+        stopStream();
+        setStreamError(null);
+      }}
+    />
+  ) : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <TopBar
@@ -212,9 +267,9 @@ export function GuildPage() {
         isVoice={isVoice}
       />
       {isVoice ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-5 text-text-muted">
-          <div className="glass-panel rounded-2xl border p-5">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 text-text-muted sm:gap-3 sm:p-4 md:gap-4 md:p-5">
+          <div className="glass-panel rounded-2xl border p-3 sm:p-4 md:p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-text-secondary">
                   <Users size={19} />
@@ -225,20 +280,20 @@ export function GuildPage() {
                 </div>
               </div>
               {inSelectedVoiceChannel ? (
-                <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-2.5">
                   <button
-                    className="control-pill-btn w-auto"
+                    className="control-pill-btn w-full justify-center sm:w-auto"
                     onClick={() => void leaveChannel()}
                   >
                     <PhoneOff size={16} />
                     Leave Voice
                   </button>
                   {!selfStream ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
                       <select
                         value={captureQuality}
                         onChange={(e) => setCaptureQuality(e.target.value)}
-                        className="h-10 rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 text-sm font-medium text-text-secondary outline-none transition-colors hover:bg-bg-mod-faint"
+                        className="h-10 w-full rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 text-xs font-medium text-text-secondary outline-none transition-colors hover:bg-bg-mod-faint sm:w-auto sm:text-sm"
                         title="Capture quality"
                         disabled={streamStarting}
                       >
@@ -250,7 +305,7 @@ export function GuildPage() {
                         <option value="movie-100">Movie 4K (100 Mbps)</option>
                       </select>
                       <button
-                        className="control-pill-btn w-auto border-accent-primary/50 bg-accent-primary/15 hover:bg-accent-primary/25 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="control-pill-btn w-full justify-center border-accent-primary/50 bg-accent-primary/15 hover:bg-accent-primary/25 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                         disabled={streamStarting}
                         onClick={async () => {
                           setStreamError(null);
@@ -270,7 +325,7 @@ export function GuildPage() {
                     </div>
                   ) : (
                     <button
-                      className="control-pill-btn w-auto border-accent-primary/50 bg-accent-primary/20 hover:bg-accent-primary/30"
+                      className="control-pill-btn w-full justify-center border-accent-primary/50 bg-accent-primary/20 hover:bg-accent-primary/30 sm:w-auto"
                       onClick={() => {
                         stopStream();
                         setStreamError(null);
@@ -282,8 +337,8 @@ export function GuildPage() {
                   )}
                 </div>
               ) : (
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <div className="rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 py-2.5 text-sm font-medium text-text-secondary">
+                <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:gap-2.5">
+                  <div className="w-full rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 py-2.5 text-sm font-medium text-text-secondary sm:w-auto">
                     {voiceJoinPending
                       ? 'Connecting to voice...'
                       : voiceJoinError
@@ -292,7 +347,7 @@ export function GuildPage() {
                   </div>
                   {voiceJoinError && channelId && guildId && (
                     <button
-                      className="control-pill-btn w-auto"
+                      className="control-pill-btn w-full justify-center sm:w-auto"
                       onClick={() => {
                         clearConnectionError();
                         void joinChannel(channelId, guildId);
@@ -310,43 +365,85 @@ export function GuildPage() {
               </div>
             )}
           </div>
-          {inSelectedVoiceChannel && <VideoGrid />}
           {inSelectedVoiceChannel && (
-            <div className="min-h-[300px] flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5 sm:gap-2">
+              {watchedStreamerId && (
+                <div className="flex items-center gap-1.5 overflow-x-auto px-1 pb-0.5">
+                  <span className="text-xs font-medium text-text-muted">View:</span>
+                  {([
+                    { mode: 'top' as const, icon: LayoutList, label: 'Top' },
+                    { mode: 'side' as const, icon: PanelLeft, label: 'Side' },
+                    { mode: 'pip' as const, icon: PictureInPicture2, label: 'PiP' },
+                    { mode: 'hidden' as const, icon: EyeOff, label: 'Hide' },
+                  ]).map(({ mode, icon: Icon, label }) => (
+                    <button
+                      key={mode}
+                      title={label}
+                      onClick={() => setVideoLayout(mode)}
+                      className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${
+                        videoLayout === mode
+                          ? 'border-accent-primary/50 bg-bg-mod-faint text-text-primary'
+                          : 'border-transparent text-text-muted hover:bg-bg-mod-subtle'
+                      }`}
+                    >
+                      <Icon size={14} />
+                      {!isPhoneLayout && label}
+                    </button>
+                  ))}
+                </div>
+              )}
               {watchedStreamerId ? (
-                <StreamViewer
-                  streamerId={watchedStreamerId}
-                  streamerName={watchedStreamerName}
-                  expectingStream={Boolean(
-                    currentUserId != null &&
-                    watchedStreamerId === currentUserId &&
-                    selfStream &&
-                    !activeStreamerSet.has(watchedStreamerId)
-                  )}
-                  onStopWatching={() => setWatchedStreamer(null)}
-                  onStopStream={() => {
-                    stopStream();
-                    setStreamError(null);
-                  }}
-                />
-              ) : (
-                <div className="relative flex h-full min-h-[300px] items-center justify-center overflow-hidden bg-bg-mod-subtle/30">
-                  <div className="pointer-events-none absolute -top-12 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-accent-primary/15 blur-3xl" />
-                  <div className="relative mx-4 flex w-full max-w-md flex-col items-center rounded-2xl border border-border-subtle bg-bg-mod-subtle/70 px-7 py-7 text-center">
-                    <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-border-subtle bg-bg-primary/70 text-text-secondary">
-                      <Monitor size={20} />
+                videoLayout === 'side' ? (
+                  <div className="flex min-h-0 flex-1 flex-col gap-2 md:flex-row">
+                    <div className="min-h-0 max-h-[38vh] flex-1 overflow-hidden rounded-2xl border border-border-subtle md:max-h-none">
+                      <VideoGrid layout="sidebar" />
                     </div>
-                    <div className="text-base font-semibold text-text-primary">Choose a stream from the sidebar</div>
-                    <div className="mt-1 text-sm text-text-secondary">
-                      Use the red <span className="font-semibold text-accent-danger">LIVE</span> buttons beside voice participants to switch streams.
-                    </div>
-                    <div className="mt-4 text-xs text-text-muted">
-                      {activeStreamers.length > 0
-                        ? `${activeStreamers.length} stream${activeStreamers.length === 1 ? '' : 's'} currently live`
-                        : 'No active streams right now'}
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                      {streamViewerElement}
                     </div>
                   </div>
-                </div>
+                ) : videoLayout === 'pip' ? (
+                  <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                    {streamViewerElement}
+                    <div className="absolute bottom-3 right-3 z-10">
+                      <VideoGrid layout="pip" />
+                    </div>
+                  </div>
+                ) : videoLayout === 'hidden' ? (
+                  <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                    {streamViewerElement}
+                  </div>
+                ) : (
+                  <>
+                    <VideoGrid layout="compact" />
+                    <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                      {streamViewerElement}
+                    </div>
+                  </>
+                )
+              ) : (
+                <>
+                  <VideoGrid layout="grid" />
+                  <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                    <div className="relative flex h-full min-h-[240px] items-center justify-center overflow-hidden bg-bg-mod-subtle/30 sm:min-h-[300px]">
+                      <div className="pointer-events-none absolute -top-12 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-accent-primary/15 blur-3xl" />
+                      <div className="relative mx-3 flex w-full max-w-md flex-col items-center rounded-2xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-5 text-center sm:mx-4 sm:px-7 sm:py-7">
+                        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-border-subtle bg-bg-primary/70 text-text-secondary">
+                          <Monitor size={20} />
+                        </div>
+                        <div className="text-base font-semibold text-text-primary">Choose a stream from the sidebar</div>
+                        <div className="mt-1 text-sm text-text-secondary">
+                          Use the red <span className="font-semibold text-accent-danger">LIVE</span> buttons beside voice participants to switch streams.
+                        </div>
+                        <div className="mt-4 text-xs text-text-muted">
+                          {activeStreamers.length > 0
+                            ? `${activeStreamers.length} stream${activeStreamers.length === 1 ? '' : 's'} currently live`
+                            : 'No active streams right now'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           )}

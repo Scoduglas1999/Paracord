@@ -12,14 +12,18 @@ import {
   createAudioAnalyser,
   type AudioCaptureOptions,
   type Participant,
+  type RemoteParticipant,
+  type LocalParticipant,
   type LocalAudioTrack,
   type RemoteTrack,
   type RemoteTrackPublication,
+  type LocalTrackPublication,
+  type TrackPublication,
 } from 'livekit-client';
 import { useAuthStore } from './authStore';
 import { playVoiceJoinSound, playVoiceLeaveSound } from '../lib/voiceSounds';
-import { NoiseGateProcessor } from '../lib/noiseGate';
 import { startNativeSystemAudio, stopNativeSystemAudio } from '../lib/systemAudioCapture';
+import { isTauri } from '../lib/tauriEnv';
 
 const INTERNAL_LIVEKIT_HOSTS = new Set([
   'host.docker.internal',
@@ -92,8 +96,14 @@ let remoteAudioReconcileInterval: ReturnType<typeof setInterval> | null = null;
 let remoteAudioReconcileRoom: Room | null = null;
 let forceRedForCompatibility = false;
 let audioCodecSwitchCooldownUntil = 0;
-let activeNoiseGate: NoiseGateProcessor | null = null;
+let activeRoomListenerCleanup: (() => void) | null = null;
 type MicUplinkState = 'idle' | 'sending' | 'stalled' | 'recovering' | 'muted' | 'no_track';
+
+function clearActiveRoomListeners(): void {
+  if (!activeRoomListenerCleanup) return;
+  activeRoomListenerCleanup();
+  activeRoomListenerCleanup = null;
+}
 
 function isRedMime(mime: string | undefined): boolean {
   return (mime || '').toLowerCase().includes('audio/red');
@@ -466,17 +476,18 @@ function synthesizeVoiceStateFromParticipant(
   let hasScreenShare = false;
   let hasCamera = false;
   for (const pub of participant.videoTrackPublications.values()) {
+    const hasUsableTrack = !pub.track || pub.track.mediaStreamTrack?.readyState !== 'ended';
     if (
       pub.source === Track.Source.ScreenShare &&
-      pub.track &&
-      pub.track.mediaStreamTrack?.readyState !== 'ended'
+      !pub.isMuted &&
+      hasUsableTrack
     ) {
       hasScreenShare = true;
     }
     if (
       pub.source === Track.Source.Camera &&
-      pub.track &&
-      pub.track.mediaStreamTrack?.readyState !== 'ended'
+      !pub.isMuted &&
+      hasUsableTrack
     ) {
       hasCamera = true;
     }
@@ -568,6 +579,12 @@ function getSavedEchoCancellation(): boolean {
   return Boolean(notif['echoCancellation'] ?? true);
 }
 
+/** Whether automatic gain control is enabled (defaults to false). */
+function getSavedAutoGainControl(): boolean {
+  const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
+  return Boolean(notif['autoGainControl'] ?? false);
+}
+
 /**
  * Build the audio capture options reflecting the user's saved voice settings.
  * When noise suppression is enabled we also request `voiceIsolation` which
@@ -578,8 +595,9 @@ function getSavedEchoCancellation(): boolean {
 function buildAudioCaptureOptions(deviceId?: string): Record<string, unknown> {
   const ns = getSavedNoiseSuppression();
   const ec = getSavedEchoCancellation();
+  const agc = getSavedAutoGainControl();
   const opts: Record<string, unknown> = {
-    autoGainControl: true,
+    autoGainControl: agc,
     echoCancellation: ec,
     noiseSuppression: ns,
     // Voice Isolation (W3C mediacapture-extensions) is a stronger, ML-based
@@ -596,48 +614,33 @@ function buildAudioCaptureOptions(deviceId?: string): Record<string, unknown> {
 }
 
 /**
- * Apply or remove the noise gate processor on the published mic track.
- * Called after mic is enabled and after voice settings are saved.
+ * Remove legacy noise-gate processors from existing tracks.
+ *
+ * The custom WebAudio noise gate caused channel-balance drift and crackle on
+ * some systems during high CPU load. We now rely on browser-native capture
+ * constraints (`noiseSuppression`, `echoCancellation`, optional AGC) instead.
  */
 async function applyNoiseGateIfNeeded(room: Room): Promise<void> {
-  const nsEnabled = getSavedNoiseSuppression();
   const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
   const localTrack = publication?.track;
   if (!localTrack) return;
 
-  // Cast to access setProcessor — LiveKit LocalAudioTrack has this method
+  // Access optional processor APIs available on LocalAudioTrack in LiveKit.
   const audioTrack = localTrack as unknown as {
-    setProcessor(p: NoiseGateProcessor | undefined): Promise<void>;
-    getProcessor(): { name: string } | undefined;
+    setProcessor?: (p: unknown) => Promise<void>;
+    getProcessor?: () => { name?: string } | undefined;
   };
 
-  if (nsEnabled) {
-    // Only create a new gate if one isn't already active
-    if (!activeNoiseGate || audioTrack.getProcessor()?.name !== 'noise-gate') {
-      if (activeNoiseGate) {
-        await activeNoiseGate.destroy().catch(() => {});
-      }
-      activeNoiseGate = new NoiseGateProcessor();
-      try {
-        await audioTrack.setProcessor(activeNoiseGate);
-        console.info('[voice] Noise gate processor attached');
-      } catch (err) {
-        console.warn('[voice] Failed to attach noise gate processor:', err);
-        activeNoiseGate = null;
-      }
-    }
-  } else {
-    // Remove noise gate
-    if (activeNoiseGate) {
-      try {
-        await audioTrack.setProcessor(undefined as unknown as NoiseGateProcessor);
-      } catch {
-        // Some versions don't support removing — just destroy
-      }
-      await activeNoiseGate.destroy().catch(() => {});
-      activeNoiseGate = null;
-      console.info('[voice] Noise gate processor removed');
-    }
+  const processor =
+    typeof audioTrack.getProcessor === 'function' ? audioTrack.getProcessor() : undefined;
+  if (processor?.name !== 'noise-gate') return;
+  if (typeof audioTrack.setProcessor !== 'function') return;
+
+  try {
+    await audioTrack.setProcessor(undefined);
+    console.info('[voice] Removed legacy noise gate processor');
+  } catch (err) {
+    console.warn('[voice] Failed to remove legacy noise gate processor:', err);
   }
 }
 
@@ -645,6 +648,105 @@ function normalizeDeviceId(deviceId?: string | null): string | undefined {
   if (!deviceId) return undefined;
   const trimmed = deviceId.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+type ScreenCapturePreset = {
+  width: number;
+  height: number;
+  frameRate: number;
+  maxBitrate: number;
+  /** 'detail' = optimize for sharp text/UI, 'motion' = optimize for video playback */
+  hint: 'detail' | 'motion';
+};
+
+function clampEvenDimension(value: number): number {
+  const rounded = Math.max(2, Math.floor(value));
+  return rounded % 2 === 0 ? rounded : rounded - 1;
+}
+
+function fitCaptureResolution(
+  sourceWidth: number,
+  sourceHeight: number,
+  maxWidth: number,
+  maxHeight: number
+): { width: number; height: number } {
+  const safeSourceWidth = Math.max(2, sourceWidth);
+  const safeSourceHeight = Math.max(2, sourceHeight);
+  const widthScale = maxWidth / safeSourceWidth;
+  const heightScale = maxHeight / safeSourceHeight;
+  const scale = Math.min(1, widthScale, heightScale);
+  return {
+    width: clampEvenDimension(safeSourceWidth * scale),
+    height: clampEvenDimension(safeSourceHeight * scale),
+  };
+}
+
+function positiveInt(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : null;
+}
+
+async function tuneScreenShareCaptureTrack(
+  track: MediaStreamTrack,
+  capture: ScreenCapturePreset
+): Promise<void> {
+  const beforeSettings = track.getSettings() as MediaTrackSettings & Record<string, unknown>;
+  const sourceWidth = positiveInt(beforeSettings.width) ?? capture.width;
+  const sourceHeight = positiveInt(beforeSettings.height) ?? capture.height;
+  const sourceFps = positiveInt(beforeSettings.frameRate) ?? capture.frameRate;
+  const target = fitCaptureResolution(sourceWidth, sourceHeight, capture.width, capture.height);
+
+  const baseConstraints: MediaTrackConstraints = {
+    width: { ideal: target.width, max: target.width },
+    height: { ideal: target.height, max: target.height },
+    frameRate: { ideal: capture.frameRate, max: capture.frameRate },
+  };
+
+  const sdrRequestedConstraints = baseConstraints as MediaTrackConstraints & Record<string, unknown>;
+  // Ask browser to downscale in capture pipeline instead of full-res capture.
+  sdrRequestedConstraints.resizeMode = 'crop-and-scale';
+  // Experimental constraints ignored by unsupported browsers. These request
+  // an SDR output track for HDR displays so SDR viewers do not see blown-out
+  // highlights.
+  sdrRequestedConstraints.colorSpace = 'srgb';
+  sdrRequestedConstraints.dynamicRange = 'standard';
+
+  try {
+    await track.applyConstraints(sdrRequestedConstraints as MediaTrackConstraints);
+  } catch (err) {
+    // Fallback without experimental fields for browsers that reject unknown keys.
+    console.warn('[voice] Screen share SDR constraints unsupported, applying base capture caps:', err);
+    try {
+      await track.applyConstraints(baseConstraints);
+    } catch (fallbackErr) {
+      console.warn('[voice] Failed to apply screen share capture caps:', fallbackErr);
+    }
+  }
+
+  const afterSettings = track.getSettings() as MediaTrackSettings & Record<string, unknown>;
+  console.info('[voice] Screen share capture settings:', {
+    source: {
+      width: sourceWidth,
+      height: sourceHeight,
+      fps: sourceFps,
+      colorSpace: beforeSettings.colorSpace ?? 'unknown',
+      dynamicRange: beforeSettings.dynamicRange ?? 'unknown',
+    },
+    target: {
+      width: target.width,
+      height: target.height,
+      fps: capture.frameRate,
+      maxBitrate: capture.maxBitrate,
+    },
+    applied: {
+      width: positiveInt(afterSettings.width),
+      height: positiveInt(afterSettings.height),
+      fps: positiveInt(afterSettings.frameRate),
+      colorSpace: afterSettings.colorSpace ?? 'unknown',
+      dynamicRange: afterSettings.dynamicRange ?? 'unknown',
+    },
+  });
 }
 
 function attachRemoteAudioTrack(
@@ -656,13 +758,38 @@ function attachRemoteAudioTrack(
   if (typeof document === 'undefined' || track.kind !== Track.Kind.Audio) return;
   const key = trackKey(track, publication, participantIdentity);
   const existing = attachedRemoteAudioElements.get(key);
+
+  // If the existing element already has the right track attached, just
+  // update mute/volume state without recreating. This avoids the brief
+  // audio-on-wrong-device window that occurs when setSinkId is still pending.
   if (existing) {
+    const existingStream = existing.srcObject instanceof MediaStream ? existing.srcObject : null;
+    const existingTrack = existingStream?.getAudioTracks()[0] ?? null;
+    // Do not churn attachments based on object identity alone. In some
+    // runtimes the MediaStreamTrack wrapper identity can change while still
+    // referring to the same underlying remote source, which causes repeated
+    // detach/attach cycles over long calls.
+    if (existingTrack && existingTrack.readyState !== 'ended') {
+      existing.muted = muted;
+      existing.volume = muted ? 0 : 1;
+      if (existingStream) {
+        for (const at of existingStream.getAudioTracks()) {
+          at.enabled = !muted;
+        }
+      }
+      return;
+    }
+
+    // Existing element is stale (missing/ended track); rebuild it.
     track.detach(existing);
     existing.remove();
     attachedRemoteAudioElements.delete(key);
   }
   const audio = document.createElement('audio');
-  audio.autoplay = true;
+  // Do NOT autoplay — we start playback only after setSinkId completes to
+  // prevent voice audio from briefly playing on the default device (which
+  // WASAPI loopback captures, causing echo in outgoing streams).
+  audio.autoplay = false;
   audio.style.display = 'none';
   audio.setAttribute('data-paracord-voice-audio', 'true');
   if (participantIdentity) {
@@ -671,7 +798,8 @@ function attachRemoteAudioTrack(
   if (publication.trackSid) {
     audio.setAttribute('data-paracord-voice-track-sid', publication.trackSid);
   }
-  void setAudioElementOutputDevice(audio, selectedAudioOutputDeviceId);
+  const streamingDeviceId = selectedAudioOutputDeviceId;
+  const sinkReady = setAudioElementOutputDevice(audio, streamingDeviceId);
   // Attach FIRST — LiveKit's track.attach() internally resets element.muted
   // to false and may override other properties. We set our deafen overrides
   // AFTER attach so they stick.
@@ -688,17 +816,22 @@ function attachRemoteAudioTrack(
   }
   document.body.appendChild(audio);
   attachedRemoteAudioElements.set(key, audio);
-  void audio.play().catch(() => {
-    // Autoplay was blocked by browser policy. Retry on the next user
-    // interaction so audio starts flowing once the user clicks/taps.
-    const resumeOnGesture = () => {
-      audio.play().catch(() => {});
-      document.removeEventListener('click', resumeOnGesture);
-      document.removeEventListener('keydown', resumeOnGesture);
-    };
-    document.addEventListener('click', resumeOnGesture, { once: true });
-    document.addEventListener('keydown', resumeOnGesture, { once: true });
+  // Wait for sink routing to complete before playing so audio never
+  // briefly outputs on the wrong device.
+  void sinkReady.then(() => {
+    audio.play().catch(() => {
+      // Autoplay was blocked by browser policy. Retry on the next user
+      // interaction so audio starts flowing once the user clicks/taps.
+      const resumeOnGesture = () => {
+        audio.play().catch(() => {});
+        document.removeEventListener('click', resumeOnGesture);
+        document.removeEventListener('keydown', resumeOnGesture);
+      };
+      document.addEventListener('click', resumeOnGesture, { once: true });
+      document.addEventListener('keydown', resumeOnGesture, { once: true });
+    });
   });
+
 }
 
 function detachRemoteAudioTrack(
@@ -881,7 +1014,7 @@ function syncRemoteAudioTracks(room: Room, muted: boolean): void {
 function registerRoomListeners(
   room: Room,
   onDisconnected: (reason?: DisconnectReason) => void
-): void {
+): () => void {
   const speakingHandlers = new Map<string, (speaking: boolean) => void>();
   const bindParticipantSpeaking = (participant: Participant) => {
     const identity = participant.identity;
@@ -913,7 +1046,7 @@ function registerRoomListeners(
   syncLivekitRoomPresence(room);
   startRemoteAudioReconcile(room);
 
-  room.on(RoomEvent.ActiveSpeakersChanged, (speakers: Participant[]) => {
+  const onActiveSpeakersChanged = (speakers: Participant[]) => {
     const speakingIds = new Set(speakers.map((s) => s.identity));
     const localUserId = useAuthStore.getState().user?.id;
     const serverDetectedLocalSpeaking = !!(localUserId && speakingIds.has(localUserId));
@@ -924,8 +1057,9 @@ function registerRoomListeners(
       speakingIds.add(localUserId);
     }
     useVoiceStore.getState().setSpeakingUsers(Array.from(speakingIds));
-  });
-  room.on(RoomEvent.ParticipantConnected, (participant) => {
+  };
+
+  const onParticipantConnected = (participant: RemoteParticipant) => {
     bindParticipantSpeaking(participant);
     refreshAudioCodecCompatibility(room, `participant-connected:${participant.identity}`);
     // Re-check shortly after connect to catch late track metadata updates.
@@ -936,21 +1070,27 @@ function registerRoomListeners(
         continue;
       }
       if (publication.kind === Track.Kind.Audio && !publication.isSubscribed) {
-        publication.setSubscribed(true);
+        (publication as RemoteTrackPublication).setSubscribed(true);
       }
     }
     syncLivekitRoomPresence(room);
-  });
-  room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+  };
+
+  const onParticipantDisconnected = (participant: RemoteParticipant) => {
     unbindParticipantSpeaking(participant);
     refreshAudioCodecCompatibility(room, `participant-disconnected:${participant.identity}`);
     syncLivekitRoomPresence(room);
-  });
-  room.on(RoomEvent.LocalTrackPublished, () => {
+  };
+
+  const onLocalTrackPublished = () => {
     startLocalMicAnalyser(room);
     startLocalAudioUplinkMonitor(room);
-  });
-  room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
+  };
+
+  const onLocalTrackUnpublished = (
+    publication: LocalTrackPublication,
+    _participant: LocalParticipant
+  ) => {
     if (publication.source === Track.Source.Microphone) {
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
@@ -979,6 +1119,16 @@ function registerRoomListeners(
       const state = useVoiceStore.getState();
       if (state.selfStream) {
         console.info('[voice] Local screen share track unpublished — clearing selfStream');
+        // Notify server that stream ended
+        if (state.channelId) {
+          voiceApi.stopStream(state.channelId).catch(() => {});
+        }
+        // Revert voice audio to normal output device
+        const savedOutputId = getSavedOutputDeviceId() || '';
+        const voiceEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-voice-audio]');
+        for (const el of voiceEls) {
+          el.setSinkId?.(savedOutputId).catch(() => {});
+        }
         const localUserId = useAuthStore.getState().user?.id;
         const participants = new Map(state.participants);
         if (localUserId) {
@@ -990,15 +1140,18 @@ function registerRoomListeners(
         useVoiceStore.setState({ selfStream: false, participants });
       }
     }
-  });
-  room.on(
-    RoomEvent.TrackSubscribed,
-    (track: RemoteTrack, publication: RemoteTrackPublication, participant: Participant) => {
-      if (publication.source === Track.Source.ScreenShareAudio) return;
-      attachRemoteAudioTrack(track, publication, useVoiceStore.getState().selfDeaf, participant.identity);
-    }
-  );
-  room.on(RoomEvent.TrackPublished, (publication, participant) => {
+  };
+
+  const onTrackSubscribed = (
+    track: RemoteTrack,
+    publication: RemoteTrackPublication,
+    participant: Participant
+  ) => {
+    if (publication.source === Track.Source.ScreenShareAudio) return;
+    attachRemoteAudioTrack(track, publication, useVoiceStore.getState().selfDeaf, participant.identity);
+  };
+
+  const onTrackPublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
     refreshAudioCodecCompatibility(room, `track-published:${participant.identity}`);
     // Update presence when camera or screen share tracks are published/unpublished
     if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
@@ -1034,11 +1187,17 @@ function registerRoomListeners(
     }
     // Keep speaking bindings current.
     bindParticipantSpeaking(participant);
-  });
-  room.on(RoomEvent.TrackSubscriptionFailed, (trackSid, participant) => {
+  };
+
+  const onTrackSubscriptionFailed = (trackSid: string, participant?: RemoteParticipant) => {
     console.warn('[voice] Track subscription failed:', trackSid, participant?.identity);
-  });
-  room.on(RoomEvent.TrackSubscriptionStatusChanged, (publication, status, participant) => {
+  };
+
+  const onTrackSubscriptionStatusChanged = (
+    publication: RemoteTrackPublication,
+    status: string,
+    participant?: RemoteParticipant
+  ) => {
     refreshAudioCodecCompatibility(room, `track-subscription-status:${status}`);
     if (publication.source === Track.Source.ScreenShareAudio) return;
     if (publication.kind !== Track.Kind.Audio) return;
@@ -1056,18 +1215,48 @@ function registerRoomListeners(
     if (participant) {
       bindParticipantSpeaking(participant);
     }
-  });
-  room.on(
-    RoomEvent.TrackUnsubscribed,
-    (track: RemoteTrack, publication: RemoteTrackPublication, participant: Participant) => {
-      detachRemoteAudioTrack(track, publication, participant.identity);
-      // Update presence when video tracks are removed so camera/stream icons update
-      if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
-        syncLivekitRoomPresence(room);
-      }
+  };
+
+  const onTrackUnsubscribed = (
+    track: RemoteTrack,
+    publication: RemoteTrackPublication,
+    participant: RemoteParticipant
+  ) => {
+    detachRemoteAudioTrack(track, publication, participant.identity);
+    // Update presence when video tracks are removed so camera/stream icons update
+    if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
+      syncLivekitRoomPresence(room);
     }
-  );
-  room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+  };
+
+  const onTrackMuted = (
+    publication: TrackPublication,
+    _participant: Participant
+  ) => {
+    if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
+      syncLivekitRoomPresence(room);
+    }
+  };
+
+  const onTrackUnmuted = (
+    publication: TrackPublication,
+    _participant: Participant
+  ) => {
+    if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
+      syncLivekitRoomPresence(room);
+    }
+  };
+
+  const onTrackUnpublished = (
+    publication: TrackPublication,
+    _participant: Participant
+  ) => {
+    if (publication.source === Track.Source.Camera || publication.source === Track.Source.ScreenShare) {
+      syncLivekitRoomPresence(room);
+    }
+  };
+
+  const onAudioPlaybackStatusChanged = () => {
     if (!room.canPlaybackAudio) {
       console.warn('[voice] Audio playback blocked — will retry on next user gesture');
       const resume = () => {
@@ -1078,11 +1267,13 @@ function registerRoomListeners(
       document.addEventListener('click', resume, { once: true });
       document.addEventListener('keydown', resume, { once: true });
     }
-  });
-  room.on(RoomEvent.MediaDevicesError, (err: Error) => {
+  };
+
+  const onMediaDevicesError = (err: Error) => {
     console.error('[voice] Media device error:', err.message);
-  });
-  room.on(RoomEvent.LocalAudioSilenceDetected, () => {
+  };
+
+  const onLocalAudioSilenceDetected = () => {
     const now = Date.now();
     if (now < localSilenceRecoveryCooldownUntil) return;
     localSilenceRecoveryCooldownUntil = now + 15_000;
@@ -1094,11 +1285,13 @@ function registerRoomListeners(
         startLocalAudioUplinkMonitor(room);
       }
     });
-  });
-  room.on(RoomEvent.Reconnecting, () => {
+  };
+
+  const onReconnecting = () => {
     console.warn('[voice] LiveKit reconnecting...');
-  });
-  room.on(RoomEvent.Reconnected, () => {
+  };
+
+  const onReconnected = () => {
     console.info('[voice] LiveKit reconnected successfully');
     refreshAudioCodecCompatibility(room, 'reconnected');
     // Re-sync remote audio tracks after reconnection to ensure all
@@ -1118,8 +1311,9 @@ function registerRoomListeners(
         success: ok,
       });
     });
-  });
-  room.on(RoomEvent.Disconnected, (reason?: DisconnectReason) => {
+  };
+
+  const onDisconnectedEvent = (reason?: DisconnectReason) => {
     stopRemoteAudioReconcile();
     stopLocalMicAnalyser();
     stopLocalAudioUplinkMonitor();
@@ -1128,7 +1322,53 @@ function registerRoomListeners(
       unbindParticipantSpeaking(participant);
     }
     onDisconnected(reason);
-  });
+  };
+
+  room.on(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+  room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+  room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+  room.on(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+  room.on(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+  room.on(RoomEvent.TrackSubscribed, onTrackSubscribed);
+  room.on(RoomEvent.TrackPublished, onTrackPublished);
+  room.on(RoomEvent.TrackSubscriptionFailed, onTrackSubscriptionFailed);
+  room.on(RoomEvent.TrackSubscriptionStatusChanged, onTrackSubscriptionStatusChanged);
+  room.on(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
+  room.on(RoomEvent.TrackMuted, onTrackMuted);
+  room.on(RoomEvent.TrackUnmuted, onTrackUnmuted);
+  room.on(RoomEvent.TrackUnpublished, onTrackUnpublished);
+  room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioPlaybackStatusChanged);
+  room.on(RoomEvent.MediaDevicesError, onMediaDevicesError);
+  room.on(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilenceDetected);
+  room.on(RoomEvent.Reconnecting, onReconnecting);
+  room.on(RoomEvent.Reconnected, onReconnected);
+  room.on(RoomEvent.Disconnected, onDisconnectedEvent);
+
+  return () => {
+    room.off(RoomEvent.ActiveSpeakersChanged, onActiveSpeakersChanged);
+    room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    room.off(RoomEvent.LocalTrackPublished, onLocalTrackPublished);
+    room.off(RoomEvent.LocalTrackUnpublished, onLocalTrackUnpublished);
+    room.off(RoomEvent.TrackSubscribed, onTrackSubscribed);
+    room.off(RoomEvent.TrackPublished, onTrackPublished);
+    room.off(RoomEvent.TrackSubscriptionFailed, onTrackSubscriptionFailed);
+    room.off(RoomEvent.TrackSubscriptionStatusChanged, onTrackSubscriptionStatusChanged);
+    room.off(RoomEvent.TrackUnsubscribed, onTrackUnsubscribed);
+    room.off(RoomEvent.TrackMuted, onTrackMuted);
+    room.off(RoomEvent.TrackUnmuted, onTrackUnmuted);
+    room.off(RoomEvent.TrackUnpublished, onTrackUnpublished);
+    room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioPlaybackStatusChanged);
+    room.off(RoomEvent.MediaDevicesError, onMediaDevicesError);
+    room.off(RoomEvent.LocalAudioSilenceDetected, onLocalAudioSilenceDetected);
+    room.off(RoomEvent.Reconnecting, onReconnecting);
+    room.off(RoomEvent.Reconnected, onReconnected);
+    room.off(RoomEvent.Disconnected, onDisconnectedEvent);
+    unbindParticipantSpeaking(room.localParticipant);
+    for (const participant of room.remoteParticipants.values()) {
+      unbindParticipantSpeaking(participant);
+    }
+  };
 }
 
 interface VoiceStoreState {
@@ -1222,10 +1462,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     const shouldMuteOnJoin = previousSelfMute || previousSelfDeaf;
     const existingRoom = get().room;
     if (existingRoom) {
+      clearActiveRoomListeners();
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      existingRoom.removeAllListeners();
       existingRoom.disconnect();
     }
     forceRedForCompatibility = false;
@@ -1296,10 +1536,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       // Register listeners before connecting so we do not miss early
       // subscriptions published during initial room sync.
       const thisRoom = room;
-      registerRoomListeners(room, (reason?: DisconnectReason) => {
+      activeRoomListenerCleanup = registerRoomListeners(room, (reason?: DisconnectReason) => {
         // Ignore disconnect events from stale rooms (e.g. when joinChannel
         // was called again, the old room fires Disconnected asynchronously).
         if (get().room !== thisRoom) return;
+        activeRoomListenerCleanup = null;
         console.warn('[voice] LiveKit room disconnected, reason:', reason);
         detachAllAttachedRemoteAudio();
         void stopNativeSystemAudio();
@@ -1414,10 +1655,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       });
       syncLivekitRoomPresence(room);
     } catch (error) {
+      clearActiveRoomListeners();
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      room?.removeAllListeners();
       room?.disconnect();
       detachAllAttachedRemoteAudio();
       if (joinedServer) {
@@ -1459,10 +1700,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     const authUser = useAuthStore.getState().user;
     const currentRoom = get().room;
     if (currentRoom) {
+      clearActiveRoomListeners();
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      currentRoom.removeAllListeners();
       currentRoom.disconnect();
     }
     void stopNativeSystemAudio();
@@ -1577,7 +1818,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      room.removeAllListeners();
+      clearActiveRoomListeners();
       await room.disconnect();
       await room.connect(normalizedUrl, data.token);
       await room.startAudio().catch((err) => {
@@ -1607,9 +1848,15 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       }
       setAttachedRemoteAudioMuted(get().selfDeaf);
       const streamRoom = room;
-      registerRoomListeners(room, (reason?: DisconnectReason) => {
+      activeRoomListenerCleanup = registerRoomListeners(room, (reason?: DisconnectReason) => {
         if (get().room !== streamRoom) return;
+        activeRoomListenerCleanup = null;
         console.warn('[voice] LiveKit room disconnected (stream), reason:', reason);
+        // Notify server that stream ended on disconnect
+        const disconnectChannelId = get().channelId;
+        if (disconnectChannelId) {
+          voiceApi.stopStream(disconnectChannelId).catch(() => {});
+        }
         detachAllAttachedRemoteAudio();
         void stopNativeSystemAudio();
         const cId = get().channelId;
@@ -1637,36 +1884,36 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       });
       syncRemoteAudioTracks(room, get().selfDeaf);
 
+      // Voice audio no longer needs to be rerouted to a different device.
+      // The Process Loopback Exclusion API excludes our own process audio
+      // at the OS level, so voice plays on the normal default device.
+
       // 3. Now that we have the right permissions, start screen share
       //    with resolution/framerate constraints matching the preset.
       //    We configure BOTH capture constraints (resolution/fps the browser
       //    captures at) AND encoding parameters (bitrate/fps the WebRTC
       //    encoder targets). Without explicit encoding params LiveKit falls
       //    back to very conservative defaults causing blocky, low-fps streams.
-      const presetMap: Record<string, {
-        width: number;
-        height: number;
-        frameRate: number;
-        maxBitrate: number;
-        /** 'detail' = optimize for sharp text/UI, 'motion' = optimize for video playback */
-        hint: 'detail' | 'motion';
-      }> = {
+      const presetMap: Record<string, ScreenCapturePreset> = {
         '720p30':      { width: 1280, height: 720,  frameRate: 30, maxBitrate: 5_000_000,   hint: 'detail' },
         '1080p60':     { width: 1920, height: 1080, frameRate: 60, maxBitrate: 15_000_000,  hint: 'detail' },
         '1440p60':     { width: 2560, height: 1440, frameRate: 60, maxBitrate: 25_000_000,  hint: 'detail' },
-        '4k60':        { width: 3840, height: 2160, frameRate: 60, maxBitrate: 40_000_000,  hint: 'detail' },
+        '4k60':        { width: 3840, height: 2160, frameRate: 60, maxBitrate: 40_000_000,  hint: 'motion' },
         'movie-50':    { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000,  hint: 'motion' },
         'movie-100':   { width: 3840, height: 2160, frameRate: 60, maxBitrate: 100_000_000, hint: 'motion' },
       };
       const capture = presetMap[qualityPreset] ?? presetMap['1080p60'];
+      const isTauriApp = isTauri();
 
       await room.localParticipant.setScreenShareEnabled(true, {
-        audio: true,
+        // In Tauri, skip browser audio capture — we use native WASAPI/PulseAudio
+        // loopback instead to avoid capturing voice chat audio.
+        audio: !isTauriApp,
         // systemAudio: 'include' tells Chrome/Edge to pre-check the "Share
         // audio" checkbox in the picker when sharing a screen or tab, so
         // audio is captured automatically without extra user interaction.
         // Note: window-level sharing does NOT support audio (OS limitation).
-        systemAudio: 'include',
+        systemAudio: isTauriApp ? undefined : 'include',
         selfBrowserSurface: 'include',
         surfaceSwitching: 'include',
         preferCurrentTab: false,
@@ -1687,11 +1934,39 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         scalabilityMode: 'L1T1',
       });
 
+      const screenShareVideoPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+      const screenShareVideoTrack = screenShareVideoPub?.track?.mediaStreamTrack;
+      if (screenShareVideoTrack) {
+        await tuneScreenShareCaptureTrack(screenShareVideoTrack, capture);
+      } else {
+        console.warn('[voice] Screen share video track not immediately available for constraint tuning');
+      }
+
       // Verify whether screen share audio was captured and published
       const screenShareAudioPub = room.localParticipant.getTrackPublication(
         Track.Source.ScreenShareAudio
       );
-      if (screenShareAudioPub) {
+
+      if (isTauriApp) {
+        // In Tauri, always use native system audio capture. This captures
+        // system audio via WASAPI loopback / PulseAudio monitor while voice
+        // chat audio is routed to the communications device (excluded from capture).
+        try {
+          const nativeAudioTrack = await startNativeSystemAudio();
+          if (nativeAudioTrack) {
+            await room.localParticipant.publishTrack(nativeAudioTrack, {
+              source: Track.Source.ScreenShareAudio,
+              audioPreset: { maxBitrate: 128_000 },
+              forceStereo: true,
+              dtx: false,
+              red: false,
+            });
+            console.info('[voice] Published native system audio as ScreenShareAudio (Tauri)');
+          }
+        } catch (err) {
+          console.warn('[voice] Native system audio capture failed:', err);
+        }
+      } else if (screenShareAudioPub) {
         console.info('[voice] Screen share audio track published — viewers will hear stream audio');
       } else {
         console.warn(
@@ -1707,6 +1982,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           if (nativeAudioTrack) {
             await room.localParticipant.publishTrack(nativeAudioTrack, {
               source: Track.Source.ScreenShareAudio,
+              audioPreset: { maxBitrate: 128_000 },
+              forceStereo: true,
+              dtx: false,
+              red: false,
             });
             console.info('[voice] Published native system audio as ScreenShareAudio');
           }
@@ -1751,19 +2030,39 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     } catch (error) {
       void stopNativeSystemAudio();
       await room.localParticipant.setScreenShareEnabled(false).catch(() => { });
+      // Notify server that stream failed
+      if (channelId) {
+        voiceApi.stopStream(channelId).catch(() => {});
+      }
       set({ selfStream: false });
       throw error;
     }
   },
 
-  stopStream: () =>
+  stopStream: () => {
+    const { channelId, room } = get();
+    // Notify server to clear stream state
+    if (channelId) {
+      voiceApi.stopStream(channelId).catch(() => {});
+    }
+    room?.localParticipant.setScreenShareEnabled(false).catch(() => {});
+    void stopNativeSystemAudio();
+    // Revert voice audio elements to the user's selected output device
+    const savedOutputId = getSavedOutputDeviceId() || '';
+    const voiceEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-voice-audio]');
+    for (const el of voiceEls) {
+      el.setSinkId?.(savedOutputId).catch(() => {});
+    }
+    // Revert stream audio elements back to the default device
+    const streamEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-stream-audio]');
+    for (const el of streamEls) {
+      el.setSinkId?.('default').catch(() => {});
+    }
+    // Also update the local user's voice-state entry so that
+    // participants-derived flags reflect the stream ending immediately,
+    // even before a gateway event arrives.
+    const localUserId = useAuthStore.getState().user?.id;
     set((state) => {
-      state.room?.localParticipant.setScreenShareEnabled(false).catch(() => { });
-      void stopNativeSystemAudio();
-      // Also update the local user's voice-state entry so that
-      // participants-derived flags reflect the stream ending immediately,
-      // even before a gateway event arrives.
-      const localUserId = useAuthStore.getState().user?.id;
       const participants = new Map(state.participants);
       if (localUserId) {
         const existing = participants.get(localUserId);
@@ -1772,7 +2071,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         }
       }
       return { selfStream: false, participants };
-    }),
+    });
+  },
 
   toggleVideo: () => {
     const state = get();

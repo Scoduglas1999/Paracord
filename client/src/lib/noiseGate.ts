@@ -83,14 +83,22 @@ export class NoiseGateProcessor {
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 256;
     this.analyser.smoothingTimeConstant = 0.3;
-    this.fftBuf = new Float32Array(this.analyser.fftSize) as Float32Array<ArrayBuffer>;
+    this.analyser.channelCount = 1;
+    this.analyser.channelCountMode = 'explicit';
+    this.fftBuf = new Float32Array(this.analyser.fftSize);
 
-    // Gain node — this is the actual "gate"
+    // Gain node — this is the actual "gate". Force mono to prevent the
+    // default stereo upmix (channelCount=2, channelCountMode='max') which
+    // can introduce subtle inter-channel drift over long sessions.
     this.gain = this.ctx.createGain();
     this.gain.gain.value = this.config.floorGain;
+    this.gain.channelCount = 1;
+    this.gain.channelCountMode = 'explicit';
 
-    // Destination — provides the processed MediaStreamTrack
+    // Destination — provides the processed MediaStreamTrack.
+    // Force mono output so the published mic track stays single-channel.
     this.destination = this.ctx.createMediaStreamDestination();
+    this.destination.channelCount = 1;
 
     // Wire: source → analyser (for monitoring)
     //        source → gain → destination (for output)

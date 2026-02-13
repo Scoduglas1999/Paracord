@@ -75,6 +75,7 @@ export function UnifiedSidebar() {
   const user = useAuthStore((s) => s.user);
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const toggleSidebarCollapsed = useUIStore((s) => s.toggleSidebarCollapsed);
+  const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const navigate = useNavigate();
   const location = useLocation();
@@ -87,6 +88,10 @@ export function UnifiedSidebar() {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [dmSearch, setDmSearch] = useState('');
   const [showDmPicker, setShowDmPicker] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
   const relationships = useRelationshipStore((s) => s.relationships);
   const fetchRelationships = useRelationshipStore((s) => s.fetchRelationships);
   const { connected, channelId: activeVoiceChannelId, joinChannel, selfMute, selfDeaf, toggleMute, toggleDeaf } = useVoice();
@@ -152,6 +157,15 @@ export function UnifiedSidebar() {
   }, [showDmPicker, fetchRelationships]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const updateIsMobile = () => setIsMobile(mediaQuery.matches);
+    updateIsMobile();
+    mediaQuery.addEventListener('change', updateIsMobile);
+    return () => mediaQuery.removeEventListener('change', updateIsMobile);
+  }, []);
+
+  useEffect(() => {
     if (!hoverPreview) return;
     if (watchedStreamerId === hoverPreview.userId) return;
     setPreviewStreamer(hoverPreview.userId);
@@ -165,6 +179,12 @@ export function UnifiedSidebar() {
       setPreviewStreamer(null);
     };
   }, [hoverPreview, setPreviewStreamer]);
+
+  const collapseSidebarOnPhone = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches) {
+      setSidebarCollapsed(true);
+    }
+  };
 
   const handleGuildClick = async (guild: { id: string }) => {
     // Toggle expand/collapse for guild
@@ -189,6 +209,7 @@ export function UnifiedSidebar() {
     } else {
       navigate(`/app/guilds/${guild.id}/settings`);
     }
+    collapseSidebarOnPhone();
   };
 
   const handleChannelClick = (channel: Channel, channelGuildId: string) => {
@@ -199,11 +220,13 @@ export function UnifiedSidebar() {
       // view after browsing text channels.
       if (connected && activeVoiceChannelId === channel.id) {
         navigate(`/app/guilds/${channelGuildId}/channels/${channel.id}`);
+        collapseSidebarOnPhone();
         return;
       }
       void joinChannel(channel.id, channelGuildId);
     }
     navigate(`/app/guilds/${channelGuildId}/channels/${channel.id}`);
+    collapseSidebarOnPhone();
   };
 
   const handleContextMenu = (e: React.MouseEvent, contextGuildId: string) => {
@@ -274,7 +297,7 @@ export function UnifiedSidebar() {
       <div className="flex h-full">
         {/* Server rail — only shown when connected to multiple servers */}
         {showServerRail && !sidebarCollapsed && (
-          <div className="flex h-full w-[52px] shrink-0 flex-col items-center gap-1.5 border-r border-border-subtle/40 py-3 px-1.5">
+          <div className="hidden h-full w-[52px] shrink-0 flex-col items-center gap-1.5 border-r border-border-subtle/40 px-1.5 py-3 md:flex">
             {servers.map((server) => {
               const isActive = activeServerId === server.id;
               return (
@@ -324,7 +347,7 @@ export function UnifiedSidebar() {
         {/* Main sidebar content */}
         <div className="flex h-full min-w-0 flex-1 flex-col">
         {/* Sidebar header - branding + collapse */}
-        <div className="panel-divider flex h-[60px] shrink-0 items-center justify-between border-b px-5">
+        <div className="panel-divider flex h-[60px] shrink-0 items-center justify-between border-b px-3 sm:px-5">
           {!sidebarCollapsed && (
             <div className="flex items-center gap-2 min-w-0">
               <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent-primary/20 text-accent-primary">
@@ -347,6 +370,48 @@ export function UnifiedSidebar() {
           </Tooltip>
         </div>
 
+        {showServerRail && !sidebarCollapsed && isMobile && (
+          <div className="panel-divider border-b px-2.5 py-2">
+            <div className="scrollbar-thin flex items-center gap-2 overflow-x-auto pb-1">
+              {servers.map((server) => {
+                const isActive = activeServerId === server.id;
+                return (
+                  <button
+                    key={server.id}
+                    onClick={() => setActiveServer(server.id)}
+                    title={`${server.name}${server.connected ? '' : ' (disconnected)'}`}
+                    className={cn(
+                      'group relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[11px] font-bold text-white transition-all duration-200',
+                      isActive
+                        ? 'bg-accent-primary shadow-md shadow-accent-primary/25'
+                        : 'bg-bg-mod-strong/80'
+                    )}
+                  >
+                    {server.iconUrl ? (
+                      <img src={server.iconUrl} alt={server.name} className="h-full w-full rounded-xl object-cover" />
+                    ) : (
+                      <Globe size={16} className={server.connected ? '' : 'opacity-50'} />
+                    )}
+                    <div
+                      className={cn(
+                        'absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-bg-secondary',
+                        server.connected ? 'bg-accent-success' : 'bg-text-muted'
+                      )}
+                    />
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => navigate('/connect')}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle/70 text-text-muted transition-colors hover:bg-accent-success/20 hover:text-accent-success"
+                title="Add Server"
+              >
+                <Plus size={17} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Home button - prominent, above search */}
         <div className="px-3 pt-2 pb-1">
           <button
@@ -354,6 +419,7 @@ export function UnifiedSidebar() {
               selectGuild(null);
               useChannelStore.getState().selectGuild(null);
               navigate('/app/friends');
+              collapseSidebarOnPhone();
             }}
             className={cn(
               'group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[14.5px] font-medium transition-all',
@@ -376,11 +442,11 @@ export function UnifiedSidebar() {
 
         {/* Quick search trigger - subtle, below home */}
         {!sidebarCollapsed && (
-          <div className="px-4 pb-1">
+          <div className="px-3 pb-1 sm:px-4">
             <button
               onClick={() => setCommandPaletteOpen(true)}
               className="flex w-full items-center gap-1.5 rounded-md px-2.5 text-text-muted transition-all hover:bg-bg-mod-subtle"
-              style={{ height: '22px', fontSize: '10px', opacity: 0.45 }}
+              style={{ height: isMobile ? '30px' : '22px', fontSize: isMobile ? '11px' : '10px', opacity: isMobile ? 0.8 : 0.45 }}
             >
               <Search size={9} />
               <span className="flex-1 text-left">Search</span>
@@ -392,7 +458,7 @@ export function UnifiedSidebar() {
         )}
 
         {/* Navigation area */}
-        <div className="flex-1 overflow-y-auto px-3 py-2 scrollbar-thin">
+        <div className="scrollbar-thin flex-1 overflow-y-auto px-2 py-2 sm:px-3">
 
           {/* DM channels when at home */}
           {isHome && !sidebarCollapsed && (
@@ -402,7 +468,7 @@ export function UnifiedSidebar() {
                   Direct Messages
                 </span>
                 <button
-                  className="rounded p-0.5 text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-text-primary"
+                  className="rounded p-0.5 text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-text-primary"
                   onClick={() => setShowDmPicker(true)}
                 >
                   <Plus size={14} />
@@ -430,6 +496,7 @@ export function UnifiedSidebar() {
                     onClick={() => {
                       selectChannel(dm.id);
                       navigate(`/app/dms/${dm.id}`);
+                      collapseSidebarOnPhone();
                     }}
                     className={cn(
                       'group flex w-full items-center gap-3 rounded-xl px-3 py-2 transition-all',
@@ -465,7 +532,7 @@ export function UnifiedSidebar() {
               </span>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="rounded p-0.5 text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-accent-success"
+                className="rounded p-0.5 text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-accent-success"
               >
                 <Plus size={14} />
               </button>
@@ -544,7 +611,7 @@ export function UnifiedSidebar() {
                       <Tooltip content="Space Settings" side="right">
                         <button
                           onClick={() => navigate(`/app/guilds/${guild.id}/settings`)}
-                          className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:text-text-primary"
+                          className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-text-primary"
                         >
                           <Settings size={13} />
                         </button>
@@ -602,7 +669,7 @@ export function UnifiedSidebar() {
                                           <span
                                             role="button"
                                             tabIndex={0}
-                                            className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-0 transition-all group-hover/ch:opacity-100 hover:text-text-primary"
+                                            className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover/ch:opacity-100 hover:text-text-primary"
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               navigate(`/app/guilds/${guild.id}/settings?section=channels&channelId=${ch.id}`);
@@ -685,18 +752,18 @@ export function UnifiedSidebar() {
                                                         navigate(`/app/guilds/${guild.id}/channels/${ch.id}`);
                                                       }}
                                                       className={cn(
-                                                        'inline-flex items-center gap-1.5 rounded-full border px-2 py-[3px] text-[10px] font-semibold leading-none transition-all duration-200',
+                                                        'inline-flex items-center gap-0.5 rounded-full border py-0 px-1.5 text-[10px] font-semibold leading-[1] transition-all duration-200',
                                                         isWatched
                                                           ? 'border-accent-danger/70 bg-accent-danger/18 text-accent-danger shadow-[0_0_10px_rgba(237,66,69,0.25)]'
                                                           : 'border-accent-danger/45 bg-accent-danger/10 text-accent-danger/95 hover:border-accent-danger/65 hover:bg-accent-danger/16'
                                                       )}
                                                       title={isWatched ? 'Watching this stream' : 'Watch stream'}
                                                     >
-                                                      <span className="relative flex h-1.5 w-1.5">
+                                                      <span className="relative flex h-[3px] w-[3px] shrink-0">
                                                         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
-                                                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
+                                                        <span className="relative inline-flex h-full w-full rounded-full bg-current" />
                                                       </span>
-                                                      <span className="uppercase tracking-[0.06em]">Live</span>
+                                                      <span className="uppercase tracking-[0.04em]">Live</span>
                                                     </button>
                                                   )}
                                                   {vs.self_mute && <MicOff size={11} className="text-text-muted" />}
@@ -944,9 +1011,9 @@ export function UnifiedSidebar() {
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowDmPicker(false)}
           />
-          <div className="glass-modal fixed left-1/2 top-1/2 z-50 max-h-[70vh] w-[480px] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl">
+          <div className="glass-modal fixed left-1/2 top-1/2 z-50 max-h-[min(80dvh,34rem)] w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl sm:rounded-2xl">
             <div className="panel-divider border-b px-5 py-4 text-lg font-semibold text-text-primary">Start Direct Message</div>
-            <div className="max-h-[50vh] overflow-y-auto p-3">
+            <div className="max-h-[min(62dvh,24rem)] overflow-y-auto p-3">
               {relationships.filter((r) => r.type === 1).map((rel) => (
                 <button
                   key={rel.id}
@@ -959,6 +1026,7 @@ export function UnifiedSidebar() {
                     selectChannel(data.id);
                     setShowDmPicker(false);
                     navigate(`/app/dms/${data.id}`);
+                    collapseSidebarOnPhone();
                   }}
                 >
                   <div className="text-sm text-text-primary">{rel.user.username}</div>

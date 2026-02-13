@@ -111,15 +111,15 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
     <div
       className="modal-overlay"
       onClick={onClose}
-      style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
+      style={{ position: 'fixed', inset: 0, width: '100vw', height: '100dvh' }}
     >
       <div
-        className="glass-modal modal-content w-[min(92vw,32rem)] overflow-hidden rounded-2xl border"
+        className="glass-modal modal-content max-h-[min(86dvh,42rem)] w-[min(92vw,32rem)] overflow-auto rounded-2xl border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="relative px-7 pt-7 pb-5 text-center">
-          <button onClick={onClose} className="icon-btn absolute right-5 top-5">
+        <div className="relative px-4 pb-4 pt-5 text-center sm:px-7 sm:pb-5 sm:pt-7">
+          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5">
             <X size={20} />
           </button>
           <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
@@ -155,7 +155,7 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
         </div>
 
         {/* Body */}
-        <div className="px-7 pb-6">
+        <div className="px-4 pb-5 sm:px-7 sm:pb-6">
           {tab === 'create' ? (
             <>
               <div className="mb-5 flex justify-center">
@@ -223,7 +223,7 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between border-t border-border-subtle/70 px-7 py-5"
+          className="flex flex-col-reverse items-stretch gap-2.5 border-t border-border-subtle/70 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7 sm:py-5"
           style={{ backgroundColor: 'var(--bg-secondary)' }}
         >
           <button onClick={onClose} className="btn-ghost">Cancel</button>

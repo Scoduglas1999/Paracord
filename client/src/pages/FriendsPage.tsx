@@ -112,16 +112,16 @@ export function FriendsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="panel-divider flex min-h-[var(--spacing-header-height)] flex-col items-start gap-4 border-b px-4.5 py-3.5 md:px-6.5">
+      <div className="panel-divider flex min-h-[var(--spacing-header-height)] flex-col items-start gap-3 border-b px-3 py-3 sm:gap-4 sm:px-4.5 sm:py-3.5 md:px-6.5">
         <div className="flex w-full items-center gap-3.5">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-text-secondary">
-            <Users size={19} />
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-text-secondary sm:h-11 sm:w-11">
+            <Users size={18} />
           </div>
           <span className="text-lg font-semibold text-text-primary">Friends</span>
         </div>
 
         <div className="w-full overflow-x-auto">
-          <div className="inline-flex min-w-full items-center gap-2.5 rounded-xl border border-border-subtle/65 bg-bg-mod-subtle/45 px-3 py-2.5">
+          <div className="inline-flex min-w-full items-center gap-2 rounded-xl border border-border-subtle/65 bg-bg-mod-subtle/45 px-2.5 py-2 sm:gap-2.5 sm:px-3 sm:py-2.5">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -151,14 +151,14 @@ export function FriendsPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5.5 md:p-6.5">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-5.5 md:p-6.5">
         {activeTab === 'add' ? (
           <div className="mx-auto h-full w-full">
-            <div className="glass-panel h-full rounded-2xl p-6">
-              <h2 className="text-2xl font-semibold text-text-primary">Add Friend</h2>
+            <div className="glass-panel h-full rounded-2xl p-4 sm:p-6">
+              <h2 className="text-xl font-semibold text-text-primary sm:text-2xl">Add Friend</h2>
               <p className="mt-1.5 text-sm text-text-secondary">Add friends with their username or user ID.</p>
 
-              <div className="mt-5 flex items-center gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle px-4 py-3.5">
+              <div className="mt-5 flex flex-col items-stretch gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3 sm:px-4 sm:py-3.5">
                 <UserPlus size={18} className="text-text-muted" />
                 <input
                   type="text"
@@ -170,7 +170,7 @@ export function FriendsPage() {
                 />
                 <button
                   onClick={() => void handleAddFriend()}
-                  className="control-pill-btn min-w-[188px] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="control-pill-btn w-full sm:w-auto sm:min-w-[188px] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={!addFriendInput.trim()}
                 >
                   Send Friend Request
@@ -193,7 +193,7 @@ export function FriendsPage() {
           </div>
         ) : (
           <div className="mx-auto h-full w-full">
-            <div className="glass-panel flex h-full min-h-0 flex-col rounded-2xl p-5 md:p-6">
+            <div className="glass-panel flex h-full min-h-0 flex-col rounded-2xl p-3.5 sm:p-5 md:p-6">
               {relationshipError && (
                 <div className="mb-4 rounded-lg border border-accent-danger/40 bg-accent-danger/10 px-3 py-2 text-sm font-medium text-accent-danger">
                   {relationshipError}
@@ -260,7 +260,7 @@ export function FriendsPage() {
                     {list.map((rel) => (
                       <div
                         key={rel.id}
-                        className="flex items-center gap-3.5 rounded-xl border border-transparent px-3.5 py-3 transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle"
+                        className="flex flex-wrap items-center gap-2.5 rounded-xl border border-transparent px-3 py-2.5 transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle sm:flex-nowrap sm:gap-3.5 sm:px-3.5 sm:py-3"
                       >
                         <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-accent-primary text-sm font-semibold text-white">
                           {rel.user.username.charAt(0).toUpperCase()}
@@ -274,7 +274,7 @@ export function FriendsPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="ml-auto flex items-center gap-2">
                           {rel.type === 3 && (
                             <button
                               onClick={() => void handleAcceptFriend(rel.user.id)}

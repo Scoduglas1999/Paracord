@@ -114,14 +114,14 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
 
   return (
     <div
-      className="relative px-5 pb-5 pt-1"
+      className="relative px-2.5 pb-[calc(var(--safe-bottom)+0.65rem)] pt-1 sm:px-5 sm:pb-5"
       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
     >
       {/* Reply bar */}
       {replyingTo && (
-        <div className="flex items-center gap-2.5 rounded-t-2xl border border-b-0 border-border-subtle bg-bg-mod-subtle px-4 py-2.5 text-sm text-text-muted">
+        <div className="flex flex-wrap items-center gap-2 rounded-t-2xl border border-b-0 border-border-subtle bg-bg-mod-subtle px-3 py-2 text-xs text-text-muted sm:px-4 sm:py-2.5 sm:text-sm">
           <span>Replying to</span>
           <span style={{ color: 'var(--text-primary)' }} className="font-medium">{replyingTo.author}</span>
           <span className="truncate flex-1" style={{ color: 'var(--text-muted)' }}>{replyingTo.content}</span>
@@ -134,7 +134,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
       {/* Staged files */}
       {stagedFiles.length > 0 && (
         <div
-          className="flex gap-2 overflow-x-auto border border-b-0 border-border-subtle bg-bg-mod-subtle px-4 py-3"
+          className="flex gap-2 overflow-x-auto border border-b-0 border-border-subtle bg-bg-mod-subtle px-3 py-2.5 sm:px-4 sm:py-3"
           style={{
             borderTopLeftRadius: replyingTo ? '0' : '1rem',
             borderTopRightRadius: replyingTo ? '0' : '1rem',
@@ -145,7 +145,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
               key={i}
               className="group relative flex flex-shrink-0 items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-primary/70 p-2.5"
               style={{
-                maxWidth: '200px',
+                maxWidth: 'min(180px, 48vw)',
               }}
             >
               {file.type.startsWith('image/') ? (
@@ -163,7 +163,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
               </div>
               <button
                 onClick={() => removeFile(i)}
-                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full border border-border-subtle opacity-0 transition-opacity group-hover:opacity-100"
+                className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full border border-border-subtle opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100"
                 style={{ backgroundColor: 'var(--accent-danger)', color: '#fff' }}
               >
                 <X size={13} />
@@ -180,7 +180,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
 
       {/* Input area */}
       <div
-        className={`glass-panel flex min-h-[60px] items-end gap-2.5 rounded-2xl border bg-bg-primary/75 px-4 py-3 shadow-[0_8px_24px_rgba(4,8,18,0.35)] ${
+        className={`glass-panel flex min-h-[56px] items-end gap-1.5 rounded-2xl border bg-bg-primary/75 px-3 py-2.5 shadow-[0_8px_24px_rgba(4,8,18,0.35)] sm:min-h-[60px] sm:gap-2.5 sm:px-4 sm:py-3 ${
           isDragOver ? 'border-2 border-dashed border-accent-primary/70' : 'border-border-subtle'
         }`}
         style={{
@@ -212,7 +212,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
           placeholder={`Message ${channelName ? '#' + channelName : 'this channel'}`}
           rows={1}
           maxLength={MAX_MESSAGE_LENGTH}
-          className="flex-1 resize-none bg-transparent py-1.5 text-sm leading-6 outline-none placeholder:text-text-muted"
+          className="flex-1 resize-none bg-transparent py-1 text-sm leading-6 outline-none placeholder:text-text-muted"
           style={{
             color: 'var(--text-primary)',
             maxHeight: '50vh',
@@ -227,7 +227,7 @@ export function MessageInput({ channelId, guildId: _guildId, channelName, replyi
             <Smile size={20} />
           </button>
           {showEmojiPicker && (
-            <div className="absolute bottom-full right-0 mb-2" style={{ zIndex: 50 }}>
+            <div className="absolute bottom-full right-0 mb-2 max-w-[90vw]" style={{ zIndex: 50 }}>
               <EmojiPicker
                 onSelect={(emoji) => {
                   setContent((prev) => `${prev}${emoji}`);

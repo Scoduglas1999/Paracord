@@ -293,6 +293,17 @@ class ConnectionManager {
           }
           void useMemberStore.getState().fetchMembers(g.id);
         });
+
+        // Set our own presence to online. The server dispatches PRESENCE_UPDATE
+        // before our session starts listening, so we never receive our own
+        // online event — set it locally from the READY user data.
+        if (data.user?.id) {
+          usePresenceStore.getState().updatePresence({
+            user_id: data.user.id,
+            status: 'online',
+            activities: [],
+          });
+        }
         break;
 
       case GatewayEvents.MESSAGE_CREATE:

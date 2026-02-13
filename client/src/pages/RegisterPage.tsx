@@ -34,8 +34,7 @@ export function RegisterPage() {
     try {
       await register(email, username, password, displayName);
 
-      // After legacy registration, same migration flow as login:
-      // attach pubkey if account exists, otherwise redirect to setup
+      // If the user already has a local keypair, attach it to this server account.
       if (hasAccount()) {
         const account = useAccountStore.getState();
         if (account.isUnlocked && account.publicKey) {
@@ -45,18 +44,21 @@ export function RegisterPage() {
             // Non-fatal
           }
         }
-        const serverUrl = getStoredServerUrl();
-        if (serverUrl) {
-          const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
-          if (!existingServer) {
-            const token = localStorage.getItem('token');
-            useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
-          }
-        }
-        navigate('/app');
-      } else {
-        navigate('/setup?migrate=1');
       }
+
+      // Add to server list if not already there
+      const serverUrl = getStoredServerUrl();
+      if (serverUrl) {
+        const existingServer = useServerListStore.getState().getServerByUrl(serverUrl);
+        if (!existingServer) {
+          const token = localStorage.getItem('token');
+          useServerListStore.getState().addServer(serverUrl, new URL(serverUrl).host, token || undefined);
+        }
+      }
+
+      // Go straight to the app — legacy token auth works without a local
+      // keypair. Users can set up a local crypto identity later in Settings.
+      navigate('/app');
     } catch (err: any) {
       setError(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {

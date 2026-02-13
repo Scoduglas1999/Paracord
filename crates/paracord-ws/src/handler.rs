@@ -628,6 +628,12 @@ async fn handle_client_message(
                             .update_self_deaf(channel_id, session.user_id, self_deaf)
                             .await;
 
+                        // Read actual self_stream from VoiceManager instead of hardcoding false
+                        let current_self_stream = state
+                            .voice
+                            .get_participant_stream_state(channel_id, session.user_id)
+                            .await;
+
                         state.event_bus.dispatch(
                             EVENT_VOICE_STATE_UPDATE,
                             json!({
@@ -636,7 +642,7 @@ async fn handle_client_message(
                                 "guild_id": guild_id.map(|id| id.to_string()),
                                 "self_mute": self_mute,
                                 "self_deaf": self_deaf,
-                                "self_stream": false,
+                                "self_stream": current_self_stream,
                                 "self_video": false,
                                 "suppress": false,
                                 "mute": false,

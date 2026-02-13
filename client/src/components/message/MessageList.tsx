@@ -100,19 +100,49 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isCoarsePointer, setIsCoarsePointer] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  });
+  const hasHydratedChannelRef = useRef(false);
+  const lastReadStateMessageIdRef = useRef<string | null>(null);
 
   // Resolve typing user IDs to usernames
   const allMembers = useMemberStore((s) => s.members);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const isNearBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 140;
+  };
+
+  const markLatestRead = () => {
     const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.id) {
-      channelApi.updateReadState(channelId, lastMessage.id).catch(() => {
-        /* ignore */
-      });
+    if (!lastMessage?.id || lastReadStateMessageIdRef.current === lastMessage.id) return;
+    lastReadStateMessageIdRef.current = lastMessage.id;
+    channelApi.updateReadState(channelId, lastMessage.id).catch(() => {
+      /* ignore */
+    });
+  };
+
+  useEffect(() => {
+    hasHydratedChannelRef.current = false;
+    lastReadStateMessageIdRef.current = null;
+    setShowScrollButton(false);
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    const shouldStickToBottom = !hasHydratedChannelRef.current || isNearBottom();
+    if (shouldStickToBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: hasHydratedChannelRef.current ? 'smooth' : 'auto' });
+      markLatestRead();
+      setShowScrollButton(false);
+    } else {
+      setShowScrollButton(true);
     }
-  }, [messages.length, channelId]);
+    hasHydratedChannelRef.current = true;
+  }, [messages.length]);
 
   useEffect(() => {
     if (!window.location.hash.startsWith('#msg-')) return;
@@ -122,14 +152,30 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
     }
   }, [messages.length]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(hover: none), (pointer: coarse)');
+    const updatePointerMode = () => setIsCoarsePointer(mediaQuery.matches);
+    updatePointerMode();
+    mediaQuery.addEventListener('change', updatePointerMode);
+    return () => mediaQuery.removeEventListener('change', updatePointerMode);
+  }, []);
+
   const handleScroll = () => {
     if (!scrollRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    setShowScrollButton(scrollHeight - scrollTop - clientHeight > 200);
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const nearBottom = distanceFromBottom <= 140;
+    setShowScrollButton(!nearBottom && distanceFromBottom > 200);
+    if (nearBottom) {
+      markLatestRead();
+    }
   };
 
   const scrollToBottom = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    markLatestRead();
+    setShowScrollButton(false);
   };
 
   const openReactionPicker = (e: React.MouseEvent, messageId: string) => {
@@ -210,7 +256,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
     <div className="relative flex-1 overflow-hidden">
       <div
         ref={scrollRef}
-        className="h-full overflow-y-auto px-5"
+        className="h-full overflow-y-auto px-2.5 sm:px-5"
         onScroll={handleScroll}
         style={{ overscrollBehavior: 'contain' }}
       >
@@ -268,7 +314,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
 
                   <div
                     id={`msg-${msg.id}`}
-                    className="group relative -mx-2.5 flex gap-4 rounded-xl px-3 py-0.5 transition-colors"
+                    className="group relative -mx-1.5 flex gap-2.5 rounded-xl px-2.5 py-0.5 transition-colors sm:-mx-2.5 sm:gap-4 sm:px-3"
                     style={{
                       marginTop: isGrouped ? '2px' : '1.0625rem',
                       backgroundColor: hoveredMessageId === msg.id ? 'var(--bg-mod-subtle)' : 'transparent',
@@ -294,7 +340,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                       </div>
                     )}
 
-                    <div className="flex-1 min-w-0">
+                    <div className="flex-1 min-w-0 pr-8 sm:pr-0">
                       {!isGrouped && (
                         <div className="flex items-baseline gap-2">
                           <span
@@ -402,7 +448,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                                   <img
                                     src={src}
                                     alt={att.filename}
-                                    className="max-w-[400px] rounded-lg border border-border-subtle"
+                                    className="max-w-[min(100%,400px)] rounded-lg border border-border-subtle"
                                     style={{ maxHeight: '300px', objectFit: 'contain' }}
                                   />
                                 </a>
@@ -426,7 +472,17 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                       )}
                     </div>
 
-                    {hoveredMessageId === msg.id && (
+                    {isCoarsePointer && canOpenMessageMenu && (
+                      <button
+                        className="absolute right-1.5 top-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-bg-floating text-text-muted md:hidden"
+                        title="Message actions"
+                        onClick={() => setMenuMessageId((curr) => (curr === msg.id ? null : msg.id))}
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    )}
+
+                    {hoveredMessageId === msg.id && !isCoarsePointer && (
                       <div className="message-actions rounded-xl border border-border-subtle bg-bg-floating p-0.5">
                         <button className="hover-action-btn rounded-lg" title="Add Reaction" onClick={(e) => openReactionPicker(e, msg.id)}>
                           <Smile size={16} />
@@ -447,8 +503,28 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                     )}
                     {menuMessageId === msg.id && canOpenMessageMenu && (
                       <div
-                        className="glass-modal absolute right-2 top-11 z-10 rounded-xl p-2"
+                        className="glass-modal absolute right-1 top-11 z-10 min-w-[10rem] max-w-[calc(100vw-2.75rem)] rounded-xl p-2 sm:right-2"
                       >
+                        <button
+                          className="context-menu-item w-full text-left"
+                          onClick={(e) => {
+                            setMenuMessageId(null);
+                            openReactionPicker(e, msg.id);
+                          }}
+                        >
+                          Add Reaction
+                        </button>
+                        {onReply && (
+                          <button
+                            className="context-menu-item w-full text-left"
+                            onClick={() => {
+                              setMenuMessageId(null);
+                              onReply(msg);
+                            }}
+                          >
+                            Reply
+                          </button>
+                        )}
                         {canEditMessage && (
                           <button className="context-menu-item w-full text-left" onClick={() => startEditingMessage(msg)}>
                             Edit
@@ -481,7 +557,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                       </div>
                     )}
                     {deleteConfirmId === msg.id && (
-                      <div className="glass-modal absolute right-2 top-11 z-10 rounded-xl p-3" style={{ minWidth: '220px' }}>
+                      <div className="glass-modal absolute right-1 top-11 z-10 rounded-xl p-3 sm:right-2" style={{ minWidth: '220px', maxWidth: 'calc(100vw - 2.75rem)' }}>
                         <p className="mb-2 text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Delete message?</p>
                         <p className="mb-3 text-xs" style={{ color: 'var(--text-muted)' }}>This action cannot be undone.</p>
                         <div className="flex items-center gap-2">
@@ -541,7 +617,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
       {showScrollButton && (
         <button
           onClick={scrollToBottom}
-          className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border-subtle bg-bg-floating px-4 py-2 text-sm text-text-primary shadow-lg transition-all hover:bg-bg-mod-subtle"
+          className="absolute bottom-[calc(var(--safe-bottom)+0.75rem)] left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border-subtle bg-bg-floating px-3.5 py-2 text-xs text-text-primary shadow-lg transition-all hover:bg-bg-mod-subtle sm:gap-2 sm:px-4 sm:text-sm"
           style={{
             backdropFilter: 'blur(12px)',
           }}

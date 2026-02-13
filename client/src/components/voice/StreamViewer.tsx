@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Maximize,
   Minimize,
+  Volume1,
   Volume2,
   VolumeX,
   Monitor,
@@ -30,7 +31,10 @@ export function StreamViewer({
   onStopStream,
   onStopWatching,
 }: StreamViewerProps) {
-  const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+  const isMuted = volume === 0;
+  const volumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeStreamerName, setActiveStreamerName] = useState<string | null>(null);
   const [hasActiveTrack, setHasActiveTrack] = useState(false);
   const [isOwnStream, setIsOwnStream] = useState(false);
@@ -40,6 +44,10 @@ export function StreamViewer({
   >('auto');
   const [isMaximized, setIsMaximized] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isCompactLayout, setIsCompactLayout] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 640px)').matches;
+  });
   const room = useVoiceStore((s) => s.room);
   const selfStream = useVoiceStore((s) => s.selfStream);
   const previewStreamerId = useVoiceStore((s) => s.previewStreamerId);
@@ -50,6 +58,14 @@ export function StreamViewer({
   const screenShareAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const displayName = streamerName ?? activeStreamerName ?? 'Someone';
+
+  // Sync volume to video element whenever it changes
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = volume;
+  }, [volume]);
+
+  // Stream audio plays on the default device. Process Loopback Exclusion
+  // handles echo prevention at the OS level — no device rerouting needed.
 
   // Elapsed time counter
   useEffect(() => {
@@ -80,6 +96,15 @@ export function StreamViewer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [isMaximized]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 640px)');
+    const updateCompactLayout = () => setIsCompactLayout(mediaQuery.matches);
+    updateCompactLayout();
+    mediaQuery.addEventListener('change', updateCompactLayout);
+    return () => mediaQuery.removeEventListener('change', updateCompactLayout);
+  }, []);
+
   // Clean up screen share audio element
   const cleanupScreenShareAudio = useCallback(() => {
     const audioEl = screenShareAudioRef.current;
@@ -91,11 +116,11 @@ export function StreamViewer({
     }
   }, []);
 
-  // Use a ref to track mute state so attachTrack can read the current value
-  // without needing isMuted in its dependency array (avoiding re-attaching
-  // all tracks just because the user toggled mute).
-  const isMutedRef = useRef(isMuted);
-  isMutedRef.current = isMuted;
+  // Use a ref to track volume so attachTrack can read the current value
+  // without needing volume in its dependency array (avoiding re-attaching
+  // all tracks just because the user adjusted volume).
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
 
   const setScreenShareSubscriptions = useCallback(
     (targetIdentities: Set<string>) => {
@@ -211,6 +236,7 @@ export function StreamViewer({
         audioEl.autoplay = true;
         audioEl.style.display = 'none';
         audioEl.setAttribute('data-paracord-stream-audio', 'true');
+        // No device rerouting needed — Process Loopback Exclusion prevents echo.
         document.body.appendChild(audioEl);
         screenShareAudioRef.current = audioEl;
       }
@@ -220,7 +246,8 @@ export function StreamViewer({
       if (currentAudioTrack !== foundAudioTrack) {
         const audioStream = new MediaStream([foundAudioTrack]);
         audioEl.srcObject = audioStream;
-        audioEl.muted = isMutedRef.current;
+        audioEl.volume = volumeRef.current;
+        audioEl.muted = false;
         audioEl.play().catch(() => {
           const resumeOnGesture = () => {
             audioEl?.play().catch(() => {});
@@ -231,6 +258,8 @@ export function StreamViewer({
           document.addEventListener('keydown', resumeOnGesture, { once: true });
         });
       }
+      // Always sync volume (may have changed without track reassignment)
+      audioEl.volume = volumeRef.current;
     } else {
       cleanupScreenShareAudio();
     }
@@ -301,14 +330,14 @@ export function StreamViewer({
       style={{ backgroundColor: 'var(--bg-tertiary)' }}
     >
       <div
-        className="relative z-10 flex items-center justify-between gap-3 px-5 py-3"
+        className="relative z-10 flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-5 sm:py-3"
         style={{
           backgroundColor: 'var(--bg-floating)',
           backdropFilter: 'blur(12px)',
           borderBottom: '1px solid var(--border-subtle)',
         }}
       >
-        <div className="min-w-0 flex items-center gap-3">
+        <div className="min-w-0 flex items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5"
             style={{
               backgroundColor: 'color-mix(in srgb, var(--accent-danger) 24%, transparent)',
@@ -323,13 +352,13 @@ export function StreamViewer({
             {displayName}
             {displayName !== 'You' && "'s stream"}
           </span>
-          <span className="text-sm font-mono text-text-muted">
+          <span className="hidden text-sm font-mono text-text-muted sm:inline">
             {formatTime(elapsedSeconds)}
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
-          {!isOwnStream && (
+        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+          {!isOwnStream && !isCompactLayout && (
             <select
               value={quality}
               onChange={(e) =>
@@ -348,22 +377,59 @@ export function StreamViewer({
             </select>
           )}
 
-          <button
-            onClick={() => {
-              setIsMuted((prev) => {
-                const nextMuted = !prev;
-                const audioEl = screenShareAudioRef.current;
-                if (audioEl) {
-                  audioEl.muted = nextMuted;
-                }
-                return nextMuted;
-              });
+          <div
+            className="relative flex items-center"
+            onMouseEnter={() => {
+              if (volumeTimerRef.current) clearTimeout(volumeTimerRef.current);
+              setShowVolumeSlider(true);
             }}
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-            title={isMuted ? 'Unmute' : 'Mute'}
+            onMouseLeave={() => {
+              volumeTimerRef.current = setTimeout(() => setShowVolumeSlider(false), 300);
+            }}
           >
-            {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-          </button>
+            <button
+              onClick={() => {
+                const newVol = isMuted ? 1 : 0;
+                setVolume(newVol);
+                const audioEl = screenShareAudioRef.current;
+                if (audioEl) audioEl.volume = newVol;
+                const videoEl = videoRef.current;
+                if (videoEl) videoEl.volume = newVol;
+              }}
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+              title={isMuted ? 'Unmute' : 'Mute'}
+            >
+              {isMuted ? <VolumeX size={16} /> : volume < 0.5 ? <Volume1 size={16} /> : <Volume2 size={16} />}
+            </button>
+            {showVolumeSlider && (
+              <div
+                className="absolute left-1/2 top-full z-50 mt-2 flex -translate-x-1/2 flex-col items-center gap-2 rounded-xl border border-border-subtle px-2 py-3"
+                style={{ backgroundColor: 'var(--bg-floating)', backdropFilter: 'blur(12px)' }}
+              >
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={volume}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    setVolume(v);
+                    const audioEl = screenShareAudioRef.current;
+                    if (audioEl) audioEl.volume = v;
+                    const videoEl = videoRef.current;
+                    if (videoEl) videoEl.volume = v;
+                  }}
+                  className="h-24 w-1.5 cursor-pointer appearance-none rounded-full bg-bg-mod-strong accent-accent-primary [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent-primary"
+                  style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
+                  title={`Volume: ${Math.round(volume * 100)}%`}
+                />
+                <span className="text-[10px] font-medium text-text-muted">
+                  {Math.round(volume * 100)}%
+                </span>
+              </div>
+            )}
+          </div>
 
           {isOwnStream && (
             <button
@@ -396,7 +462,7 @@ export function StreamViewer({
           {(selfStream || isOwnStream) && onStopStream && (
             <button
               onClick={onStopStream}
-              className="ml-1 flex h-9 items-center gap-2 rounded-lg px-3.5 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/18"
+              className="ml-1 flex h-9 items-center gap-2 rounded-lg px-2.5 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/18 sm:px-3.5"
               style={{
                 backgroundColor: 'color-mix(in srgb, var(--accent-danger) 14%, transparent)',
                 border: '1px solid color-mix(in srgb, var(--accent-danger) 38%, transparent)',
@@ -404,7 +470,7 @@ export function StreamViewer({
               title="Stop streaming"
             >
               <MonitorOff size={15} />
-              Stop
+              {!isCompactLayout && 'Stop'}
             </button>
           )}
         </div>
@@ -416,7 +482,7 @@ export function StreamViewer({
           className="h-full w-full object-contain"
           autoPlay
           playsInline
-          muted={isMuted}
+          muted={false}
           style={{
             backgroundColor: 'var(--bg-tertiary)',
             opacity: showVideo ? 1 : 0,

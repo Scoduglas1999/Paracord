@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Hash, Search, Pin, Users, Inbox, HelpCircle, Volume2, X } from 'lucide-react';
+import { Hash, Search, Pin, Users, Inbox, HelpCircle, Volume2, X, PanelLeftOpen } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate, useParams } from 'react-router-dom';
 import { channelApi } from '../../api/channels';
@@ -24,6 +24,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   const navigate = useNavigate();
   const toggleMemberSidebar = useUIStore((s) => s.toggleMemberSidebar);
   const toggleMemberPanel = useUIStore((s) => s.toggleMemberPanel);
+  const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
   const memberSidebarOpen = useUIStore((s) => s.memberSidebarOpen);
   const memberPanelOpen = useUIStore((s) => s.memberPanelOpen);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
@@ -40,6 +41,10 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   const [readStates, setReadStates] = useState<ReadState[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [mutedGuildIds, setMutedGuildIds] = useState<string[]>([]);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
 
   const allChannels = useMemo(() => Object.values(channelsByGuild).flat(), [channelsByGuild]);
 
@@ -116,6 +121,39 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   }, [channelId, setCommandPaletteOpen]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const updateIsMobile = () => setIsMobile(mediaQuery.matches);
+    updateIsMobile();
+    mediaQuery.addEventListener('change', updateIsMobile);
+    return () => mediaQuery.removeEventListener('change', updateIsMobile);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const refreshReadStates = async () => {
+      try {
+        const { data } = await authApi.getReadStates();
+        if (!disposed) {
+          setReadStates(data);
+        }
+      } catch {
+        // keep existing unread snapshot on transient fetch failures
+      }
+    };
+
+    void refreshReadStates();
+    const intervalId = window.setInterval(() => {
+      void refreshReadStates();
+    }, 30000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
     const readMutedGuilds = () => {
       try {
         const raw = localStorage.getItem('paracord:muted-guilds');
@@ -183,12 +221,12 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
           onClick={onClick}
           disabled={disabled}
           className={cn(
-            'relative flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-bg-mod-subtle hover:text-text-primary',
+            'relative flex h-9 w-9 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-bg-mod-subtle hover:text-text-primary sm:h-8 sm:w-8',
             active && 'bg-bg-mod-subtle text-text-primary',
             disabled && 'cursor-not-allowed opacity-40 hover:bg-transparent hover:text-text-muted'
           )}
         >
-          <Icon size={16} />
+          <Icon size={isMobile ? 17 : 16} />
           {badge != null && badge > 0 && (
             <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-primary px-1 text-[9px] font-bold text-white">
               {badge > 99 ? '99+' : badge}
@@ -200,9 +238,20 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   );
 
   return (
-    <div className="z-10 flex h-[var(--spacing-header-height)] w-full shrink-0 items-center justify-between border-b border-border-subtle/50 bg-gradient-to-r from-transparent to-transparent px-3 md:px-5">
+    <div className="z-10 flex h-[var(--spacing-header-height)] w-full shrink-0 items-center justify-between border-b border-border-subtle/50 bg-gradient-to-r from-transparent to-transparent px-2 sm:px-3 md:px-5">
       {/* Left: channel info */}
-      <div className="mr-3 flex min-w-0 flex-1 items-center overflow-hidden">
+      <div className="mr-2 flex min-w-0 flex-1 items-center overflow-hidden sm:mr-3">
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(false)}
+            className="mr-2.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle/70 bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+            title="Open sidebar"
+            aria-label="Open sidebar"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        )}
         {isDM ? (
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-primary/80 text-xs font-semibold text-white md:h-10 md:w-10">
@@ -235,7 +284,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
       </div>
 
       {/* Right: action buttons */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="scrollbar-thin flex shrink-0 items-center gap-0.5 overflow-x-auto sm:gap-1">
         <TopBarIcon
           icon={Search}
           onClick={() => setShowSearch(true)}
@@ -256,7 +305,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
             tooltip="Member List"
           />
         )}
-        <TopBarIcon className="hidden sm:block" icon={Inbox} onClick={() => void openInbox()} tooltip="Inbox" />
+        <TopBarIcon icon={Inbox} onClick={() => void openInbox()} tooltip="Inbox" badge={unreadItems.length} />
         <TopBarIcon className="hidden md:block" icon={HelpCircle} onClick={() => setShowHelp(true)} tooltip="Shortcuts" />
       </div>
 
@@ -264,7 +313,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
       <AnimatePresence>
         {showSearch && (
           <div
-            className="fixed inset-0 z-50 flex items-start justify-center pt-20"
+            className="fixed inset-0 z-50 flex items-start justify-center px-2 pb-[calc(var(--safe-bottom)+0.75rem)] pt-[calc(var(--safe-top)+3.75rem)] sm:px-4 sm:pt-20"
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowSearch(false)}
           >
@@ -273,7 +322,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
               transition={{ duration: 0.18 }}
-              className="glass-modal w-full max-w-3xl overflow-hidden rounded-2xl border"
+              className="glass-modal max-h-[min(82dvh,44rem)] w-full max-w-3xl overflow-hidden rounded-xl border sm:rounded-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center gap-3 border-b px-5 py-4.5">
@@ -287,7 +336,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
                 />
                 <button className="command-icon-btn" onClick={() => setShowSearch(false)}><X size={16} /></button>
               </div>
-              <div className="max-h-[500px] overflow-y-auto p-3.5 scrollbar-thin">
+              <div className="max-h-[min(67dvh,34rem)] overflow-y-auto p-3.5 scrollbar-thin">
                 {searchResults.length > 0 ? (
                   <div className="space-y-1.5">
                     {searchResults.map((msg) => (
@@ -332,7 +381,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
       <AnimatePresence>
         {showPins && (
           <div
-            className="fixed inset-0 z-50 flex items-start justify-center pt-20"
+            className="fixed inset-0 z-50 flex items-start justify-center px-2 pb-[calc(var(--safe-bottom)+0.75rem)] pt-[calc(var(--safe-top)+3.75rem)] sm:px-4 sm:pt-20"
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowPins(false)}
           >
@@ -341,14 +390,14 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
               transition={{ duration: 0.18 }}
-              className="glass-modal w-full max-w-xl overflow-hidden rounded-2xl border"
+              className="glass-modal max-h-[min(82dvh,40rem)] w-full max-w-xl overflow-hidden rounded-xl border sm:rounded-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">
                 <div className="font-bold text-text-primary">Pinned Messages</div>
                 <button className="command-icon-btn" onClick={() => setShowPins(false)}><X size={16} /></button>
               </div>
-              <div className="max-h-[500px] space-y-4 overflow-y-auto bg-bg-primary p-5 scrollbar-thin">
+              <div className="max-h-[min(67dvh,31rem)] space-y-4 overflow-y-auto bg-bg-primary p-4 sm:p-5 scrollbar-thin">
                 {pins.map((msg) => (
                   <div key={msg.id} className="rounded-xl border border-border-subtle bg-bg-mod-subtle p-3.5">
                     <div className="mb-2 flex items-center gap-2">
@@ -389,7 +438,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
       <AnimatePresence>
         {showInbox && (
           <div
-            className="fixed inset-0 z-50 flex items-start justify-center pt-20"
+            className="fixed inset-0 z-50 flex items-start justify-center px-2 pb-[calc(var(--safe-bottom)+0.75rem)] pt-[calc(var(--safe-top)+3.75rem)] sm:px-4 sm:pt-20"
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowInbox(false)}
           >
@@ -398,14 +447,14 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
               transition={{ duration: 0.18 }}
-              className="glass-modal w-full max-w-xl overflow-hidden rounded-2xl border"
+              className="glass-modal max-h-[min(82dvh,40rem)] w-full max-w-xl overflow-hidden rounded-xl border sm:rounded-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">
                 <div className="font-bold text-text-primary">Inbox</div>
                 <button className="command-icon-btn" onClick={() => setShowInbox(false)}><X size={16} /></button>
               </div>
-              <div className="max-h-[500px] overflow-y-auto bg-bg-primary p-0 scrollbar-thin">
+              <div className="max-h-[min(67dvh,31rem)] overflow-y-auto bg-bg-primary p-0 scrollbar-thin">
                 {unreadItems.length > 0 ? (
                   unreadItems.map(({ state, channelName: unreadChannelName }) => {
                     const channel = allChannels.find((c) => c.id === state.channel_id);
@@ -446,7 +495,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
       <AnimatePresence>
         {showHelp && (
           <div
-            className="fixed inset-0 z-50 flex items-start justify-center pt-20"
+            className="fixed inset-0 z-50 flex items-start justify-center px-2 pb-[calc(var(--safe-bottom)+0.75rem)] pt-[calc(var(--safe-top)+3.75rem)] sm:px-4 sm:pt-20"
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowHelp(false)}
           >
@@ -455,7 +504,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
               transition={{ duration: 0.18 }}
-              className="glass-modal w-full max-w-md overflow-hidden rounded-2xl"
+              className="glass-modal max-h-[min(82dvh,32rem)] w-full max-w-md overflow-hidden rounded-xl sm:rounded-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">

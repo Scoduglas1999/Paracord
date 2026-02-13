@@ -14,20 +14,9 @@ env:
   LIVEKIT_VERSION: "v1.9.11"
 
 jobs:
-  # ── Build server binary with embedded web UI + LiveKit ────────────────────
-  build-server:
-    name: Build Server (${{ matrix.os }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - os: windows
-            runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            livekit_archive: livekit_${LIVEKIT_VERSION}_windows_amd64.zip
-            livekit_bin: livekit-server.exe
-            server_bin: paracord-server.exe
-            archive_ext: zip
+  build-server-windows:
+    name: Build Server (Windows x64)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -37,91 +26,147 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Build web client for embedding
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
       - name: Install client dependencies
         working-directory: client
-        run: npm install
-      - name: Build client
+        run: npm ci
+
+      - name: Build embedded web client
         working-directory: client
         run: npm run build
 
-      # Build server with embedded UI
-      - name: Build server
+      - name: Build server binary
         run: cargo build --release --bin paracord-server
 
-      # Download LiveKit server binary
-      - name: Download LiveKit
+      - name: Download LiveKit (Windows)
         shell: pwsh
         run: |
           $version = "${{ env.LIVEKIT_VERSION }}"
           $versionNum = $version.TrimStart("v")
           $url = "https://github.com/livekit/livekit/releases/download/${version}/livekit_${versionNum}_windows_amd64.zip"
-          Write-Host "Downloading LiveKit from: $url"
           Invoke-WebRequest -Uri $url -OutFile livekit.zip
           Expand-Archive livekit.zip -DestinationPath livekit-extracted -Force
-          # Find the binary (may be nested)
           $bin = Get-ChildItem -Path livekit-extracted -Recurse -Filter "livekit-server.exe" | Select-Object -First 1
-          if ($bin) {
-            Copy-Item $bin.FullName target/release/livekit-server.exe
-            Write-Host "LiveKit binary found: $($bin.FullName)"
-          } else {
-            Write-Host "WARNING: livekit-server.exe not found in archive, listing contents:"
-            Get-ChildItem -Path livekit-extracted -Recurse | ForEach-Object { Write-Host $_.FullName }
-          }
+          if (-not $bin) { throw "livekit-server.exe not found in downloaded archive" }
+          Copy-Item $bin.FullName target/release/livekit-server.exe -Force
 
-      # Package server distribution
-      - name: Package server
+      - name: Package server (Windows)
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          New-Item -ItemType Directory -Path dist/paracord-server -Force
+          $pkgDir = "dist/paracord-server"
+          New-Item -ItemType Directory -Path $pkgDir -Force | Out-Null
 
-          Copy-Item target/release/paracord-server.exe dist/paracord-server/
+          Copy-Item target/release/paracord-server.exe "$pkgDir/paracord-server.exe" -Force
+          Copy-Item target/release/livekit-server.exe "$pkgDir/livekit-server.exe" -Force
+          Copy-Item config/paracord.example.toml "$pkgDir/paracord.example.toml" -Force
 
-          # Copy LiveKit if it was found
-          if (Test-Path target/release/livekit-server.exe) {
-            Copy-Item target/release/livekit-server.exe dist/paracord-server/
-          }
-
-          Copy-Item config/paracord.example.toml dist/paracord-server/
-
-          # Create a quick-start readme
           @"
           Paracord Server v${version}
           ========================
 
-          Quick Start:
-            1. Double-click paracord-server.exe
-            2. A config file will be auto-generated on first run
-            3. Share the public URL shown in the console with friends!
+          Included binaries:
+            - paracord-server.exe
+            - livekit-server.exe
+          "@ | Out-File -FilePath "$pkgDir/README.txt" -Encoding UTF8
 
-          Configuration:
-            - Edit config/paracord.toml to change settings
-            - The file is auto-created on first run with secure random secrets
+          Compress-Archive -Path "$pkgDir/*" -DestinationPath "dist/paracord-server-windows-x64-${version}.zip" -Force
 
-          Voice/Video:
-            - livekit-server.exe is bundled and starts automatically
-            - No additional setup needed for voice and screen sharing
-
-          Port Forwarding:
-            - UPnP is enabled by default and will auto-forward ports
-            - If UPnP fails, manually forward TCP port 8080 and TCP/UDP 7880-7892
-          "@ | Out-File -FilePath dist/paracord-server/README.txt -Encoding UTF8
-
-          Compress-Archive -Path dist/paracord-server/* -DestinationPath "dist/paracord-server-windows-x64-${version}.zip"
-
-      - name: Upload server artifact
+      - name: Upload server artifact (Windows)
         uses: actions/upload-artifact@v4
         with:
           name: server-windows
           path: dist/paracord-server-windows-x64-*.zip
 
-  # ── Build Tauri desktop client + Inno Setup installer ─────────────────────
-  build-client:
-    name: Build Client (Windows)
+  build-server-linux:
+    name: Build Server (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build embedded web client
+        working-directory: client
+        run: npm run build
+
+      - name: Build server binary
+        run: cargo build --release --bin paracord-server
+
+      - name: Download LiveKit (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${LIVEKIT_VERSION}"
+          version_num="${version#v}"
+          url="https://github.com/livekit/livekit/releases/download/${version}/livekit_${version_num}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o livekit.tar.gz
+          mkdir -p livekit-extracted
+          tar -xzf livekit.tar.gz -C livekit-extracted
+          livekit_bin="$(find livekit-extracted -type f -name livekit-server | head -n1)"
+          if [ -z "$livekit_bin" ]; then
+            echo "livekit-server not found in downloaded archive"
+            exit 1
+          fi
+          cp "$livekit_bin" target/release/livekit-server
+          chmod +x target/release/livekit-server
+
+      - name: Package server (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          pkg_dir="dist/paracord-server"
+          mkdir -p "$pkg_dir"
+
+          cp target/release/paracord-server "$pkg_dir/paracord-server"
+          cp target/release/livekit-server "$pkg_dir/livekit-server"
+          cp config/paracord.example.toml "$pkg_dir/paracord.example.toml"
+
+          cat > "$pkg_dir/README.txt" <<EOF
+          Paracord Server v${version}
+          ========================
+
+          Included binaries:
+            - paracord-server
+            - livekit-server
+          EOF
+
+          (
+            cd dist
+            zip -r "paracord-server-linux-x64-${version}.zip" paracord-server
+          )
+
+      - name: Verify LiveKit included in Linux zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          unzip -l "dist/paracord-server-linux-x64-${version}.zip" | grep -q "livekit-server"
+
+      - name: Upload server artifact (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux
+          path: dist/paracord-server-linux-x64-*.zip
+
+  build-client-windows:
+    name: Build Client (Windows x64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -140,46 +185,98 @@ jobs:
 
       - name: Install client dependencies
         working-directory: client
-        run: npm install
+        run: npm ci
 
-      # Build the Tauri desktop app
-      - name: Build Tauri app
+      - name: Build Tauri bundles (Windows)
         working-directory: client
         run: npx tauri build
 
-      # Download WebView2 bootstrapper for Inno Setup
       - name: Download WebView2 bootstrapper
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
-            -OutFile installer/MicrosoftEdgeWebview2Setup.exe
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile installer/MicrosoftEdgeWebview2Setup.exe
 
-      # Build the Inno Setup installer
-      - name: Build installer
+      - name: Build Inno installer
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
-            /DAppVersion=$version `
-            installer/paracord-client.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer/paracord-client.iss
 
-      - name: Upload installer artifact
+      - name: Upload client installer (Inno)
         uses: actions/upload-artifact@v4
         with:
           name: client-windows-installer
           path: installer/output/Paracord-Setup-*.exe
 
-      # Also upload the raw Tauri NSIS installer as an alternative
-      - name: Upload Tauri NSIS installer
+      - name: Upload client MSI
         uses: actions/upload-artifact@v4
         with:
-          name: client-windows-nsis
-          path: client/src-tauri/target/release/bundle/nsis/*.exe
+          name: client-windows-msi
+          path: client/src-tauri/target/release/bundle/msi/*.msi
 
-  # ── Create GitHub Release ─────────────────────────────────────────────────
+  build-client-linux:
+    name: Build Client (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libglib2.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libasound2-dev
+          if apt-cache show libayatana-appindicator3-dev >/dev/null 2>&1; then
+            sudo apt-get install -y libayatana-appindicator3-dev
+          else
+            sudo apt-get install -y libappindicator3-dev
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build Tauri bundles (AppImage + deb)
+        working-directory: client
+        run: npx tauri build --bundles appimage,deb
+
+      - name: Upload client AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-linux-appimage
+          path: client/src-tauri/target/release/bundle/appimage/*.AppImage
+
+      - name: Upload client deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-linux-deb
+          path: client/src-tauri/target/release/bundle/deb/*.deb
+
   release:
     name: Create Release
-    needs: [build-server, build-client]
+    needs:
+      - build-server-windows
+      - build-server-linux
+      - build-client-windows
+      - build-client-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -197,22 +294,18 @@ jobs:
           body: |
             ## Downloads
 
-            | Component | File | Description |
-            |-----------|------|-------------|
-            | **Server** | `paracord-server-windows-x64-*.zip` | Self-contained server with LiveKit bundled. Just extract and run! |
-            | **Client (Installer)** | `Paracord-Setup-*.exe` | Windows installer with Start Menu shortcuts and WebView2 setup |
-
-            ## Quick Start
-
-            ### Server Host
-            1. Download and extract the server zip
-            2. Run `paracord-server.exe` — config is auto-generated on first run
-            3. Share the public URL shown in the console with friends
-
-            ### Client Users
-            1. Download and run `Paracord-Setup-*.exe`
-            2. Enter the server URL (e.g., `73.45.123.99:8080`)
-            3. Create an account and start chatting!
+            | Component | File |
+            |-----------|------|
+            | Server (Windows x64) | `paracord-server-windows-x64-*.zip` |
+            | Server (Linux x64) | `paracord-server-linux-x64-*.zip` |
+            | Client Installer (Windows) | `Paracord-Setup-*.exe` |
+            | Client MSI (Windows) | `Paracord_*_x64_en-US.msi` |
+            | Client AppImage (Linux) | `Paracord_*.AppImage` |
+            | Client deb (Linux) | `paracord_*_amd64.deb` |
           files: |
             artifacts/server-windows/*.zip
+            artifacts/server-linux/*.zip
             artifacts/client-windows-installer/*.exe
+            artifacts/client-windows-msi/*.msi
+            artifacts/client-linux-appimage/*.AppImage
+            artifacts/client-linux-deb/*.deb

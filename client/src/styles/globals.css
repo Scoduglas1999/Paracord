@@ -79,7 +79,18 @@
 @media (max-width: 768px) {
   :root {
     --spacing-sidebar-width: 4.5rem;
+    --spacing-channel-sidebar-width: 15.5rem;
+    --spacing-member-list-width: 14rem;
     --sidebar-item-size: 2.75rem;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --spacing-sidebar-width: 4rem;
+    --spacing-channel-sidebar-width: min(88vw, 19rem);
+    --spacing-member-list-width: min(88vw, 19rem);
+    --sidebar-item-size: 2.5rem;
   }
 }
 
@@ -143,6 +154,10 @@
   --glass-modal-fill-bottom: rgba(12, 17, 28, 0.92);
   --panel-divider-glint: rgba(255, 255, 255, 0.03);
   --scrollbar-auto-thumb-hover: rgba(129, 160, 219, 0.52);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 
   /* Sidebar Specifics */
   --sidebar-width: 84px;
@@ -278,13 +293,15 @@ button {
 }
 
 html {
-  font-size: 18px;
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
 }
 
 html,
 body,
 #root {
   height: 100%;
+  min-height: 100%;
   width: 100%;
   overflow: hidden;
   font-family: var(--font-primary);
@@ -1094,5 +1111,28 @@ html[data-theme='amoled'] #root {
   :root {
     --spacing-sidebar-width: 4.5rem;
     --sidebar-item-size: 2.75rem;
+  }
+
+  .settings-surface-card {
+    padding: 1rem;
+    border-radius: 0.85rem;
+  }
+
+  .settings-section-title {
+    font-size: 1.2rem;
+  }
+
+  .settings-nav-item {
+    min-height: 2.45rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.92rem;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .command-icon-btn,
+  .icon-btn {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
   }
 }

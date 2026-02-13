@@ -7,6 +7,7 @@ import { useMediaDevices } from '../../hooks/useMediaDevices';
 import { APP_NAME } from '../../lib/constants';
 import { isAdmin } from '../../types';
 import { adminApi } from '../../api/admin';
+import { cn } from '../../lib/utils';
 
 interface UserSettingsProps {
   onClose: () => void;
@@ -57,6 +58,10 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   const userIsAdmin = user ? isAdmin(user.flags ?? 0) : false;
   const [restartConfirm, setRestartConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(max-width: 768px)').matches;
+  });
 
   useEffect(() => {
     void fetchSettings();
@@ -98,6 +103,15 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         /* ignore permission denial */
       });
   }, [activeSection, enumerate]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(max-width: 768px)');
+    const updateIsMobile = () => setIsMobile(mediaQuery.matches);
+    updateIsMobile();
+    mediaQuery.addEventListener('change', updateIsMobile);
+    return () => mediaQuery.removeEventListener('change', updateIsMobile);
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') onClose();
@@ -169,50 +183,86 @@ export function UserSettings({ onClose }: UserSettingsProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex bg-bg-tertiary/95 backdrop-blur-sm"
+      className={cn(
+        'fixed inset-0 z-50 bg-bg-tertiary/95 backdrop-blur-sm',
+        isMobile ? 'flex flex-col' : 'flex'
+      )}
       onKeyDown={handleKeyDown}
       tabIndex={-1}
     >
       <div className="pointer-events-none absolute -left-20 top-0 h-72 w-72 rounded-full bg-accent-primary/20 blur-[120px]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full bg-accent-success/10 blur-[140px]" />
-      {/* Left navigation */}
-      <div
-        className="relative z-10 w-72 shrink-0 overflow-y-auto border-r border-border-subtle/70 bg-bg-secondary/65 px-4 py-10"
-      >
-        <div className="ml-auto w-full max-w-[236px]">
-          <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
-            User Settings
-          </div>
-          {NAV_ITEMS.filter(item => !item.adminOnly || userIsAdmin).map(item => (
-            <button
-              key={item.id}
-              onClick={() => setActiveSection(item.id)}
-              className={`settings-nav-item ${activeSection === item.id ? 'active' : ''}`}
-            >
-              {item.label}
+
+      {isMobile ? (
+        <div className="relative z-10 border-b border-border-subtle/70 bg-bg-secondary/70 px-3 pb-2.5 pt-[calc(var(--safe-top)+0.75rem)]">
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">User Settings</div>
+            <button onClick={onClose} className="command-icon-btn h-9 w-9 rounded-full border border-border-strong bg-bg-secondary/75">
+              <X size={17} />
             </button>
-          ))}
-          <div className="mx-2 my-2 h-px bg-border-subtle" />
-          <button
-            onClick={() => { logout(); onClose(); }}
-            className="settings-nav-item"
-            style={{ color: 'var(--accent-danger)', borderColor: 'transparent' }}
-          >
-            Log Out
-          </button>
+          </div>
+          <div className="scrollbar-thin flex items-center gap-2 overflow-x-auto pb-1">
+            {NAV_ITEMS.filter(item => !item.adminOnly || userIsAdmin).map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={cn(
+                  'inline-flex h-9 shrink-0 items-center justify-center rounded-lg border px-3 text-sm font-semibold transition-colors',
+                  activeSection === item.id
+                    ? 'border-border-strong bg-bg-mod-strong text-text-primary'
+                    : 'border-border-subtle/70 bg-bg-mod-subtle text-text-secondary'
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+            <button
+              onClick={() => { logout(); onClose(); }}
+              className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-accent-danger/45 bg-accent-danger/10 px-3 text-sm font-semibold text-accent-danger"
+            >
+              Log Out
+            </button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="relative z-10 w-72 shrink-0 overflow-y-auto border-r border-border-subtle/70 bg-bg-secondary/65 px-4 py-10">
+          <div className="ml-auto w-full max-w-[236px]">
+            <div className="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+              User Settings
+            </div>
+            {NAV_ITEMS.filter(item => !item.adminOnly || userIsAdmin).map(item => (
+              <button
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={`settings-nav-item ${activeSection === item.id ? 'active' : ''}`}
+              >
+                {item.label}
+              </button>
+            ))}
+            <div className="mx-2 my-2 h-px bg-border-subtle" />
+            <button
+              onClick={() => { logout(); onClose(); }}
+              className="settings-nav-item"
+              style={{ color: 'var(--accent-danger)', borderColor: 'transparent' }}
+            >
+              Log Out
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Content area */}
-      <div className="relative z-10 flex-1 overflow-y-auto px-6 py-10">
+      <div className={cn('relative z-10 flex-1 overflow-y-auto', isMobile ? 'px-3 pb-[calc(var(--safe-bottom)+1rem)] pt-3' : 'px-6 py-10')}>
         <div className="w-full">
         {/* Close button */}
-        <div className="fixed right-6 top-5 z-20 flex flex-col items-center gap-1">
-          <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
-            <X size={18} />
-          </button>
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
-        </div>
+        {!isMobile && (
+          <div className="fixed right-6 top-5 z-20 flex flex-col items-center gap-1">
+            <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
+              <X size={18} />
+            </button>
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+          </div>
+        )}
         {statusText && (
           <div className="mb-5 rounded-xl border border-border-subtle bg-bg-mod-subtle px-4 py-3 text-sm font-medium" style={{ color: statusText.includes('Failed') ? 'var(--accent-danger)' : 'var(--accent-success)' }}>
             {statusText}
@@ -220,7 +270,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'account' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)] !p-0 overflow-hidden">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)] !p-0 overflow-hidden">
             <div className="p-5 pb-0">
               <h2 className="settings-section-title mb-4">My Account</h2>
             </div>
@@ -296,7 +346,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'appearance' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Appearance</h2>
             <div className="mb-6">
               <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Theme</div>
@@ -327,7 +377,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                 <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Locale</span>
                 <input className="input-field mt-2" value={locale} onChange={(e) => setLocale(e.target.value)} />
               </label>
-              <div className="flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
                 <div>
                   <div className="text-sm font-medium text-text-primary">Compact Message Display</div>
                 </div>
@@ -341,7 +391,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'voice' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Voice & Video</h2>
             <div className="space-y-4">
               <label className="block">
@@ -382,7 +432,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                   ))}
                 </select>
               </label>
-              <div className="flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
                 <div>
                   <div className="text-sm font-medium text-text-primary">Noise Suppression</div>
                   <div className="text-xs text-text-muted">Reduces background noise</div>
@@ -392,7 +442,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                   onToggle={() => setNotifications((prev) => ({ ...prev, noiseSuppression: !Boolean(prev['noiseSuppression'] ?? true) }))}
                 />
               </div>
-              <div className="flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
                 <div>
                   <div className="text-sm font-medium text-text-primary">Echo Cancellation</div>
                   <div className="text-xs text-text-muted">Reduces echo from speakers</div>
@@ -402,11 +452,21 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                   onToggle={() => setNotifications((prev) => ({ ...prev, echoCancellation: !Boolean(prev['echoCancellation'] ?? true) }))}
                 />
               </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+                <div>
+                  <div className="text-sm font-medium text-text-primary">Automatic Gain Control</div>
+                  <div className="text-xs text-text-muted">Normalizes mic volume (can add noise on some setups)</div>
+                </div>
+                <ToggleSwitch
+                  on={Boolean(mergedNotifications['autoGainControl'] ?? false)}
+                  onToggle={() => setNotifications((prev) => ({ ...prev, autoGainControl: !Boolean(prev['autoGainControl'] ?? false) }))}
+                />
+              </div>
             </div>
             <button className="btn-primary mt-5" onClick={() => {
               void saveSettings().then(() => {
                 // Re-acquire the microphone with updated noise suppression /
-                // echo cancellation constraints so changes take effect
+                // echo cancellation / auto gain constraints so changes take effect
                 // immediately without requiring a mute/unmute cycle.
                 void useVoiceStore.getState().reapplyAudioConstraints();
               });
@@ -417,7 +477,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'notifications' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Notifications</h2>
             <div className="space-y-4">
               <div className="flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
@@ -448,7 +508,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'keybinds' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Keybinds</h2>
             <div className="space-y-3">
               {[
@@ -458,11 +518,11 @@ export function UserSettings({ onClose }: UserSettingsProps) {
               ].map(kb => (
                 <div
                   key={kb.key}
-                  className="flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
+                  className="flex flex-col items-stretch gap-2 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <span className="text-sm font-medium text-text-primary">{kb.action}</span>
                   <input
-                    className="h-10 w-48 rounded-lg border border-border-subtle bg-bg-tertiary px-3 py-2 text-sm font-mono text-text-muted outline-none focus:border-accent-primary"
+                    className="h-10 w-full rounded-lg border border-border-subtle bg-bg-tertiary px-3 py-2 text-sm font-mono text-text-muted outline-none focus:border-accent-primary sm:w-48"
                     value={capturingKeybind === kb.key ? 'Press keys...' : String(mergedKeybinds[kb.key] ?? '')}
                     onFocus={() => setCapturingKeybind(kb.key)}
                     onBlur={() => setCapturingKeybind(null)}
@@ -493,7 +553,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'server' && userIsAdmin && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">Server</h2>
             <div className="space-y-4">
               <div className="rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3">
@@ -512,7 +572,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                       Update & Restart Server
                     </button>
                   ) : (
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
                       <span className="text-sm font-medium text-text-primary">Are you sure?</span>
                       <button
                         className="btn-primary"
@@ -548,12 +608,12 @@ export function UserSettings({ onClose }: UserSettingsProps) {
         )}
 
         {activeSection === 'about' && (
-          <div className="settings-surface-card w-full min-h-[calc(100vh-13.5rem)]">
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
             <h2 className="settings-section-title mb-6">About</h2>
             <div className="space-y-3">
               <div className="rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3">
                 <div className="text-sm font-semibold text-text-primary">{APP_NAME}</div>
-                <div className="mt-1 text-xs text-text-muted">Version 0.1.0</div>
+                <div className="mt-1 text-xs text-text-muted">Version 0.2.2</div>
               </div>
               <div className="text-sm leading-6 text-text-muted">
                 A decentralized, self-hostable Discord alternative built with Rust, Tauri, and React.
@@ -584,3 +644,4 @@ function ToggleSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
     </button>
   );
 }
+

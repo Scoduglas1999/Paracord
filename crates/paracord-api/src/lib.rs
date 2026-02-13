@@ -195,6 +195,10 @@ pub fn build_router() -> Router<AppState> {
             post(routes::voice::start_stream),
         )
         .route(
+            "/api/v1/voice/{channel_id}/stream/stop",
+            post(routes::voice::stop_stream),
+        )
+        .route(
             "/api/v1/voice/{channel_id}/leave",
             post(routes::voice::leave_voice),
         )

@@ -54,10 +54,283 @@ pub fn stop_system_audio_capture() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Windows: WASAPI loopback capture
+// Windows: Process Loopback Exclusion API (Windows 10 2004+)
+// Captures all system audio EXCEPT audio from our own process tree,
+// which eliminates voice chat echo in live streams.
+// Falls back to legacy WASAPI loopback if the new API is unavailable.
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "windows")]
+mod win_process_loopback {
+    use std::sync::{Arc, Mutex};
+    use windows::Win32::Foundation::*;
+    use windows::Win32::Media::Audio::*;
+    use windows::Win32::System::Com::BLOB;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Threading::*;
+    use windows::Win32::System::Variant::VT_BLOB;
+    use windows_core::{implement, Interface};
+
+    #[implement(IActivateAudioInterfaceCompletionHandler)]
+    struct CompletionHandler {
+        event: HANDLE,
+        result: Arc<Mutex<Option<windows_core::Result<windows_core::IUnknown>>>>,
+    }
+
+    impl IActivateAudioInterfaceCompletionHandler_Impl for CompletionHandler_Impl {
+        fn ActivateCompleted(
+            &self,
+            activateoperation: windows_core::Ref<'_, IActivateAudioInterfaceAsyncOperation>,
+        ) -> windows_core::Result<()> {
+            unsafe {
+                let op = activateoperation.ok()?;
+                let mut hr = windows_core::HRESULT(0);
+                let mut activated: Option<windows_core::IUnknown> = None;
+                op.GetActivateResult(&mut hr, &mut activated)?;
+
+                let mut guard = self.result.lock().unwrap();
+                if hr.is_ok() {
+                    *guard = Some(Ok(activated.unwrap()));
+                } else {
+                    *guard = Some(Err(windows_core::Error::from(hr)));
+                }
+                let _ = SetEvent(self.event);
+            }
+            Ok(())
+        }
+    }
+
+    /// Try to activate an IAudioClient using the Process Loopback Exclusion API.
+    /// This captures all system audio EXCEPT audio from the specified process tree.
+    pub fn activate_process_loopback_exclude(
+        exclude_pid: u32,
+    ) -> windows_core::Result<IAudioClient> {
+        unsafe {
+            let event = CreateEventW(None, true, false, None)?;
+
+            let result_holder: Arc<Mutex<Option<windows_core::Result<windows_core::IUnknown>>>> =
+                Arc::new(Mutex::new(None));
+
+            let handler: IActivateAudioInterfaceCompletionHandler = CompletionHandler {
+                event,
+                result: result_holder.clone(),
+            }
+            .into();
+
+            // Set up activation params for process loopback exclusion
+            let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+                ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                    ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                        TargetProcessId: exclude_pid,
+                        ProcessLoopbackMode:
+                            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                    },
+                },
+            };
+
+            // Build PROPVARIANT with VT_BLOB pointing to our activation params
+            let mut prop = PROPVARIANT::default();
+            {
+                let inner = &mut prop.Anonymous.Anonymous;
+                inner.vt = VT_BLOB;
+                inner.Anonymous.blob = BLOB {
+                    cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+                    pBlobData: &mut params as *mut _ as *mut u8,
+                };
+            }
+
+            let _operation = ActivateAudioInterfaceAsync(
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+                &IAudioClient::IID,
+                Some(&prop as *const PROPVARIANT),
+                &handler,
+            )?;
+
+            // Wait for the completion callback (5 second timeout)
+            let _ = WaitForSingleObject(event, 5000);
+            let _ = CloseHandle(event);
+
+            let guard = result_holder.lock().unwrap();
+            match guard.as_ref() {
+                Some(Ok(unknown)) => unknown.cast::<IAudioClient>(),
+                Some(Err(e)) => Err(e.clone()),
+                None => Err(windows_core::Error::new(
+                    windows_core::HRESULT(-2147023436i32), // HRESULT_FROM_WIN32(WAIT_TIMEOUT)
+                    "Timed out waiting for audio interface activation",
+                )),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn capture_loop(
+    channel: &Channel<AudioChunk>,
+    stop_flag: &Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Try the Process Loopback Exclusion API first (Windows 10 2004+).
+    // This captures all system audio EXCEPT our own process, eliminating echo.
+    let my_pid = std::process::id();
+    eprintln!(
+        "[audio_capture] Attempting Process Loopback Exclusion API (exclude PID {})",
+        my_pid
+    );
+
+    match win_process_loopback::activate_process_loopback_exclude(my_pid) {
+        Ok(client) => {
+            eprintln!("[audio_capture] Process Loopback Exclusion API activated successfully");
+            capture_loop_with_client(channel, stop_flag, &client)
+        }
+        Err(e) => {
+            eprintln!(
+                "[audio_capture] Process Loopback Exclusion API unavailable ({e}), \
+                 falling back to legacy WASAPI loopback"
+            );
+            capture_loop_legacy(channel, stop_flag)
+        }
+    }
+}
+
+/// Run the capture loop using a windows-rs IAudioClient obtained from
+/// the Process Loopback Exclusion API.
+#[cfg(target_os = "windows")]
+fn capture_loop_with_client(
+    channel: &Channel<AudioChunk>,
+    stop_flag: &Arc<AtomicBool>,
+    client: &windows::Win32::Media::Audio::IAudioClient,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use windows::Win32::Foundation::*;
+    use windows::Win32::Media::Audio::*;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::System::Threading::*;
+
+    unsafe {
+        // Get the mix format
+        let format_ptr = client.GetMixFormat()?;
+        let format = &*format_ptr;
+
+        let sample_rate = format.nSamplesPerSec;
+        let num_channels = format.nChannels as usize;
+        let block_align = format.nBlockAlign as usize;
+        let bits_per_sample = format.wBitsPerSample as usize;
+        let bytes_per_sample = bits_per_sample / 8;
+
+        // Get device period for buffer duration
+        let mut default_period: i64 = 0;
+        let mut min_period: i64 = 0;
+        client.GetDevicePeriod(Some(&mut default_period), Some(&mut min_period))?;
+
+        // Initialize in shared mode with event-driven buffering
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            min_period,
+            0,
+            format_ptr,
+            None,
+        )?;
+
+        // Free the format memory allocated by GetMixFormat
+        CoTaskMemFree(Some(format_ptr as *const _ as *const core::ffi::c_void));
+
+        // Set up event handle for buffer notifications
+        let event = CreateEventW(None, false, false, None)?;
+        client.SetEventHandle(event)?;
+
+        // Get the capture client and buffer size
+        let capture: IAudioCaptureClient = client.GetService()?;
+        let buffer_size = client.GetBufferSize()?;
+
+        eprintln!(
+            "[audio_capture] Started (process loopback exclusion): {}Hz, {} ch, {} bits/sample, {} frames buffer",
+            sample_rate, num_channels, bits_per_sample, buffer_size
+        );
+
+        // Start the audio stream
+        client.Start()?;
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            // Wait for buffer event with 100ms timeout
+            let wait_result = WaitForSingleObject(event, 100);
+            if wait_result == WAIT_TIMEOUT {
+                continue;
+            }
+
+            // Read all available packets
+            loop {
+                let packet_size = match capture.GetNextPacketSize() {
+                    Ok(size) => size,
+                    Err(e) => {
+                        eprintln!("[audio_capture] GetNextPacketSize error: {e}");
+                        break;
+                    }
+                };
+
+                if packet_size == 0 {
+                    break;
+                }
+
+                let mut data_ptr: *mut u8 = std::ptr::null_mut();
+                let mut frames_read: u32 = 0;
+                let mut flags: u32 = 0;
+
+                if let Err(e) =
+                    capture.GetBuffer(&mut data_ptr, &mut frames_read, &mut flags, None, None)
+                {
+                    eprintln!("[audio_capture] GetBuffer error: {e}");
+                    break;
+                }
+
+                if frames_read > 0 {
+                    // AUDCLNT_BUFFERFLAGS_SILENT = 2
+                    let is_silent = (flags & 2) != 0;
+
+                    if is_silent {
+                        // Send silence
+                        let stereo = vec![0.0f32; frames_read as usize * 2];
+                        let _ = channel.send(AudioChunk {
+                            samples: stereo,
+                            sample_rate,
+                        });
+                    } else {
+                        let data_bytes = frames_read as usize * block_align;
+                        let raw_data =
+                            std::slice::from_raw_parts(data_ptr, data_bytes);
+                        let stereo = interleaved_to_stereo_f32(
+                            raw_data,
+                            num_channels,
+                            bytes_per_sample,
+                        );
+                        if !stereo.is_empty() {
+                            let _ = channel.send(AudioChunk {
+                                samples: stereo,
+                                sample_rate,
+                            });
+                        }
+                    }
+                }
+
+                if let Err(e) = capture.ReleaseBuffer(frames_read) {
+                    eprintln!("[audio_capture] ReleaseBuffer error: {e}");
+                    break;
+                }
+            }
+        }
+
+        client.Stop()?;
+        let _ = CloseHandle(event);
+    }
+
+    eprintln!("[audio_capture] Stopped");
+    Ok(())
+}
+
+/// Legacy WASAPI loopback capture using the wasapi crate.
+/// Used as a fallback when the Process Loopback Exclusion API is unavailable
+/// (e.g. on Windows versions older than 10 2004).
+/// Note: This captures ALL system audio including our own voice chat playback.
+#[cfg(target_os = "windows")]
+fn capture_loop_legacy(
     channel: &Channel<AudioChunk>,
     stop_flag: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -92,7 +365,7 @@ fn capture_loop(
     audio_client.start_stream()?;
 
     eprintln!(
-        "[audio_capture] Started WASAPI: {}Hz, {} ch, {} bits/sample",
+        "[audio_capture] Started WASAPI legacy loopback: {}Hz, {} ch, {} bits/sample",
         sample_rate, num_channels, bits_per_sample
     );
 
@@ -114,10 +387,10 @@ fn capture_loop(
         }
 
         let data_bytes = frames_read as usize * block_align;
-        let mono = interleaved_to_mono_f32(&buffer[..data_bytes], num_channels, bytes_per_sample);
-        if !mono.is_empty() {
+        let stereo = interleaved_to_stereo_f32(&buffer[..data_bytes], num_channels, bytes_per_sample);
+        if !stereo.is_empty() {
             let _ = channel.send(AudioChunk {
-                samples: mono,
+                samples: stereo,
                 sample_rate,
             });
         }
@@ -141,7 +414,7 @@ fn capture_loop(
     use libpulse_simple_binding::Simple;
 
     let sample_rate: u32 = 48000;
-    let num_channels: u8 = 1;
+    let num_channels: u8 = 2;
 
     let spec = Spec {
         format: Format::F32le,
@@ -166,9 +439,9 @@ fn capture_loop(
         None,                    // default buffering attributes
     ).map_err(|e| format!("Failed to connect to PulseAudio: {e}"))?;
 
-    // Read buffer: 20ms of mono f32 audio at 48kHz = 960 frames * 4 bytes = 3840 bytes
+    // Read buffer: 20ms of stereo f32 audio at 48kHz = 960 frames * 2 ch * 4 bytes = 7680 bytes
     let frames_per_chunk: usize = 960;
-    let mut buffer = vec![0u8; frames_per_chunk * 4]; // f32 = 4 bytes
+    let mut buffer = vec![0u8; frames_per_chunk * num_channels as usize * 4]; // f32 = 4 bytes
 
     eprintln!(
         "[audio_capture] Started PulseAudio: {}Hz, {} ch, f32",
@@ -223,6 +496,90 @@ fn capture_loop(
     Err("System audio capture is not supported on this platform.".into())
 }
 
+/// Decode a single PCM sample from raw bytes at the given offset.
+#[inline]
+fn decode_sample(data: &[u8], offset: usize, bytes_per_sample: usize) -> f32 {
+    match bytes_per_sample {
+        // 32-bit IEEE float (most common for WASAPI shared mode)
+        4 => f32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]),
+        // 16-bit signed integer
+        2 => {
+            let s = i16::from_le_bytes([data[offset], data[offset + 1]]);
+            s as f32 / 32768.0
+        }
+        // 24-bit signed integer (packed)
+        3 => {
+            let raw = (data[offset] as i32)
+                | ((data[offset + 1] as i32) << 8)
+                | ((data[offset + 2] as i32) << 16);
+            let signed = if raw & 0x80_0000 != 0 {
+                raw | !0xFF_FFFF
+            } else {
+                raw
+            };
+            signed as f32 / 8_388_608.0
+        }
+        _ => 0.0,
+    }
+}
+
+/// Convert interleaved raw PCM bytes to interleaved stereo f32 (L, R, L, R, ...).
+/// Mono sources are duplicated to both channels; >2 channels are downmixed.
+#[allow(dead_code)]
+fn interleaved_to_stereo_f32(data: &[u8], num_channels: usize, bytes_per_sample: usize) -> Vec<f32> {
+    let frame_size = num_channels * bytes_per_sample;
+    if frame_size == 0 {
+        return Vec::new();
+    }
+    let num_frames = data.len() / frame_size;
+    let mut stereo = Vec::with_capacity(num_frames * 2);
+
+    for frame_idx in 0..num_frames {
+        let frame_start = frame_idx * frame_size;
+        match num_channels {
+            1 => {
+                let s = decode_sample(data, frame_start, bytes_per_sample);
+                stereo.push(s);
+                stereo.push(s);
+            }
+            2 => {
+                let l = decode_sample(data, frame_start, bytes_per_sample);
+                let r = decode_sample(data, frame_start + bytes_per_sample, bytes_per_sample);
+                stereo.push(l);
+                stereo.push(r);
+            }
+            _ => {
+                // Downmix N channels to stereo: left = average of even channels,
+                // right = average of odd channels (standard surround downmix).
+                let mut left_sum = 0.0f32;
+                let mut right_sum = 0.0f32;
+                let mut left_count = 0u32;
+                let mut right_count = 0u32;
+                for ch in 0..num_channels {
+                    let offset = frame_start + ch * bytes_per_sample;
+                    let s = decode_sample(data, offset, bytes_per_sample);
+                    if ch % 2 == 0 {
+                        left_sum += s;
+                        left_count += 1;
+                    } else {
+                        right_sum += s;
+                        right_count += 1;
+                    }
+                }
+                stereo.push(if left_count > 0 { left_sum / left_count as f32 } else { 0.0 });
+                stereo.push(if right_count > 0 { right_sum / right_count as f32 } else { 0.0 });
+            }
+        }
+    }
+
+    stereo
+}
+
 /// Convert interleaved raw PCM bytes to a mono f32 vector by averaging all channels.
 #[allow(dead_code)]
 fn interleaved_to_mono_f32(data: &[u8], num_channels: usize, bytes_per_sample: usize) -> Vec<f32> {
@@ -232,45 +589,14 @@ fn interleaved_to_mono_f32(data: &[u8], num_channels: usize, bytes_per_sample: u
     }
     let num_frames = data.len() / frame_size;
     let mut mono = Vec::with_capacity(num_frames);
-
     for frame_idx in 0..num_frames {
         let frame_start = frame_idx * frame_size;
         let mut sum = 0.0f32;
-
         for ch in 0..num_channels {
             let offset = frame_start + ch * bytes_per_sample;
-            let sample = match bytes_per_sample {
-                // 32-bit IEEE float (most common for WASAPI shared mode)
-                4 => f32::from_le_bytes([
-                    data[offset],
-                    data[offset + 1],
-                    data[offset + 2],
-                    data[offset + 3],
-                ]),
-                // 16-bit signed integer
-                2 => {
-                    let s = i16::from_le_bytes([data[offset], data[offset + 1]]);
-                    s as f32 / 32768.0
-                }
-                // 24-bit signed integer (packed)
-                3 => {
-                    let raw = (data[offset] as i32)
-                        | ((data[offset + 1] as i32) << 8)
-                        | ((data[offset + 2] as i32) << 16);
-                    let signed = if raw & 0x80_0000 != 0 {
-                        raw | !0xFF_FFFF
-                    } else {
-                        raw
-                    };
-                    signed as f32 / 8_388_608.0
-                }
-                _ => 0.0,
-            };
-            sum += sample;
+            sum += decode_sample(data, offset, bytes_per_sample);
         }
-
         mono.push(sum / num_channels as f32);
     }
-
     mono
 }
