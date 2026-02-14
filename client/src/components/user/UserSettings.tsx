@@ -875,7 +875,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
             <div className="card-stack">
               <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
                 <div className="text-sm font-semibold text-text-primary">{APP_NAME}</div>
-                <div className="mt-1 text-xs text-text-muted">Version 0.2.2</div>
+                <div className="mt-1 text-xs text-text-muted">Version 0.4.0</div>
               </div>
               <div className="text-sm leading-6 text-text-muted">
                 A decentralized, self-hostable Discord alternative built with Rust, Tauri, and React.

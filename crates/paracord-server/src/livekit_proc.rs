@@ -225,6 +225,11 @@ pub async fn start_livekit(
         .is_ok()
     {
         tracing::info!("LiveKit already running on port {}, skipping managed start", port);
+        tracing::info!(
+            "NOTE: Ensure the pre-existing LiveKit uses api_key='{}' and the matching api_secret. \
+             Mismatched keys cause 'permissions denied' on all admin API calls.",
+            api_key,
+        );
         let _ = std::fs::remove_file(&config_path);
         return None;
     }

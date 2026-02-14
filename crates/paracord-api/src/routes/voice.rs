@@ -190,6 +190,13 @@ pub async fn join_voice(
     );
 
     let livekit_url = resolve_livekit_client_url(&headers, &state.config.livekit_public_url);
+    tracing::info!(
+        "Voice join: user={}, channel={}, livekit_url={}, host_header={:?}",
+        auth.user_id,
+        channel_id,
+        livekit_url,
+        headers.get("host").and_then(|v| v.to_str().ok()),
+    );
 
     Ok(Json(json!({
         "token": join_resp.token,
@@ -383,12 +390,14 @@ pub async fn leave_voice(
 
     let guild_id = channel.guild_id();
     let _ = paracord_db::voice_states::remove_voice_state(&state.db, auth.user_id, guild_id).await;
-    let participants = state.voice.leave_room(channel_id, auth.user_id).await;
-    if let Some(current) = participants {
-        if current.is_empty() {
-            let _ = state.voice.cleanup_room(channel_id).await;
-        }
-    }
+    let _participants = state.voice.leave_room(channel_id, auth.user_id).await;
+    // Don't eagerly delete the LiveKit room when the last participant leaves.
+    // Rapid leave→rejoin cycles cause a race between the delete_room API call
+    // and the subsequent create_room, leading to "could not establish pc
+    // connection" errors because LiveKit is still tearing down WebRTC resources
+    // from the old room.  Instead, let LiveKit's empty_timeout (300s) handle
+    // cleanup.  The active_livekit_rooms entry persists so the next join
+    // reuses the existing room without needing to re-create it.
 
     let user = paracord_db::users::get_user_by_id(&state.db, auth.user_id)
         .await

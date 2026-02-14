@@ -202,12 +202,31 @@ async fn main() -> Result<()> {
     let runtime = Arc::new(RwLock::new(runtime));
 
     // Create LiveKit config for the media layer
+    // On Windows, "localhost" can resolve to IPv6 [::1] which may hang if
+    // LiveKit only listens on IPv4.  Normalise to 127.0.0.1 for reliability.
     let livekit_config = Arc::new(paracord_media::LiveKitConfig {
         api_key: config.livekit.api_key.clone(),
         api_secret: config.livekit.api_secret.clone(),
-        url: config.livekit.url.clone(),
-        http_url: config.livekit.http_url.clone(),
+        url: config.livekit.url.replace("://localhost:", "://127.0.0.1:"),
+        http_url: config.livekit.http_url.replace("://localhost:", "://127.0.0.1:"),
     });
+
+    // Verify LiveKit admin API credentials match the running instance.
+    if livekit_reachable {
+        match livekit_config.check_health().await {
+            Ok(()) => tracing::info!("LiveKit admin API health check passed"),
+            Err(e) => {
+                tracing::error!("==========================================================");
+                tracing::error!("  LiveKit admin API health check FAILED!");
+                tracing::error!("  {}", e);
+                tracing::error!("");
+                tracing::error!("  Voice features will be unreliable until this is resolved.");
+                tracing::error!("  Check that [livekit] api_key and api_secret in your");
+                tracing::error!("  config match the running LiveKit server's keys.");
+                tracing::error!("==========================================================");
+            }
+        }
+    }
 
     let voice = Arc::new(paracord_media::VoiceManager::new(livekit_config));
     let storage = Arc::new(paracord_media::StorageManager::new(
@@ -253,7 +272,7 @@ async fn main() -> Result<()> {
             livekit_api_key: config.livekit.api_key.clone(),
             livekit_api_secret: config.livekit.api_secret.clone(),
             livekit_url: config.livekit.url.clone(),
-            livekit_http_url: config.livekit.http_url.clone(),
+            livekit_http_url: config.livekit.http_url.replace("://localhost:", "://127.0.0.1:"),
             livekit_public_url,
             livekit_available: livekit_reachable,
             public_url: config.server.public_url.clone(),

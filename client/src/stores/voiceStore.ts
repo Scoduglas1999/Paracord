@@ -24,6 +24,7 @@ import { useAuthStore } from './authStore';
 import { playVoiceJoinSound, playVoiceLeaveSound } from '../lib/voiceSounds';
 import { startNativeSystemAudio, stopNativeSystemAudio } from '../lib/systemAudioCapture';
 import { isTauri } from '../lib/tauriEnv';
+import { getStoredServerUrl } from '../lib/apiBaseUrl';
 
 const INTERNAL_LIVEKIT_HOSTS = new Set([
   'host.docker.internal',
@@ -54,9 +55,30 @@ function resolveClientRtcHostname(): string {
   return host;
 }
 
-function normalizeLivekitUrl(url: string): string {
+/**
+ * Build the LiveKit proxy URL from the client's own server connection.
+ *
+ * Instead of relying on the server-returned URL (which may have the wrong
+ * ws/wss protocol or hostname), we derive the WebSocket URL from the stored
+ * server URL that the client already uses for API calls. This guarantees:
+ *   - Correct protocol: https → wss, http → ws
+ *   - Correct host:port (same as what the client is connected to)
+ *   - The /livekit proxy path
+ */
+function normalizeLivekitUrl(serverReturnedUrl: string): string {
+  // 1. Prefer deriving from the client's own server URL.
+  const stored = getStoredServerUrl();
+  if (stored) {
+    try {
+      const parsed = new URL(stored);
+      const wsScheme = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${wsScheme}//${parsed.host}/livekit`;
+    } catch { /* fall through to legacy normalization */ }
+  }
+
+  // 2. Legacy normalization for dev mode, Docker, and other setups.
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(serverReturnedUrl);
     if (INTERNAL_LIVEKIT_HOSTS.has(parsed.hostname)) {
       parsed.hostname = resolveClientRtcHostname();
     }
@@ -68,7 +90,7 @@ function normalizeLivekitUrl(url: string): string {
     const pathname = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
     return `${protocol}//${parsed.host}${pathname}${parsed.search}${parsed.hash}`;
   } catch {
-    return url
+    return serverReturnedUrl
       .replace('host.docker.internal', 'localhost')
       .replace('livekit', 'localhost')
       .replace('0.0.0.0', 'localhost')
@@ -97,7 +119,63 @@ let remoteAudioReconcileRoom: Room | null = null;
 let forceRedForCompatibility = false;
 let audioCodecSwitchCooldownUntil = 0;
 let activeRoomListenerCleanup: (() => void) | null = null;
+let joinAttemptSeq = 0;
+let activeJoinAttempt = 0;
+// Tracks the in-flight Room.disconnect() promise so joinChannel can await it
+// before opening a new connection. Without this, the old WebSocket teardown
+// can block the new connection if they target the same host.
+let pendingDisconnect: Promise<void> | null = null;
+let pendingDisconnectStartedAt = 0;
+const DISCONNECT_WAIT_ON_JOIN_MS = 5_000;
+const DISCONNECT_WAIT_ON_LEAVE_MS = 600;
+const MIN_DISCONNECT_QUIET_PERIOD_MS = 1_200;
+const LIVEKIT_CONNECT_OPTIONS = {
+  maxRetries: 3,
+  websocketTimeout: 30_000,
+  peerConnectionTimeout: 35_000,
+} as const;
 type MicUplinkState = 'idle' | 'sending' | 'stalled' | 'recovering' | 'muted' | 'no_track';
+
+function startPendingDisconnect(disconnectPromise: Promise<void>): void {
+  pendingDisconnectStartedAt = Date.now();
+  let tracked: Promise<void>;
+  tracked = disconnectPromise
+    .catch((err) => {
+      console.warn('[voice] Room disconnect errored:', err);
+    })
+    .then(() => undefined)
+    .finally(() => {
+      if (pendingDisconnect === tracked) {
+        pendingDisconnect = null;
+        pendingDisconnectStartedAt = 0;
+      }
+    });
+  pendingDisconnect = tracked;
+}
+
+async function waitForPendingDisconnect(maxWaitMs: number): Promise<{ timedOut: boolean; ageMs: number }> {
+  const disconnectPromise = pendingDisconnect;
+  if (!disconnectPromise) {
+    return { timedOut: false, ageMs: 0 };
+  }
+  const startedAt = pendingDisconnectStartedAt || Date.now();
+  let timedOut = false;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, maxWaitMs);
+  });
+  await Promise.race([disconnectPromise, timeoutPromise]);
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+  }
+  return {
+    timedOut,
+    ageMs: Date.now() - startedAt,
+  };
+}
 
 function clearActiveRoomListeners(): void {
   if (!activeRoomListenerCleanup) return;
@@ -687,6 +765,24 @@ function positiveInt(value: unknown): number | null {
     : null;
 }
 
+/**
+ * Detect the best video codec the browser can encode for screen sharing.
+ * Preference order: AV1 > VP9 > H.264.
+ */
+function detectBestVideoCodec(): 'av1' | 'vp9' | 'h264' {
+  try {
+    const caps = RTCRtpSender.getCapabilities?.('video');
+    if (caps) {
+      const mimeSet = new Set(caps.codecs.map((c) => c.mimeType.toLowerCase()));
+      if (mimeSet.has('video/av1')) return 'av1';
+      if (mimeSet.has('video/vp9')) return 'vp9';
+    }
+  } catch {
+    // getCapabilities not supported — fall through
+  }
+  return 'h264';
+}
+
 async function tuneScreenShareCaptureTrack(
   track: MediaStreamTrack,
   capture: ScreenCapturePreset
@@ -937,21 +1033,25 @@ async function setMicrophoneEnabledWithFallback(
       });
   }
 
-  // Force a fresh publication before enabling so selected input device and
-  // publish options are always applied.
-  try {
-    const existingPublication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
-    if (existingPublication) {
-      await room.localParticipant.setMicrophoneEnabled(false);
-    }
-  } catch (err) {
-    console.warn('[voice] Failed to reset existing microphone publication:', err);
-  }
-
   // Build capture options that include the user's noise suppression,
   // echo cancellation, and voice isolation preferences so every mic
   // enable/republish path applies them consistently.
   const captureOptions = buildAudioCaptureOptions(preferredDeviceId);
+
+  // If a mic track is already published, just unmute it instead of tearing
+  // down and re-publishing. This avoids a failure window where the disable
+  // succeeds but the re-enable fails, leaving the mic stuck off.
+  const existingPublication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+  if (existingPublication) {
+    try {
+      await ensurePublishedTrackUnmuted();
+      await room.localParticipant.setMicrophoneEnabled(true, captureOptions, microphonePublishOptions);
+      await applyNoiseGateIfNeeded(room);
+      return true;
+    } catch (err) {
+      console.warn('[voice] Failed to unmute existing mic track, will try fresh publish:', err);
+    }
+  }
 
   if (preferredDeviceId) {
     try {
@@ -1405,8 +1505,8 @@ interface VoiceStoreState {
 
   joinChannel: (channelId: string, guildId?: string) => Promise<void>;
   leaveChannel: () => Promise<void>;
-  toggleMute: () => void;
-  toggleDeaf: () => void;
+  toggleMute: () => Promise<void>;
+  toggleDeaf: () => Promise<void>;
   startStream: (qualityPreset?: string) => Promise<void>;
   stopStream: () => void;
   toggleVideo: () => void;
@@ -1457,6 +1557,12 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   previewStreamerId: null,
 
   joinChannel: async (channelId, guildId) => {
+    const currentState = get();
+    if (currentState.joining && currentState.joiningChannelId === channelId) {
+      return;
+    }
+    const joinAttempt = ++joinAttemptSeq;
+    activeJoinAttempt = joinAttempt;
     const previousSelfMute = get().selfMute;
     const previousSelfDeaf = get().selfDeaf;
     const shouldMuteOnJoin = previousSelfMute || previousSelfDeaf;
@@ -1466,7 +1572,25 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      existingRoom.disconnect();
+      startPendingDisconnect(existingRoom.disconnect());
+    }
+    // Wait for any in-flight Room.disconnect() (from leaveChannel or above)
+    // so the old WebSocket is fully closed before we open a new one.
+    // On Windows WebView2, rapidly opening a new socket to the same host can
+    // race with teardown of the previous socket and trigger long reconnect
+    // fallback paths. Prefer waiting for disconnect completion, then only add
+    // a small quiet period if teardown was very fast.
+    if (pendingDisconnect) {
+      const { timedOut, ageMs } = await waitForPendingDisconnect(DISCONNECT_WAIT_ON_JOIN_MS);
+      if (timedOut) {
+        console.warn(
+          `[voice] Disconnect still in-flight after ${DISCONNECT_WAIT_ON_JOIN_MS}ms; proceeding with join.`
+        );
+      }
+      const quietPeriodRemainingMs = Math.max(0, MIN_DISCONNECT_QUIET_PERIOD_MS - ageMs);
+      if (quietPeriodRemainingMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, quietPeriodRemainingMs));
+      }
     }
     forceRedForCompatibility = false;
     detachAllAttachedRemoteAudio();
@@ -1583,13 +1707,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         });
       });
 
-      // Prevent long client retries from making voice joins feel stuck.
-      await Promise.race([
-        room.connect(normalizedUrl, data.token),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Voice connection timed out.')), 12000);
-        }),
-      ]);
+      // Use LiveKit's native connection timeout/retry logic for initial join.
+      console.log('[voice] Connecting to LiveKit at:', normalizedUrl);
+      console.log('[voice] Server returned URL:', data.url, '→ normalized:', normalizedUrl);
+      await room.connect(normalizedUrl, data.token, LIVEKIT_CONNECT_OPTIONS);
       await room.startAudio().catch((err) => {
         console.warn('[voice] Failed to start audio playback:', err);
       });
@@ -1624,6 +1745,15 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         false,
         false
       );
+      if (activeJoinAttempt !== joinAttempt) {
+        clearActiveRoomListeners();
+        stopLocalMicAnalyser();
+        stopLocalAudioUplinkMonitor();
+        stopRemoteAudioReconcile();
+        room.disconnect();
+        detachAllAttachedRemoteAudio();
+        return;
+      }
       set((prev) => {
         const channelParticipants = new Map(prev.channelParticipants);
         const participants = new Map(prev.participants);
@@ -1655,6 +1785,26 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       });
       syncLivekitRoomPresence(room);
     } catch (error) {
+      const isLatestJoinAttempt = activeJoinAttempt === joinAttempt;
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Unable to connect to voice right now.';
+      console.error('[voice] Join attempt failed', {
+        channelId,
+        isLatestJoinAttempt,
+        joinedServer,
+        message,
+      });
+      if (!isLatestJoinAttempt) {
+        clearActiveRoomListeners();
+        stopLocalMicAnalyser();
+        stopLocalAudioUplinkMonitor();
+        stopRemoteAudioReconcile();
+        room?.disconnect();
+        detachAllAttachedRemoteAudio();
+        return;
+      }
       clearActiveRoomListeners();
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
@@ -1666,10 +1816,6 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           console.warn('[voice] rollback leave API error after failed join:', err);
         });
       }
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'Unable to connect to voice right now.';
       set({
         connected: false,
         joining: false,
@@ -1691,20 +1837,21 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   },
 
   leaveChannel: async () => {
+    activeJoinAttempt = ++joinAttemptSeq;
     const { channelId } = get();
-    if (channelId) {
-      await voiceApi.leaveChannel(channelId).catch((err) => {
-        console.warn('[voice] leave channel API error (continuing disconnect):', err);
-      });
-    }
     const authUser = useAuthStore.getState().user;
+    // Disconnect room and update UI FIRST so the user gets instant feedback.
     const currentRoom = get().room;
     if (currentRoom) {
       clearActiveRoomListeners();
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      currentRoom.disconnect();
+      // Store the disconnect promise so joinChannel can await it before
+      // opening a new connection. Without this, the old WebSocket teardown
+      // races with the new connect(), causing "could not establish signal
+      // connection" errors on rejoin.
+      startPendingDisconnect(currentRoom.disconnect());
     }
     void stopNativeSystemAudio();
     forceRedForCompatibility = false;
@@ -1747,9 +1894,25 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         previewStreamerId: null,
       };
     });
+    // Await the disconnect (with a timeout) so the WebSocket teardown has
+    // a better chance of completing before the user triggers a rejoin.
+    // The UI has already updated above, so this await doesn't block the user
+    // visually — it just keeps the async leaveChannel() promise open a bit
+    // longer which helps joinChannel's pendingDisconnect check.
+    if (pendingDisconnect) {
+      await waitForPendingDisconnect(DISCONNECT_WAIT_ON_LEAVE_MS);
+    }
+    // Notify server AFTER UI is clean. Fire-and-forget with a short timeout
+    // so a slow/hung server doesn't block anything. The server also detects
+    // our departure when the WebSocket/WebRTC connection drops.
+    if (channelId) {
+      voiceApi.leaveChannel(channelId).catch((err) => {
+        console.warn('[voice] leave channel API error (continuing disconnect):', err);
+      });
+    }
   },
 
-  toggleMute: () => {
+  toggleMute: async () => {
     const state = get();
     const nextSelfMute = !state.selfMute;
     const nextSelfDeaf = nextSelfMute ? state.selfDeaf : false;
@@ -1760,21 +1923,19 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     setAttachedRemoteAudioMuted(nextSelfDeaf);
     if (!state.room) return;
     const targetMicEnabled = !nextSelfMute;
-    void setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId()).then(
-      (ok) => {
-        if (ok && targetMicEnabled) {
-          startLocalAudioUplinkMonitor(state.room as Room);
-        } else if (!targetMicEnabled) {
-          stopLocalAudioUplinkMonitor();
-        }
-        if (ok || !targetMicEnabled) return;
-        // Keep UI truthful: if we failed to unmute the microphone, remain self-muted.
-        set({ selfMute: true });
-      }
-    );
+    const ok = await setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId());
+    if (ok && targetMicEnabled) {
+      startLocalAudioUplinkMonitor(state.room as Room);
+    } else if (!targetMicEnabled) {
+      stopLocalAudioUplinkMonitor();
+    }
+    if (!ok && targetMicEnabled) {
+      // Mic enable failed — revert UI to muted so it stays truthful.
+      set({ selfMute: true });
+    }
   },
 
-  toggleDeaf: () => {
+  toggleDeaf: async () => {
     const state = get();
     const nextSelfDeaf = !state.selfDeaf;
     const nextSelfMute = nextSelfDeaf ? true : state.selfMute;
@@ -1785,17 +1946,15 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     setAttachedRemoteAudioMuted(nextSelfDeaf);
     if (!state.room) return;
     const targetMicEnabled = !nextSelfMute;
-    void setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId()).then(
-      (ok) => {
-        if (ok && targetMicEnabled) {
-          startLocalAudioUplinkMonitor(state.room as Room);
-        } else if (!targetMicEnabled) {
-          stopLocalAudioUplinkMonitor();
-        }
-        if (ok || !targetMicEnabled) return;
-        set({ selfMute: true });
-      }
-    );
+    const ok = await setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId());
+    if (ok && targetMicEnabled) {
+      startLocalAudioUplinkMonitor(state.room as Room);
+    } else if (!targetMicEnabled) {
+      stopLocalAudioUplinkMonitor();
+    }
+    if (!ok && targetMicEnabled) {
+      set({ selfMute: true });
+    }
   },
 
   startStream: async (qualityPreset = '1080p60') => {
@@ -1895,11 +2054,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       //    encoder targets). Without explicit encoding params LiveKit falls
       //    back to very conservative defaults causing blocky, low-fps streams.
       const presetMap: Record<string, ScreenCapturePreset> = {
-        '720p30':      { width: 1280, height: 720,  frameRate: 30, maxBitrate: 5_000_000,   hint: 'detail' },
-        '1080p60':     { width: 1920, height: 1080, frameRate: 60, maxBitrate: 15_000_000,  hint: 'detail' },
-        '1440p60':     { width: 2560, height: 1440, frameRate: 60, maxBitrate: 25_000_000,  hint: 'detail' },
-        '4k60':        { width: 3840, height: 2160, frameRate: 60, maxBitrate: 40_000_000,  hint: 'motion' },
-        'movie-50':    { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000,  hint: 'motion' },
+        '720p30':      { width: 1280, height: 720,  frameRate: 30, maxBitrate: 8_000_000,   hint: 'motion' },
+        '1080p60':     { width: 1920, height: 1080, frameRate: 60, maxBitrate: 25_000_000,  hint: 'motion' },
+        '1440p60':     { width: 2560, height: 1440, frameRate: 60, maxBitrate: 35_000_000,  hint: 'motion' },
+        '4k60':        { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000,  hint: 'motion' },
+        'movie-50':    { width: 3840, height: 2160, frameRate: 60, maxBitrate: 60_000_000,  hint: 'motion' },
         'movie-100':   { width: 3840, height: 2160, frameRate: 60, maxBitrate: 100_000_000, hint: 'motion' },
       };
       const capture = presetMap[qualityPreset] ?? presetMap['1080p60'];
@@ -1926,7 +2085,12 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           priority: 'high',
         },
         screenShareSimulcastLayers: [],
-        videoCodec: 'h264',
+        // Pick the best codec the browser can actually encode.
+        // AV1 > VP9 > H.264 for quality at equivalent bitrate, especially
+        // in dark areas and gradients.  backupCodec (h264) covers subscribers
+        // that can't decode the primary.
+        videoCodec: detectBestVideoCodec(),
+        backupCodec: { codec: 'h264' },
         // Always maintain framerate for screen shares. Frame drops are far
         // more noticeable than resolution drops, and the viewer's display is
         // typically smaller than the source resolution anyway.
@@ -2009,12 +2173,13 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             // Prevent scale-down that some browsers apply by default.
             params.encodings[0].scaleResolutionDownBy = 1.0;
             params.encodings[0].networkPriority = 'high';
-            // Wider keyframe interval: fewer full frames = more bits for
-            // quality on P-frames. Default is often 2-3 seconds; we push
-            // to 4 seconds for screen content that changes incrementally.
+            // Keyframe interval: balance between quality (fewer keyframes
+            // = more bits for P-frames) and error recovery (shorter interval
+            // = faster recovery from artifacts). 2 seconds is a good middle
+            // ground for game streaming.
             // @ts-expect-error keyInterval is a non-standard but widely
             // supported Chrome/Edge extension to RTCRtpEncodingParameters
-            params.encodings[0].keyInterval = 240; // 4 seconds at 60fps
+            params.encodings[0].keyInterval = 120; // 2 seconds at 60fps
             await sender.setParameters(params);
           }
         }

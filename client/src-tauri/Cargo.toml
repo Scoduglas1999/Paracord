@@ -1,6 +1,6 @@
 [package]
 name = "paracord-desktop"
-version = "0.2.2"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.85"
 
@@ -8,7 +8,7 @@ rust-version = "1.85"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-os = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"

@@ -32,7 +32,7 @@ class GatewayConnection {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private sequence: number | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private allowReconnect = true;
   private sessionId: string | null = null;
   private _connected = false;
@@ -45,15 +45,31 @@ class GatewayConnection {
     const token = useAuthStore.getState().token;
     if (!token) return;
     this.allowReconnect = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
 
     this.ws = new WebSocket(resolveWsUrl());
+    const activeWs = this.ws;
 
-    this.ws.onopen = () => {
+    activeWs.onopen = () => {
       this.reconnectAttempts = 0;
       this._connected = true;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
     };
 
-    this.ws.onmessage = (event) => {
+    activeWs.onmessage = (event) => {
       try {
         const payload: GatewayPayload = JSON.parse(event.data);
         this.handlePayload(payload);
@@ -62,7 +78,10 @@ class GatewayConnection {
       }
     };
 
-    this.ws.onclose = () => {
+    activeWs.onclose = () => {
+      if (this.ws === activeWs) {
+        this.ws = null;
+      }
       this._connected = false;
       this.cleanup();
       if (this.allowReconnect) {
@@ -70,13 +89,13 @@ class GatewayConnection {
       }
     };
 
-    this.ws.onerror = () => {
-      this.ws?.close();
+    activeWs.onerror = () => {
+      activeWs.close();
     };
   }
 
   private handlePayload(payload: GatewayPayload) {
-    if (payload.s) this.sequence = payload.s;
+    if (payload.s !== undefined && payload.s !== null) this.sequence = payload.s;
 
     switch (payload.op) {
       case 10: // HELLO
@@ -323,10 +342,14 @@ class GatewayConnection {
   }
 
   private reconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    if (!this.allowReconnect || this.reconnectTimer) return;
+    const delay = Math.min(1000 * Math.pow(2, Math.min(this.reconnectAttempts, 5)), 30000);
     this.reconnectAttempts++;
-    setTimeout(() => this.connect(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.allowReconnect) return;
+      this.connect();
+    }, delay);
   }
 
   private cleanup() {
@@ -338,6 +361,10 @@ class GatewayConnection {
 
   disconnect() {
     this.allowReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.cleanup();
     this.ws?.close();
     this.ws = null;

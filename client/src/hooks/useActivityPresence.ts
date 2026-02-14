@@ -13,7 +13,7 @@ import { useAuthStore } from '../stores/authStore';
 import { usePresenceStore } from '../stores/presenceStore';
 import type { Activity, Presence } from '../types';
 
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 5000;
 
 interface ForegroundApplication {
   pid: number;

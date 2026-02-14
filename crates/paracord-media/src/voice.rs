@@ -286,7 +286,8 @@ impl VoiceManager {
                     user_id,
                     room_name = %room_name,
                     error = %err,
-                    "LiveKit participant check failed; assuming PRESENT to avoid cascading kicks"
+                    "LiveKit participant check failed; assuming PRESENT to avoid cascading kicks. \
+                     If this repeats, check that [livekit] api_key/api_secret match the running LiveKit instance."
                 );
                 // When we cannot reach LiveKit, default to "present".  A stale
                 // voice entry is cosmetic (cleaned up on next connect), but a

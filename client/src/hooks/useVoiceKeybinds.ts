@@ -87,6 +87,16 @@ function publishVoiceState() {
   );
 }
 
+async function toggleMuteAndPublish() {
+  await useVoiceStore.getState().toggleMute();
+  publishVoiceState();
+}
+
+async function toggleDeafAndPublish() {
+  await useVoiceStore.getState().toggleDeaf();
+  publishVoiceState();
+}
+
 export function useVoiceKeybinds() {
   const rawKeybinds = useAuthStore((s) => s.settings?.keybinds as Record<string, unknown> | undefined);
   const pushToTalkEngaged = useRef(false);
@@ -109,16 +119,14 @@ export function useVoiceKeybinds() {
       if (matchesBinding(event, bindings.toggleMute)) {
         if (event.repeat) return;
         event.preventDefault();
-        useVoiceStore.getState().toggleMute();
-        publishVoiceState();
+        void toggleMuteAndPublish();
         return;
       }
 
       if (matchesBinding(event, bindings.toggleDeafen)) {
         if (event.repeat) return;
         event.preventDefault();
-        useVoiceStore.getState().toggleDeaf();
-        publishVoiceState();
+        void toggleDeafAndPublish();
         return;
       }
 
@@ -126,9 +134,8 @@ export function useVoiceKeybinds() {
         event.preventDefault();
         if (event.repeat || pushToTalkEngaged.current) return;
         if (voiceState.selfMute) {
-          useVoiceStore.getState().toggleMute();
-          publishVoiceState();
           pushToTalkEngaged.current = true;
+          void toggleMuteAndPublish();
         }
       }
     };
@@ -143,8 +150,7 @@ export function useVoiceKeybinds() {
         return;
       }
       if (!voiceState.selfMute) {
-        useVoiceStore.getState().toggleMute();
-        publishVoiceState();
+        void toggleMuteAndPublish();
       }
       pushToTalkEngaged.current = false;
     };
@@ -153,8 +159,7 @@ export function useVoiceKeybinds() {
       if (!pushToTalkEngaged.current) return;
       const voiceState = useVoiceStore.getState();
       if (voiceState.connected && voiceState.channelId && !voiceState.selfMute) {
-        useVoiceStore.getState().toggleMute();
-        publishVoiceState();
+        void toggleMuteAndPublish();
       }
       pushToTalkEngaged.current = false;
     };

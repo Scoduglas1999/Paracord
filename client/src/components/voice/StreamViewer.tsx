@@ -22,6 +22,8 @@ interface StreamViewerProps {
   expectingStream?: boolean;
   onStopStream?: () => void;
   onStopWatching?: () => void;
+  /** When true, skip managing screen share subscriptions (managed externally). */
+  skipSubscriptionManagement?: boolean;
 }
 
 export function StreamViewer({
@@ -30,6 +32,7 @@ export function StreamViewer({
   expectingStream = false,
   onStopStream,
   onStopWatching,
+  skipSubscriptionManagement = false,
 }: StreamViewerProps) {
   const [volume, setVolume] = useState(1);
   const [showVolumeSlider, setShowVolumeSlider] = useState(false);
@@ -122,6 +125,10 @@ export function StreamViewer({
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
 
+  // Ref for skipSubscriptionManagement so attachTrack doesn't need it in deps
+  const skipSubRef = useRef(skipSubscriptionManagement);
+  skipSubRef.current = skipSubscriptionManagement;
+
   const setScreenShareSubscriptions = useCallback(
     (targetIdentities: Set<string>) => {
       if (!room) return;
@@ -149,18 +156,20 @@ export function StreamViewer({
     const videoEl = videoRef.current;
     if (!room || !videoEl || !streamerId) return;
 
-    const subscribedStreamers = new Set<string>();
-    if (streamerId !== localUserId) {
-      subscribedStreamers.add(streamerId);
+    if (!skipSubRef.current) {
+      const subscribedStreamers = new Set<string>();
+      if (streamerId !== localUserId) {
+        subscribedStreamers.add(streamerId);
+      }
+      if (
+        previewStreamerId &&
+        previewStreamerId !== localUserId &&
+        previewStreamerId !== streamerId
+      ) {
+        subscribedStreamers.add(previewStreamerId);
+      }
+      setScreenShareSubscriptions(subscribedStreamers);
     }
-    if (
-      previewStreamerId &&
-      previewStreamerId !== localUserId &&
-      previewStreamerId !== streamerId
-    ) {
-      subscribedStreamers.add(previewStreamerId);
-    }
-    setScreenShareSubscriptions(subscribedStreamers);
 
     let foundVideoTrack: MediaStreamTrack | null = null;
     let foundAudioTrack: MediaStreamTrack | null = null;
@@ -200,7 +209,18 @@ export function StreamViewer({
             break;
           }
         }
-        for (const publication of participant.audioTrackPublications.values()) {
+        // Log all audio publications for diagnostics
+        const audioPubs = [...participant.audioTrackPublications.values()];
+        console.info(
+          `[stream] ${participant.identity} audio publications:`,
+          audioPubs.map((p) => ({
+            source: p.source,
+            subscribed: p.isSubscribed,
+            hasTrack: !!p.track,
+            trackSid: p.trackSid,
+          }))
+        );
+        for (const publication of audioPubs) {
           if (
             publication.source === Track.Source.ScreenShareAudio &&
             publication.track
@@ -209,19 +229,33 @@ export function StreamViewer({
               publication.setSubscribed(true);
             }
             foundAudioTrack = publication.track.mediaStreamTrack;
+            console.info('[stream] Found ScreenShareAudio track:', {
+              readyState: foundAudioTrack?.readyState,
+              enabled: foundAudioTrack?.enabled,
+            });
             break;
           }
+        }
+        if (!foundAudioTrack) {
+          console.warn('[stream] No ScreenShareAudio track found — streamer may not be publishing audio');
         }
       }
     }
 
     if (foundVideoTrack && !(watchingSelf && hideSelfPreview)) {
-      // Only reassign srcObject when the track actually changes to avoid
-      // black frame flashing from unnecessary MediaStream recreation.
+      // Build a MediaStream with the video track, and include the audio
+      // track directly if available. Attaching audio to the same <video>
+      // element avoids WebView2 autoplay policy issues that can block a
+      // separate hidden <audio> element.
       const currentStream = videoEl.srcObject instanceof MediaStream ? videoEl.srcObject : null;
-      const currentTrack = currentStream?.getVideoTracks()[0] ?? null;
-      if (currentTrack !== foundVideoTrack) {
-        const stream = new MediaStream([foundVideoTrack]);
+      const currentVideoTrack = currentStream?.getVideoTracks()[0] ?? null;
+      const currentAudioTrack = currentStream?.getAudioTracks()[0] ?? null;
+      const wantAudio = foundAudioTrack && !watchingSelf ? foundAudioTrack : null;
+
+      if (currentVideoTrack !== foundVideoTrack || currentAudioTrack !== wantAudio) {
+        const tracks: MediaStreamTrack[] = [foundVideoTrack];
+        if (wantAudio) tracks.push(wantAudio);
+        const stream = new MediaStream(tracks);
         videoEl.srcObject = stream;
         videoEl.play().catch(() => {});
       }
@@ -229,6 +263,9 @@ export function StreamViewer({
       videoEl.srcObject = null;
     }
 
+    // Also maintain the separate <audio> element as a fallback for cases
+    // where the audio track arrives after the video or needs independent
+    // volume control.
     if (foundAudioTrack && !watchingSelf) {
       let audioEl = screenShareAudioRef.current;
       if (!audioEl) {
@@ -236,11 +273,9 @@ export function StreamViewer({
         audioEl.autoplay = true;
         audioEl.style.display = 'none';
         audioEl.setAttribute('data-paracord-stream-audio', 'true');
-        // No device rerouting needed — Process Loopback Exclusion prevents echo.
         document.body.appendChild(audioEl);
         screenShareAudioRef.current = audioEl;
       }
-      // Only reassign when the audio track actually changes.
       const currentAudioStream = audioEl.srcObject instanceof MediaStream ? audioEl.srcObject : null;
       const currentAudioTrack = currentAudioStream?.getAudioTracks()[0] ?? null;
       if (currentAudioTrack !== foundAudioTrack) {
@@ -258,7 +293,6 @@ export function StreamViewer({
           document.addEventListener('keydown', resumeOnGesture, { once: true });
         });
       }
-      // Always sync volume (may have changed without track reassignment)
       audioEl.volume = volumeRef.current;
     } else {
       cleanupScreenShareAudio();
@@ -311,7 +345,9 @@ export function StreamViewer({
       const videoEl = videoRef.current;
       if (videoEl) videoEl.srcObject = null;
       cleanupScreenShareAudio();
-      setScreenShareSubscriptions(new Set<string>());
+      if (!skipSubRef.current) {
+        setScreenShareSubscriptions(new Set<string>());
+      }
     };
   }, [room, attachTrack, cleanupScreenShareAudio, setScreenShareSubscriptions]);
 

@@ -26,6 +26,7 @@ export interface ServerConnection {
   sequence: number | null;
   sessionId: string | null;
   reconnectAttempts: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
   allowReconnect: boolean;
   connected: boolean;
 }
@@ -52,6 +53,13 @@ class ConnectionManager {
 
   /** Authenticate with a server using challenge-response, then connect gateway */
   async connectServer(serverId: string): Promise<void> {
+    const existing = this.connections.get(serverId);
+    if (existing) {
+      existing.allowReconnect = true;
+      this.connectGateway(existing);
+      return;
+    }
+
     const server = useServerListStore.getState().getServer(serverId);
     if (!server) throw new Error(`Server ${serverId} not found`);
 
@@ -89,6 +97,7 @@ class ConnectionManager {
       sequence: null,
       sessionId: null,
       reconnectAttempts: 0,
+      reconnectTimer: null,
       allowReconnect: true,
       connected: false,
     };
@@ -162,19 +171,35 @@ class ConnectionManager {
     const token = useServerListStore.getState().getServer(conn.serverId)?.token;
     if (!token) return;
 
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
+    }
+    if (
+      conn.ws &&
+      (conn.ws.readyState === WebSocket.OPEN || conn.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
     const wsBase = conn.serverUrl.replace(/\/+$/, '').replace(/^http/, 'ws');
     const wsUrl = `${wsBase}/gateway`;
 
     conn.ws = new WebSocket(wsUrl);
     conn.allowReconnect = true;
+    const activeWs = conn.ws;
 
-    conn.ws.onopen = () => {
+    activeWs.onopen = () => {
       conn.reconnectAttempts = 0;
       conn.connected = true;
+      if (conn.reconnectTimer) {
+        clearTimeout(conn.reconnectTimer);
+        conn.reconnectTimer = null;
+      }
       useServerListStore.getState().setConnected(conn.serverId, true);
     };
 
-    conn.ws.onmessage = (event) => {
+    activeWs.onmessage = (event) => {
       try {
         const payload: GatewayPayload = JSON.parse(event.data);
         this.handlePayload(conn, payload);
@@ -183,7 +208,9 @@ class ConnectionManager {
       }
     };
 
-    conn.ws.onclose = () => {
+    activeWs.onclose = () => {
+      if (conn.ws !== activeWs) return;
+      conn.ws = null;
       conn.connected = false;
       useServerListStore.getState().setConnected(conn.serverId, false);
       this.cleanupConnection(conn);
@@ -192,13 +219,13 @@ class ConnectionManager {
       }
     };
 
-    conn.ws.onerror = () => {
-      conn.ws?.close();
+    activeWs.onerror = () => {
+      activeWs.close();
     };
   }
 
   private handlePayload(conn: ServerConnection, payload: GatewayPayload): void {
-    if (payload.s) conn.sequence = payload.s;
+    if (payload.s !== undefined && payload.s !== null) conn.sequence = payload.s;
 
     switch (payload.op) {
       case 10: { // HELLO
@@ -450,10 +477,16 @@ class ConnectionManager {
   }
 
   private reconnectGateway(conn: ServerConnection): void {
-    if (conn.reconnectAttempts >= 10) return;
-    const delay = Math.min(1000 * Math.pow(2, conn.reconnectAttempts), 30000);
+    if (!conn.allowReconnect || conn.reconnectTimer) return;
+    if (!this.connections.has(conn.serverId)) return;
+    const delay = Math.min(1000 * Math.pow(2, Math.min(conn.reconnectAttempts, 5)), 30000);
     conn.reconnectAttempts++;
-    setTimeout(() => this.connectGateway(conn), delay);
+    conn.reconnectTimer = setTimeout(() => {
+      conn.reconnectTimer = null;
+      if (!conn.allowReconnect) return;
+      if (!this.connections.has(conn.serverId)) return;
+      this.connectGateway(conn);
+    }, delay);
   }
 
   private cleanupConnection(conn: ServerConnection): void {
@@ -468,6 +501,10 @@ class ConnectionManager {
     const conn = this.connections.get(serverId);
     if (!conn) return;
     conn.allowReconnect = false;
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = null;
+    }
     this.cleanupConnection(conn);
     conn.ws?.close();
     conn.ws = null;

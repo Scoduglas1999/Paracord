@@ -54,8 +54,11 @@ export function useVoice() {
     await useVoiceStore.getState().leaveChannel();
   }, []);
 
-  const toggleMute = useCallback(() => {
-    useVoiceStore.getState().toggleMute();
+  const toggleMute = useCallback(async () => {
+    await useVoiceStore.getState().toggleMute();
+    // Send gateway update after the async mic operation settles so the
+    // server always reflects the actual mute outcome (the store reverts
+    // selfMute if the mic enable fails).
     const state = useVoiceStore.getState();
     gateway.updateVoiceState(
       state.guildId,
@@ -65,8 +68,8 @@ export function useVoice() {
     );
   }, []);
 
-  const toggleDeaf = useCallback(() => {
-    useVoiceStore.getState().toggleDeaf();
+  const toggleDeaf = useCallback(async () => {
+    await useVoiceStore.getState().toggleDeaf();
     const state = useVoiceStore.getState();
     gateway.updateVoiceState(
       state.guildId,

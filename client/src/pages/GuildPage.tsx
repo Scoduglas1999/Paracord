@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { EyeOff, LayoutList, Monitor, MonitorOff, PanelLeft, PhoneOff, PictureInPicture2, Users } from 'lucide-react';
 import { RoomEvent, Track } from 'livekit-client';
@@ -7,10 +7,14 @@ import { MessageList } from '../components/message/MessageList';
 import { MessageInput } from '../components/message/MessageInput';
 import { StreamViewer } from '../components/voice/StreamViewer';
 import { VideoGrid } from '../components/voice/VideoGrid';
+import { SplitPane } from '../components/voice/SplitPane';
+import type { PaneSource } from '../components/voice/SplitPaneSourcePicker';
 import { useChannelStore } from '../stores/channelStore';
 import { useGuildStore } from '../stores/guildStore';
 import { useVoice } from '../hooks/useVoice';
 import { useStream } from '../hooks/useStream';
+import { useWebcamTiles } from '../hooks/useWebcamTiles';
+import { useScreenShareSubscriptions } from '../hooks/useScreenShareSubscriptions';
 import { useVoiceStore } from '../stores/voiceStore';
 import { useAuthStore } from '../stores/authStore';
 import type { Message } from '../types';
@@ -83,6 +87,15 @@ export function GuildPage() {
     return window.matchMedia('(max-width: 768px)').matches;
   });
   const room = useVoiceStore((s) => s.room);
+  const previewStreamerId = useVoiceStore((s) => s.previewStreamerId);
+
+  // Split-pane state for Side mode
+  const [splitState, setSplitState] = useState<{ left: PaneSource; right: PaneSource }>({
+    left: { type: 'none' },
+    right: { type: 'none' },
+  });
+
+  const webcamTiles = useWebcamTiles();
 
   const channelName = channel?.name || 'general';
   const isVoice = channel?.type === 2;
@@ -226,6 +239,112 @@ export function GuildPage() {
     }
   }, [isPhoneLayout, videoLayout]);
 
+  // Track previous videoLayout to detect entering/leaving Side mode
+  const prevLayoutRef = useRef<VideoLayout>(videoLayout);
+
+  // On entering Side mode: initialize left from watchedStreamerId
+  useEffect(() => {
+    const prev = prevLayoutRef.current;
+    prevLayoutRef.current = videoLayout;
+
+    if (videoLayout === 'side' && prev !== 'side') {
+      setSplitState({
+        left: watchedStreamerId
+          ? { type: 'stream', userId: watchedStreamerId }
+          : { type: 'none' },
+        right: { type: 'none' },
+      });
+    }
+    // On leaving Side mode: map left pane stream → watchedStreamerId
+    if (videoLayout !== 'side' && prev === 'side') {
+      setSplitState((s) => {
+        if (s.left.type === 'stream') {
+          setWatchedStreamer(s.left.userId);
+        }
+        return s;
+      });
+    }
+  }, [videoLayout, watchedStreamerId, setWatchedStreamer]);
+
+  // watchedStreamerId changes while in Side mode → update left pane
+  useEffect(() => {
+    if (videoLayout !== 'side') return;
+    if (watchedStreamerId) {
+      setSplitState((prev) => {
+        if (prev.left.type === 'stream' && prev.left.userId === watchedStreamerId) return prev;
+        return { ...prev, left: { type: 'stream', userId: watchedStreamerId } };
+      });
+    }
+  }, [watchedStreamerId, videoLayout]);
+
+  // Clean up pane sources when streams/webcams become unavailable (1.2s debounce)
+  useEffect(() => {
+    if (videoLayout !== 'side') return;
+
+    const timeoutId = window.setTimeout(() => {
+      setSplitState((prev) => {
+        let { left, right } = prev;
+        let changed = false;
+
+        const webcamIds = new Set(webcamTiles.map((t) => t.participantId));
+
+        if (left.type === 'stream' && !activeStreamerSet.has(left.userId)) {
+          const isSelf = currentUserId != null && left.userId === currentUserId;
+          if (!(isSelf && selfStream)) {
+            left = { type: 'none' };
+            changed = true;
+          }
+        }
+        if (left.type === 'webcam' && !webcamIds.has(left.userId)) {
+          left = { type: 'none' };
+          changed = true;
+        }
+        if (right.type === 'stream' && !activeStreamerSet.has(right.userId)) {
+          const isSelf = currentUserId != null && right.userId === currentUserId;
+          if (!(isSelf && selfStream)) {
+            right = { type: 'none' };
+            changed = true;
+          }
+        }
+        if (right.type === 'webcam' && !webcamIds.has(right.userId)) {
+          right = { type: 'none' };
+          changed = true;
+        }
+
+        return changed ? { left, right } : prev;
+      });
+    }, 1200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [videoLayout, activeStreamerSet, webcamTiles, currentUserId, selfStream]);
+
+  // Centralized screen share subscriptions in Side mode
+  const splitSubscribedIds = useMemo(() => {
+    if (videoLayout !== 'side') return null;
+    const ids = new Set<string>();
+    if (splitState.left.type === 'stream' && splitState.left.userId !== currentUserId) {
+      ids.add(splitState.left.userId);
+    }
+    if (splitState.right.type === 'stream' && splitState.right.userId !== currentUserId) {
+      ids.add(splitState.right.userId);
+    }
+    if (previewStreamerId && previewStreamerId !== currentUserId) {
+      ids.add(previewStreamerId);
+    }
+    return ids;
+  }, [videoLayout, splitState, currentUserId, previewStreamerId]);
+
+  useScreenShareSubscriptions(splitSubscribedIds);
+
+  // Participant name map for source picker display
+  const participantNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [id, p] of participants) {
+      if (p.username) map.set(id, p.username);
+    }
+    return map;
+  }, [participants]);
+
   if (isLoading) {
     return (
       <div className="flex h-full min-h-0 flex-col">
@@ -367,7 +486,7 @@ export function GuildPage() {
           </div>
           {inSelectedVoiceChannel && (
             <div className="flex min-h-0 flex-1 flex-col gap-1.5 sm:gap-2">
-              {watchedStreamerId && (
+              {(watchedStreamerId || videoLayout === 'side') && (
                 <div className="flex items-center gap-1.5 overflow-x-auto px-1 pb-0.5">
                   <span className="text-xs font-medium text-text-muted">View:</span>
                   {([
@@ -392,17 +511,35 @@ export function GuildPage() {
                   ))}
                 </div>
               )}
-              {watchedStreamerId ? (
-                videoLayout === 'side' ? (
-                  <div className="flex min-h-0 flex-1 flex-col gap-2 md:flex-row">
-                    <div className="min-h-0 max-h-[38vh] flex-1 overflow-hidden rounded-2xl border border-border-subtle md:max-h-none">
-                      <VideoGrid layout="sidebar" />
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
-                      {streamViewerElement}
-                    </div>
-                  </div>
-                ) : videoLayout === 'pip' ? (
+              {videoLayout === 'side' ? (
+                <div className="flex min-h-0 flex-1 gap-2">
+                  <SplitPane
+                    source={splitState.left}
+                    onSourceChange={(src) => setSplitState((prev) => ({ ...prev, left: src }))}
+                    otherPaneSource={splitState.right}
+                    activeStreamers={activeStreamers}
+                    webcamTiles={webcamTiles}
+                    participantNames={participantNames}
+                    currentUserId={currentUserId}
+                    selfStream={selfStream}
+                    activeStreamerSet={activeStreamerSet}
+                    onStopStream={() => { stopStream(); setStreamError(null); }}
+                  />
+                  <SplitPane
+                    source={splitState.right}
+                    onSourceChange={(src) => setSplitState((prev) => ({ ...prev, right: src }))}
+                    otherPaneSource={splitState.left}
+                    activeStreamers={activeStreamers}
+                    webcamTiles={webcamTiles}
+                    participantNames={participantNames}
+                    currentUserId={currentUserId}
+                    selfStream={selfStream}
+                    activeStreamerSet={activeStreamerSet}
+                    onStopStream={() => { stopStream(); setStreamError(null); }}
+                  />
+                </div>
+              ) : watchedStreamerId ? (
+                videoLayout === 'pip' ? (
                   <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
                     {streamViewerElement}
                     <div className="absolute bottom-3 right-3 z-10">

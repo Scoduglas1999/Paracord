@@ -248,10 +248,10 @@ fn default_livekit_secret() -> String {
     "devsecret".into()
 }
 fn default_livekit_url() -> String {
-    "ws://localhost:7880".into()
+    "ws://127.0.0.1:7880".into()
 }
 fn default_livekit_http_url() -> String {
-    "http://localhost:7880".into()
+    "http://127.0.0.1:7880".into()
 }
 fn default_upnp_lease() -> u32 {
     3600

@@ -1,0 +1,19 @@
+FROM rust:1.88-bookworm AS builder
+
+# Install Node.js 22 for building the client UI
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    node --version && npm --version
+
+WORKDIR /src
+COPY . .
+
+# Build the client web UI first (needed for embed-ui feature)
+RUN cd client && npm ci && npm run build
+
+# Build the Rust server in release mode with the embedded UI
+RUN cargo build --release --bin paracord-server
+
+# Output stage - just copy the binary out
+FROM debian:bookworm-slim
+COPY --from=builder /src/target/release/paracord-server /out/paracord-server

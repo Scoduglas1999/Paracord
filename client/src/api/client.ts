@@ -6,6 +6,7 @@ import { resolveApiBaseUrl } from '../lib/apiBaseUrl';
 export const apiClient = axios.create({
   baseURL: resolveApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
+  timeout: 15_000, // 15s default timeout — prevents hangs if server is unresponsive
 });
 
 const clearPersistedAuth = () => {

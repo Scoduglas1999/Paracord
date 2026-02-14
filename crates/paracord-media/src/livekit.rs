@@ -133,6 +133,25 @@ impl LiveKitConfig {
         Ok(token)
     }
 
+    /// Generate a room-scoped admin token for participant-level operations.
+    ///
+    /// Some RoomService endpoints (e.g. ListParticipants/UpdateParticipant)
+    /// require `roomAdmin` + `room` grants, not just global admin claims.
+    fn generate_room_admin_token(&self, room_name: &str) -> Result<String, anyhow::Error> {
+        self.generate_admin_token(VideoGrant {
+            room_admin: Some(true),
+            room_list: Some(true),
+            room_join: None,
+            room: Some(room_name.to_string()),
+            room_create: None,
+            can_publish: None,
+            can_subscribe: None,
+            can_publish_data: None,
+            can_publish_sources: None,
+            hidden: None,
+        })
+    }
+
     /// Generate a token for joining a voice channel.
     ///
     /// `can_publish` controls whether the user can speak (false = listen-only / push-to-talk off).
@@ -327,6 +346,14 @@ impl LiveKitConfig {
         Ok(token)
     }
 
+    /// Build a reqwest client with a standard timeout for LiveKit API calls.
+    fn api_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
     /// Create a room via LiveKit API.
     pub async fn create_room(
         &self,
@@ -336,7 +363,7 @@ impl LiveKitConfig {
     ) -> Result<(), anyhow::Error> {
         let admin_token = self.generate_admin_token(VideoGrant::admin())?;
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/CreateRoom", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))
@@ -364,7 +391,7 @@ impl LiveKitConfig {
     pub async fn delete_room(&self, room_name: &str) -> Result<(), anyhow::Error> {
         let admin_token = self.generate_admin_token(VideoGrant::admin())?;
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/DeleteRoom", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))
@@ -385,12 +412,9 @@ impl LiveKitConfig {
 
     /// List participants in a room.
     pub async fn list_participants(&self, room_name: &str) -> Result<Vec<serde_json::Value>, anyhow::Error> {
-        let admin_token = self.generate_admin_token(VideoGrant {
-            room_list: Some(true),
-            ..VideoGrant::admin()
-        })?;
+        let admin_token = self.generate_room_admin_token(room_name)?;
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/ListParticipants", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))
@@ -415,6 +439,37 @@ impl LiveKitConfig {
         Ok(participants)
     }
 
+    /// Verify that admin API credentials are accepted by the running LiveKit
+    /// instance.  Returns `Ok(())` on success or an error describing the
+    /// mismatch.  Called at server startup so operators see a clear warning
+    /// instead of silent "assuming PRESENT" fallbacks later.
+    pub async fn check_health(&self) -> Result<(), anyhow::Error> {
+        let admin_token = self.generate_admin_token(VideoGrant::admin())?;
+
+        let client = Self::api_client();
+        let resp = client
+            .post(format!("{}/twirp/livekit.RoomService/ListRooms", self.http_url))
+            .header("Authorization", format!("Bearer {}", admin_token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({}))
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "LiveKit admin API check failed (HTTP {}): {}. \
+                 This usually means the api_key/api_secret in paracord.toml \
+                 do not match the running LiveKit instance. \
+                 Restart LiveKit or update your config to use matching keys.",
+                status,
+                body,
+            );
+        }
+        Ok(())
+    }
+
     /// Server-side mute a participant (set their published tracks to muted).
     pub async fn mute_participant(
         &self,
@@ -423,9 +478,9 @@ impl LiveKitConfig {
         track_sid: &str,
         muted: bool,
     ) -> Result<(), anyhow::Error> {
-        let admin_token = self.generate_admin_token(VideoGrant::admin())?;
+        let admin_token = self.generate_room_admin_token(room_name)?;
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/MutePublishedTrack", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))
@@ -455,7 +510,7 @@ impl LiveKitConfig {
         can_publish: Option<bool>,
         can_subscribe: Option<bool>,
     ) -> Result<(), anyhow::Error> {
-        let admin_token = self.generate_admin_token(VideoGrant::admin())?;
+        let admin_token = self.generate_room_admin_token(room_name)?;
 
         let mut permission = serde_json::Map::new();
         if let Some(v) = can_publish {
@@ -466,7 +521,7 @@ impl LiveKitConfig {
         }
         permission.insert("canPublishData".to_string(), serde_json::Value::Bool(true));
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/UpdateParticipant", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))
@@ -493,9 +548,9 @@ impl LiveKitConfig {
         room_name: &str,
         identity: &str,
     ) -> Result<(), anyhow::Error> {
-        let admin_token = self.generate_admin_token(VideoGrant::admin())?;
+        let admin_token = self.generate_room_admin_token(room_name)?;
 
-        let client = reqwest::Client::new();
+        let client = Self::api_client();
         let resp = client
             .post(format!("{}/twirp/livekit.RoomService/RemoveParticipant", self.http_url))
             .header("Authorization", format!("Bearer {}", admin_token))

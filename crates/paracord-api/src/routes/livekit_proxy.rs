@@ -15,14 +15,30 @@ use paracord_core::AppState;
 
 /// Combined handler: upgrades WebSocket requests, proxies HTTP requests.
 pub async fn livekit_proxy(State(state): State<AppState>, req: Request) -> Response {
+    let uri = req.uri().to_string();
+    let method = req.method().clone();
+    let has_upgrade = req.headers().get("upgrade").is_some();
+
     // Try to extract WebSocketUpgrade from the request
     let (mut parts, body) = req.into_parts();
-    if let Ok(ws) = WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
-        let req = Request::from_parts(parts, body);
-        handle_ws(state, ws, req)
-    } else {
-        let req = Request::from_parts(parts, body);
-        handle_http(state, req).await
+    match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
+        Ok(ws) => {
+            tracing::info!("LiveKit proxy: WebSocket upgrade for {} {}", method, uri);
+            let req = Request::from_parts(parts, body);
+            handle_ws(state, ws, req)
+        }
+        Err(e) => {
+            if has_upgrade {
+                tracing::warn!(
+                    "LiveKit proxy: WebSocket upgrade extraction FAILED for {} {} (had Upgrade header): {}",
+                    method, uri, e
+                );
+            } else {
+                tracing::debug!("LiveKit proxy: HTTP request {} {}", method, uri);
+            }
+            let req = Request::from_parts(parts, body);
+            handle_http(state, req).await
+        }
     }
 }
 
@@ -50,6 +66,7 @@ fn build_target(livekit_http_url: &str, req: &Request, ws: bool) -> String {
 
 fn handle_ws(state: AppState, ws: WebSocketUpgrade, req: Request) -> Response {
     let target = build_target(&state.config.livekit_http_url, &req, true);
+    tracing::info!("LiveKit WS proxy: upgrading connection, backend target: {}", target);
     // LiveKit signaling messages (SyncState with SDP) can be large.
     // Increase from axum's default 64 KB to 16 MB.
     ws.max_message_size(16 * 1024 * 1024)
@@ -66,18 +83,82 @@ async fn proxy_ws(client_socket: WebSocket, target: String) {
     use axum::extract::ws::Message as AMsg;
     use tokio_tungstenite::tungstenite::Message as TMsg;
 
+    // On Windows, "localhost" can resolve to IPv6 [::1] which hangs if
+    // LiveKit only listens on IPv4.  Force 127.0.0.1 for reliability.
+    let target = target.replace("://localhost:", "://127.0.0.1:");
+
     // Use a custom config to allow large LiveKit signaling messages.
     let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(16 * 1024 * 1024))
         .max_frame_size(Some(16 * 1024 * 1024));
-    let backend =
-        match tokio_tungstenite::connect_async_with_config(&target, Some(ws_config), false).await {
-            Ok((ws_stream, _)) => ws_stream,
-            Err(e) => {
-                tracing::error!("Failed to connect to LiveKit backend at {}: {}", target, e);
-                return;
+
+    // Retry connecting to the LiveKit backend with backoff.  LiveKit can be
+    // slow to accept connections right after room creation, so retrying at
+    // the proxy level avoids burning through the client SDK's limited
+    // connect retries on transient backend delays.
+    const MAX_BACKEND_RETRIES: u32 = 5;
+    const BACKEND_CONNECT_TIMEOUT_SECS: u64 = 5;
+
+    let mut backend_opt = None;
+    for attempt in 0..MAX_BACKEND_RETRIES {
+        let connect_fut =
+            tokio_tungstenite::connect_async_with_config(&target, Some(ws_config.clone()), false);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(BACKEND_CONNECT_TIMEOUT_SECS),
+            connect_fut,
+        )
+        .await
+        {
+            Ok(Ok((ws_stream, _))) => {
+                backend_opt = Some(ws_stream);
+                break;
             }
-        };
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    "LiveKit backend connect attempt {}/{} failed for {}: {}",
+                    attempt + 1,
+                    MAX_BACKEND_RETRIES,
+                    target,
+                    e
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "LiveKit backend connect attempt {}/{} timed out for {} ({}s)",
+                    attempt + 1,
+                    MAX_BACKEND_RETRIES,
+                    target,
+                    BACKEND_CONNECT_TIMEOUT_SECS
+                );
+            }
+        }
+        if attempt + 1 < MAX_BACKEND_RETRIES {
+            tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)))
+                .await;
+        }
+    }
+
+    let backend = match backend_opt {
+        Some(b) => b,
+        None => {
+            tracing::error!(
+                "All {} attempts to connect to LiveKit backend at {} failed. \
+                 Check that LiveKit is running and accessible.",
+                MAX_BACKEND_RETRIES,
+                target
+            );
+            // Send a proper close frame so the client SDK gets a clear error
+            // instead of an ambiguous connection drop.
+            let (mut client_write, _) = client_socket.split();
+            let _ = client_write
+                .send(AMsg::Close(Some(axum::extract::ws::CloseFrame {
+                    code: 1013, // Try Again Later
+                    reason: "LiveKit backend unavailable".into(),
+                })))
+                .await;
+            return;
+        }
+    };
 
     let (mut backend_write, mut backend_read) = backend.split();
     let (mut client_write, mut client_read) = client_socket.split();

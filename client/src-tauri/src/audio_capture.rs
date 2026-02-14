@@ -127,8 +127,12 @@ mod win_process_loopback {
                 },
             };
 
-            // Build PROPVARIANT with VT_BLOB pointing to our activation params
-            let mut prop = PROPVARIANT::default();
+            // Build PROPVARIANT with VT_BLOB pointing to our activation params.
+            // IMPORTANT: We wrap in ManuallyDrop because PROPVARIANT's Drop impl
+            // calls PropVariantClear, which would try to CoTaskMemFree the blob
+            // data pointer. Since that pointer points to our stack-local `params`,
+            // freeing it would crash the process with a heap corruption.
+            let mut prop = std::mem::ManuallyDrop::new(PROPVARIANT::default());
             {
                 let inner = &mut prop.Anonymous.Anonymous;
                 inner.vt = VT_BLOB;
@@ -141,13 +145,25 @@ mod win_process_loopback {
             let _operation = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                 &IAudioClient::IID,
-                Some(&prop as *const PROPVARIANT),
+                Some(&*prop as *const PROPVARIANT),
                 &handler,
             )?;
 
             // Wait for the completion callback (5 second timeout)
             let _ = WaitForSingleObject(event, 5000);
             let _ = CloseHandle(event);
+
+            // Zero out the blob pointer before dropping so nothing tries to free it.
+            {
+                let inner = &mut prop.Anonymous.Anonymous;
+                inner.vt = windows::Win32::System::Variant::VT_EMPTY;
+                inner.Anonymous.blob = BLOB {
+                    cbSize: 0,
+                    pBlobData: std::ptr::null_mut(),
+                };
+            }
+            // Now safe to drop (VT_EMPTY won't free anything).
+            std::mem::ManuallyDrop::drop(&mut prop);
 
             let guard = result_holder.lock().unwrap();
             match guard.as_ref() {
@@ -167,6 +183,17 @@ fn capture_loop(
     channel: &Channel<AudioChunk>,
     stop_flag: &Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize COM on this thread — required for all WASAPI / IAudioClient calls.
+    // Both the Process Loopback path and the legacy WASAPI path need COM.
+    unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_MULTITHREADED,
+        )
+        .ok()
+        .map_err(|e| format!("COM initialization failed: {e}"))?;
+    }
+
     // Try the Process Loopback Exclusion API first (Windows 10 2004+).
     // This captures all system audio EXCEPT our own process, eliminating echo.
     let my_pid = std::process::id();
@@ -175,10 +202,19 @@ fn capture_loop(
         my_pid
     );
 
-    match win_process_loopback::activate_process_loopback_exclude(my_pid) {
+    let result = match win_process_loopback::activate_process_loopback_exclude(my_pid) {
         Ok(client) => {
             eprintln!("[audio_capture] Process Loopback Exclusion API activated successfully");
-            capture_loop_with_client(channel, stop_flag, &client)
+            match capture_loop_with_client(channel, stop_flag, &client) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    eprintln!(
+                        "[audio_capture] Process Loopback capture failed ({e}), \
+                         falling back to legacy WASAPI loopback"
+                    );
+                    capture_loop_legacy(channel, stop_flag)
+                }
+            }
         }
         Err(e) => {
             eprintln!(
@@ -187,7 +223,13 @@ fn capture_loop(
             );
             capture_loop_legacy(channel, stop_flag)
         }
+    };
+
+    unsafe {
+        windows::Win32::System::Com::CoUninitialize();
     }
+
+    result
 }
 
 /// Run the capture loop using a windows-rs IAudioClient obtained from
@@ -214,16 +256,15 @@ fn capture_loop_with_client(
         let bits_per_sample = format.wBitsPerSample as usize;
         let bytes_per_sample = bits_per_sample / 8;
 
-        // Get device period for buffer duration
-        let mut default_period: i64 = 0;
-        let mut min_period: i64 = 0;
-        client.GetDevicePeriod(Some(&mut default_period), Some(&mut min_period))?;
-
-        // Initialize in shared mode with event-driven buffering
+        // Initialize in shared mode with loopback + event-driven buffering.
+        // AUDCLNT_STREAMFLAGS_LOOPBACK is required even for the Process
+        // Loopback virtual device — it tells the audio engine we're capturing.
+        // Per MSDN, both hnsBufferDuration and hnsPeriodicity MUST be 0
+        // for shared-mode streams using event-driven buffering.
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            min_period,
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            0,
             0,
             format_ptr,
             None,

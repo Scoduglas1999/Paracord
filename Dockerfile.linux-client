@@ -1,0 +1,29 @@
+FROM rust:1.88-bookworm AS builder
+
+# Install Node.js 22 for building the client
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    node --version && npm --version
+
+# Install Tauri Linux dependencies
+RUN apt-get update && apt-get install -y \
+    libgtk-3-dev \
+    libwebkit2gtk-4.1-dev \
+    librsvg2-dev \
+    patchelf \
+    libglib2.0-dev \
+    libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev \
+    libasound2-dev \
+    libayatana-appindicator3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# Install client deps and build Tauri deb bundle
+RUN cd client && npm ci && SQLX_OFFLINE=true npx tauri build --bundles deb
+
+# Output stage - copy the deb out
+FROM debian:bookworm-slim
+COPY --from=builder /src/client/src-tauri/target/release/bundle/deb/ /out/

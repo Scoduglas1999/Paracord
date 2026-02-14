@@ -520,7 +520,17 @@ async fn wait_for_identify_or_resume(
                                     return Some((resumed, true));
                                 }
                             }
-                            return None;
+                            // If resume can't be honored (cache miss/mismatch), fall back to a
+                            // fresh session immediately so clients recover without an extra
+                            // invalid-session reconnect cycle.
+                            let guild_ids =
+                                paracord_db::guilds::get_user_guilds(&state.db, claims.sub)
+                                    .await
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(|g| g.id)
+                                    .collect();
+                            return Some((Session::new(claims.sub, guild_ids), false));
                         }
                     }
                 }
