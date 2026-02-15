@@ -3,35 +3,48 @@
 </p>
 
 <p align="center">
-  A self-hostable, open-source Discord alternative with federation in active development.
+  A self-hostable, open-source Discord alternative with federation, E2E encryption, and a bot platform.
 </p>
 
 <p align="center">
   <a href="../../releases/latest">Download</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
+  <a href="#docker">Docker</a> &bull;
   <a href="#development">Development</a>
 </p>
 
 ---
 
-> **NOTE**: This app is in its infancy, and was literally made in my free time after my real job in around 72 hours. I will continue updating it as I actually see potential, but just know that for the time being things won't be perfect. There may be bugs, UI elements might feel like they're not totally fleshed out. For now, just kind of roll with it. If you do have any feature suggestions, by all means I'm all ears. 
+> **NOTE**: This project started as a weekend build and has grown fast. I'm one person building this in my free time after work, so things won't always be polished. There will be bugs, some UI elements will feel rough around the edges. That said, it's come a long way and new features are landing constantly. If you have feature suggestions or run into issues, I'm all ears.
 
 ## The Why
 
-On February 9th, 2026, Discord's CEO announced that they would be starting to roll out age verification in the coming month. This meant that all accounts would be labeled as "teen" and one would have to prove they were an adult through an AI powered face scan or uploading government issued ID. The privacy implications of this should be incredibly obvious, and at least my group of friends that regularly used Discord were 100% against giving Discord any of this information, and frankly, didn't feel they should have to. So Paracord was built as a privacy-first, self-hosted alternative in under a week, with full federation and decentralized operation now being built out in active phases. Many new features will be coming to Paracord at breakneck speed, and it already includes many of Nitro's big features like high resolution streaming, just without the paywall :).
+On February 9th, 2026, Discord's CEO announced that they would be starting to roll out age verification in the coming month. This meant that all accounts would be labeled as "teen" and one would have to prove they were an adult through an AI powered face scan or uploading government issued ID. The privacy implications of this should be incredibly obvious, and at least my group of friends that regularly used Discord were 100% against giving Discord any of this information, and frankly, didn't feel they should have to. So Paracord was built as a privacy-first, self-hosted alternative in under a week, with full federation and decentralized operation now being built out in active phases. Many new features are coming to Paracord at breakneck speed, and it already includes many of Nitro's big features like high resolution streaming, just without the paywall :).
 
 ## Features
 
 ### Text Chat
 
-Guilds, channels, and DMs with the full messaging experience — send, edit, delete, reply, pin, react with emoji, attach files via drag-and-drop, and see who's typing in real-time. Images embed inline, files show name and size, and messages group by author just like you'd expect.
+Guilds, channels, and DMs with the full messaging experience — send, edit, delete, reply, pin, react with emoji, attach files via drag-and-drop, and see who's typing in real-time. Images embed inline with a lightbox viewer (zoom, pan, keyboard navigation), files show name and size, and messages group by author just like you'd expect. Full-text message search with author and date filters. Markdown toolbar with keyboard shortcuts (Ctrl+B, Ctrl+I, etc.) and right-click context menus for quick actions.
 
 <img width="2537" height="1387" alt="image" src="https://github.com/user-attachments/assets/e6e4da61-1352-4e17-bd5e-b2a350aac3b4" />
 
+### Threads
+
+Start a thread from any message to branch a conversation without cluttering the main channel. Thread panel slides in from the side so you can follow both the channel and the thread at the same time.
+
+### Polls
+
+Create polls with 2-10 options, optional multi-select, and expiry timers. Votes update live and results render inline in the message feed.
+
+### Forum Channels
+
+Dedicated forum-style channels with tag support for organizing longer-form discussions. Think Discord's forum channels, but self-hosted.
+
 ### Voice Chat
 
-WebRTC voice powered by a bundled LiveKit SFU. Mute, deafen, pick your mic and speakers, and toggle noise suppression, echo cancellation, and noise gate. Speaking indicators light up in real-time, and join/leave sounds play when people hop in and out of channels. Configurable keybinds for mute, deafen, and push-to-talk.
+WebRTC voice powered by a bundled LiveKit SFU. Mute, deafen, pick your mic and speakers, and toggle noise suppression, echo cancellation, and noise gate. Speaking indicators light up in real-time, and join/leave sounds play when people hop in and out of channels. Configurable keybinds for mute, deafen, and push-to-talk. Split-pane layout for viewing streams while staying in the voice channel.
 
 <img width="2537" height="1379" alt="image" src="https://github.com/user-attachments/assets/8f503411-372f-4dea-9e02-ea14cd9adfc4" />
 
@@ -48,19 +61,29 @@ Share your screen or a specific window at up to 4K/100Mbps with six quality pres
 | Movie 50 | 3840x2160 | 60 | 50 Mbps |
 | Movie 100 | 3840x2160 | 60 | 100 Mbps |
 
-<!-- Screenshot: stream viewer with quality selector -->
-<!-- ![Streaming](docs/screenshots/streaming.png) -->
-
 ### Roles & Permissions
 
 30 granular permission flags with role hierarchy, color-coded role names, and per-channel permission overwrites. Create roles, assign colors and permissions, drag to reorder priority, and assign them to members. Admins get full access; everyone else gets exactly what you give them.
 
 ### Friends & DMs
 
-Add friends by username, accept or reject incoming requests, block users you don't want to hear from, and filter your friends list by online status. Open a DM with anyone — DMs use the same full-featured chat as guild channels.
+Add friends by username, accept or reject incoming requests, block users you don't want to hear from, and filter your friends list by online status. Open a DM with anyone — DMs use the same full-featured chat as guild channels. DMs support optional end-to-end encryption using X25519 key exchange and AES-GCM.
 
-<!-- Screenshot: friends list with online/offline status -->
-<!-- ![Friends](docs/screenshots/friends.png) -->
+### Custom Emoji
+
+Upload and manage custom emoji per guild. The emoji picker includes your server's custom emoji alongside standard Unicode emoji with category browsing and search.
+
+### Scheduled Events
+
+Create guild events with start/end times, descriptions, and an RSVP system so members can mark whether they're attending.
+
+### Bots & Webhooks
+
+A full bot platform with a developer dashboard, OAuth2 authorization flow, and bot user accounts. Create bot applications, manage tokens, and install bots to guilds. Webhooks let external services push messages into channels with secure token management.
+
+### Server Discovery
+
+Browse public guilds with categories and search. Server owners can list their guilds for discovery so new users can find communities without needing an invite link.
 
 ### Moderation
 
@@ -68,7 +91,32 @@ Ban and kick members (with reasons), browse a full audit log of every admin acti
 
 ### Server Admin
 
-Admins can toggle registration, rename the server, set a description, cap guilds-per-user and members-per-guild, view server stats, manage all users and guilds, and trigger a remote update & restart that pulls the latest code, rebuilds, and restarts the server — all from the settings panel.
+Admins can toggle registration, rename the server, set a description, cap guilds-per-user and members-per-guild, view server stats, manage all users and guilds, browse security event logs, configure data retention policies, manage backups, and trigger a remote update & restart — all from the settings panel.
+
+### Security
+
+Paracord takes security seriously. The server ships with:
+
+- **Session-backed JWTs** with refresh token rotation and device tracking
+- **Rate limiting** with per-IP, per-device, and per-account guards with exponential backoff
+- **File upload security** — attachment ownership enforcement, content-type validation, malware scanning hooks
+- **TLS** — auto-generated self-signed certs, ACME/Let's Encrypt support, HSTS
+- **Security headers** — CSP, X-Content-Type-Options, X-Frame-Options, CORP, COOP
+- **At-rest encryption** — AES-256-GCM file encryption, optional SQLCipher database encryption
+- **E2E encrypted DMs** — X25519 key exchange + AES-GCM
+- **Audit trail** — security events logged for all sensitive operations
+- **Cryptographic identity** — Ed25519 keypair authentication with BIP39 recovery phrases
+
+### Federation
+
+Server-to-server federation is in active development with the transport layer already in place:
+
+- Ed25519 HTTP signature verification for all federated requests
+- `.well-known/paracord/server` discovery protocol
+- Server key exchange and trust management
+- Cross-server event ingestion with body hashing and clock skew tolerance
+- Namespace and membership sync primitives
+- Federated media relay for voice
 
 ### Self-Hosted & Zero-Config
 
@@ -76,22 +124,21 @@ One binary, one SQLite database, zero external dependencies. Run the server and 
 
 ### Desktop Client
 
-Native app built with Tauri v2 for Windows and Linux. Auto-trusts self-signed server certificates so you don't have to click through browser warnings. Captures system audio natively for streams (WASAPI on Windows, PulseAudio on Linux). Configurable keybinds for mute, deafen, and push-to-talk.
+Native app built with Tauri v2 for Windows and Linux. Auto-trusts self-signed server certificates so you don't have to click through browser warnings. Captures system audio natively for streams (WASAPI on Windows, PulseAudio on Linux). Configurable keybinds for mute, deafen, and push-to-talk. Built-in auto-updater so you always get the latest version. Activity detection broadcasts what you're running as rich presence.
 
-<!-- Screenshot: desktop client window -->
-<!-- ![Desktop client](docs/screenshots/desktop-app.png) -->
+### Multi-Server
+
+Connect to multiple Paracord servers at once. A server rail in the sidebar lets you switch between connected servers, each with its own gateway connection and state. Your Ed25519 identity carries across servers — no need to create separate accounts.
 
 ### Appearance
 
-Dark, light, and AMOLED black themes. Compact or cozy message density. The UI is a command palette shortcut away from anywhere (Ctrl+K).
+Dark, light, and AMOLED black themes. Compact or cozy message density. Custom CSS support. The UI is a command palette shortcut away from anywhere (Ctrl+K).
 
 ### Coming Soon
 
-- **Federation hardening** — Signed transport, replay protection, durable delivery queues, and full cross-server parity in progress
+- **Federation parity** — Full cross-server messaging, membership sync, and moderation in progress
 - **Video calls** — Camera in voice channels (backend support exists, UI in progress)
-- **Custom emojis** — Database ready, upload and management UI coming
 - **macOS native audio capture** — Falls back to browser audio today; ScreenCaptureKit planned
-- **Threads** — Reply chains exist, dedicated thread view coming
 
 ## Download
 
@@ -135,6 +182,16 @@ chmod +x paracord-server livekit-server
 
 That's it. UPnP auto-forwards ports on most home routers. If your router doesn't support UPnP, forward TCP+UDP port 8080 and TCP port 8443 (HTTPS).
 
+### Docker
+
+```bash
+git clone https://github.com/Scoduglas1999/Paracord.git
+cd Paracord
+docker compose up -d
+```
+
+This starts the Paracord server and a LiveKit SFU instance. See `docker-compose.yml` for the full list of environment variables, or check [docs/docker-setup.md](docs/docker-setup.md) for detailed configuration.
+
 ### Joining a Server
 
 **Desktop app:** Install, paste the server URL, create an account.
@@ -159,13 +216,16 @@ All settings can be overridden via environment variables prefixed with `PARACORD
 |-------|-----------|
 | Server | Rust (axum, tokio, SQLx) |
 | Client | Tauri v2 + React 19 + TypeScript |
-| Database | SQLite (embedded, zero-config) |
+| Database | SQLite (embedded, zero-config) + optional SQLCipher encryption |
 | Voice/Video | LiveKit SFU (bundled) |
 | State | Zustand v5 |
 | Styling | Tailwind CSS v4 |
-| Auth | Argon2 password hashing, JWT tokens |
-| TLS | rustls + rcgen auto-generated certificates |
+| Auth | Argon2 hashing, JWT sessions, Ed25519 cryptographic identity |
+| Encryption | X25519 + AES-GCM (E2E DMs), AES-256-GCM (at-rest) |
+| TLS | rustls + rcgen auto-certs, ACME/Let's Encrypt |
 | Networking | UPnP IGD + NAT-PMP/PCP fallback |
+| CI/CD | GitHub Actions (build, test, security audit, DAST) |
+| Testing | Vitest + Playwright E2E |
 
 ## Platform Support
 
@@ -185,8 +245,8 @@ All settings can be overridden via environment variables prefixed with `PARACORD
 
 ```bash
 # Clone and enter project
-git clone <repo-url>
-cd paracord
+git clone https://github.com/Scoduglas1999/Paracord.git
+cd Paracord
 
 # Terminal 1: client dev server
 cd client
@@ -226,22 +286,24 @@ Produces `.exe` + `.msi` on Windows, `.deb` + `.AppImage` on Linux.
 paracord/
 ├── crates/                 # Rust server workspace
 │   ├── paracord-server/    # Binary entry point, TLS, UPnP, LiveKit management
-│   ├── paracord-api/       # REST API routes (50+ endpoints)
+│   ├── paracord-api/       # REST API routes (90+ endpoints)
 │   ├── paracord-ws/        # WebSocket gateway (events, presence, typing)
 │   ├── paracord-core/      # Business logic, permissions engine, event bus
-│   ├── paracord-db/        # SQLite via SQLx (migrations, queries)
-│   ├── paracord-federation/# Server federation (scaffolded for future)
+│   ├── paracord-db/        # SQLite via SQLx (26 migrations)
+│   ├── paracord-federation/# Server-to-server federation (Ed25519 signed transport)
 │   ├── paracord-models/    # Shared types and data structures
-│   ├── paracord-media/     # File storage + LiveKit voice/streaming
-│   └── paracord-util/      # Snowflake IDs, validation
+│   ├── paracord-media/     # File storage (local + S3) + LiveKit voice/streaming
+│   └── paracord-util/      # Snowflake IDs, validation, at-rest encryption
 ├── client/                 # Tauri v2 + React client
 │   ├── src/                # React TypeScript frontend
-│   │   ├── components/     # UI (chat, voice, guilds, settings, moderation)
-│   │   ├── stores/         # Zustand state management
+│   │   ├── components/     # UI (chat, voice, guilds, threads, polls, forums, bots)
+│   │   ├── stores/         # 17 Zustand state stores
 │   │   ├── gateway/        # WebSocket connection + event dispatch
-│   │   └── pages/          # Route pages
-│   └── src-tauri/          # Native Rust backend (system audio, TLS handling)
-└── docs/                   # Design specs and API documentation
+│   │   └── pages/          # 20 route pages
+│   ├── src-tauri/          # Native Rust backend (system audio, TLS, auto-updater)
+│   └── e2e/                # Playwright E2E tests
+├── docs/                   # Design specs, security docs, API contracts
+└── docker-compose.yml      # Docker deployment with LiveKit
 ```
 
 ## License
