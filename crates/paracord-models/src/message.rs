@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::attachment::Attachment;
 use crate::embed::Embed;
@@ -17,6 +17,7 @@ pub enum MessageType {
     GuildMemberJoin = 7,
     SystemMessage = 8,
     Reply = 19,
+    Poll = 20,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

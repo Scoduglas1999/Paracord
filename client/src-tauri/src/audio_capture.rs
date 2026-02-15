@@ -16,9 +16,19 @@ struct CaptureHandle {
 }
 
 static CAPTURE: Mutex<Option<CaptureHandle>> = Mutex::new(None);
+static SYSTEM_AUDIO_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+pub fn set_system_audio_capture_enabled(enabled: bool) {
+    SYSTEM_AUDIO_CAPTURE_ENABLED.store(enabled, Ordering::SeqCst);
+}
 
 #[tauri::command]
 pub fn start_system_audio_capture(on_audio: Channel<AudioChunk>) -> Result<(), String> {
+    if !SYSTEM_AUDIO_CAPTURE_ENABLED.load(Ordering::SeqCst) {
+        return Err("System audio capture disabled".into());
+    }
+
     let mut guard = CAPTURE.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Err("Audio capture already running".into());
@@ -50,6 +60,7 @@ pub fn stop_system_audio_capture() -> Result<(), String> {
             let _ = thread.join();
         }
     }
+    SYSTEM_AUDIO_CAPTURE_ENABLED.store(false, Ordering::SeqCst);
     Ok(())
 }
 

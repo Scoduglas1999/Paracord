@@ -1,16 +1,49 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, UserPlus, Ban } from 'lucide-react';
+import { MessageSquare, UserPlus, Ban, Users, CalendarDays } from 'lucide-react';
 import type { User } from '../../types/index';
+import { apiClient } from '../../api/client';
 import { dmApi } from '../../api/dms';
 import { relationshipApi } from '../../api/relationships';
 import { useChannelStore } from '../../stores/channelStore';
 import { usePresenceStore } from '../../stores/presenceStore';
+import { useServerListStore } from '../../stores/serverListStore';
 import {
   formatActivityElapsed,
   formatActivityLabel,
   getPrimaryActivity,
 } from '../../lib/activityPresence';
+
+interface MutualGuild {
+  id: string;
+  name: string;
+  icon_url?: string | null;
+}
+
+interface MutualFriend {
+  id: string;
+  username: string;
+  discriminator: number | string;
+  avatar_hash?: string | null;
+}
+
+interface ProfileData {
+  user: {
+    id: string;
+    username: string;
+    discriminator: number | string;
+    display_name?: string | null;
+    avatar_hash?: string | null;
+    banner_hash?: string | null;
+    bio?: string | null;
+    flags: number;
+    created_at: string;
+  };
+  roles: Array<{ id: string; name: string; color: number }>;
+  mutual_guilds: MutualGuild[];
+  mutual_friends: MutualFriend[];
+  created_at: string;
+}
 
 interface UserProfilePopupProps {
   user: User;
@@ -31,11 +64,22 @@ const STATUS_COLORS: Record<'online' | 'idle' | 'dnd' | 'offline', string> = {
   offline: 'var(--status-offline)',
 };
 
+function formatDate(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
 export function UserProfilePopup({ user, position, onClose, roles = [] }: UserProfilePopupProps) {
   const navigate = useNavigate();
-  // Try to position to the left of the click point; fall back to the right
   const popupWidth = 344;
-  const estimatedHeight = 420;
+  const estimatedHeight = 520;
   const fitsLeft = position.x - popupWidth - 16 > 0;
   const left = fitsLeft
     ? Math.max(8, position.x - popupWidth - 12)
@@ -44,7 +88,11 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
   const [note, setNote] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const presence = usePresenceStore((state) => state.presences.get(user.id));
+  const [profileData, setProfileData] = useState<ProfileData | null>(null);
+  const activeServerId = useServerListStore((state) => state.activeServerId);
+  const presence = usePresenceStore((state) =>
+    state.getPresence(user.id, activeServerId ?? undefined)
+  );
   const status = (presence?.status as 'online' | 'idle' | 'dnd' | 'offline') || 'offline';
   const activity = useMemo(() => getPrimaryActivity(presence), [presence]);
   const activityLabel = useMemo(() => formatActivityLabel(activity), [activity]);
@@ -52,6 +100,34 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
     () => formatActivityElapsed(activity?.started_at, now),
     [activity?.started_at, now]
   );
+
+  // Fetch profile data from API
+  useEffect(() => {
+    let cancelled = false;
+    apiClient
+      .get<ProfileData>(`/users/${user.id}/profile`)
+      .then(({ data }) => {
+        if (!cancelled) setProfileData(data);
+      })
+      .catch(() => {
+        // Profile fetch is optional; popup still works without it
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user.id]);
+
+  // Merge roles: prefer API profile roles over passed-in roles
+  const displayRoles = profileData?.roles && profileData.roles.length > 0
+    ? profileData.roles
+    : roles;
+
+  const mutualGuilds = profileData?.mutual_guilds ?? [];
+  const mutualFriends = profileData?.mutual_friends ?? [];
+  const bannerHash = profileData?.user?.banner_hash ?? user.banner;
+  const bio = profileData?.user?.bio ?? user.bio;
+  const createdAt = profileData?.created_at ?? profileData?.user?.created_at ?? user.created_at;
+  const isBotUser = user.bot;
 
   useEffect(() => {
     try {
@@ -122,18 +198,29 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
           left,
           top,
           width: '344px',
+          maxHeight: 'calc(100vh - 16px)',
+          overflowY: 'auto',
         }}
       >
         {/* Banner */}
-        <div
-          className="h-16"
-          style={{
-            background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-primary-hover) 100%)',
-          }}
-        />
+        {bannerHash ? (
+          <div
+            className="h-20 bg-cover bg-center"
+            style={{
+              backgroundImage: `linear-gradient(135deg, rgba(20, 24, 38, 0.2) 0%, rgba(20, 24, 38, 0.45) 100%), url(/api/v1/users/${user.id}/banner)`,
+            }}
+          />
+        ) : (
+          <div
+            className="h-16"
+            style={{
+              background: 'linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-primary-hover) 100%)',
+            }}
+          />
+        )}
 
         {/* Avatar + name */}
-        <div className="px-7 pb-6">
+        <div className="px-7 pb-4">
           <div className="relative -mt-8 mb-3">
             <div
               className="flex h-16 w-16 items-center justify-center rounded-full border-4 text-xl font-bold text-white"
@@ -155,8 +242,15 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
             />
           </div>
 
-          <div className="font-bold text-lg" style={{ color: 'var(--text-primary)' }}>
-            {user.display_name || user.username}
+          <div className="flex items-center gap-2">
+            <div className="font-bold text-lg" style={{ color: 'var(--text-primary)' }}>
+              {user.display_name || user.username}
+            </div>
+            {isBotUser && (
+              <span className="rounded-md border border-accent-primary/35 bg-accent-primary/12 px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-accent-primary">
+                Bot
+              </span>
+            )}
           </div>
           <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
             {user.username}
@@ -171,7 +265,7 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
         <div className="mx-7 h-px" style={{ backgroundColor: 'var(--border-subtle)' }} />
 
         {activityLabel && (
-          <div className="px-7 pt-6 pb-3">
+          <div className="px-7 pt-4 pb-2">
             <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
               Activity
             </div>
@@ -182,22 +276,37 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
           </div>
         )}
 
-        <div className="px-7 py-6">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+        {/* About Me */}
+        <div className="px-7 py-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
             About Me
           </div>
           <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            {user.bio || 'No bio set.'}
+            {bio || 'No bio set.'}
           </div>
         </div>
 
-        {roles.length > 0 && (
-          <div className="px-7 pb-6">
-            <div className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+        {/* Member Since */}
+        {createdAt && (
+          <div className="px-7 pb-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+              Member Since
+            </div>
+            <div className="flex items-center gap-1.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
+              <CalendarDays size={13} />
+              {formatDate(createdAt)}
+            </div>
+          </div>
+        )}
+
+        {/* Roles */}
+        {displayRoles.length > 0 && (
+          <div className="px-7 pb-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
               Roles
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {roles.map(role => (
+              {displayRoles.map(role => (
                 <span
                   key={role.id}
                   className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium"
@@ -218,8 +327,84 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
           </div>
         )}
 
-        <div className="px-7 pb-6">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+        {/* Mutual Servers */}
+        {mutualGuilds.length > 0 && (
+          <div className="px-7 pb-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+              Mutual Servers - {mutualGuilds.length}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {mutualGuilds.slice(0, 6).map(guild => (
+                <div
+                  key={guild.id}
+                  className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium"
+                  style={{
+                    backgroundColor: 'var(--bg-mod-subtle)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                  title={guild.name}
+                >
+                  <div
+                    className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                  >
+                    {guild.name.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="max-w-[100px] truncate">{guild.name}</span>
+                </div>
+              ))}
+              {mutualGuilds.length > 6 && (
+                <span className="self-center text-xs" style={{ color: 'var(--text-muted)' }}>
+                  +{mutualGuilds.length - 6} more
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Mutual Friends */}
+        {mutualFriends.length > 0 && (
+          <div className="px-7 pb-4">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
+              <span className="inline-flex items-center gap-1.5">
+                <Users size={12} />
+                Mutual Friends - {mutualFriends.length}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {mutualFriends.slice(0, 6).map(friend => (
+                <div
+                  key={friend.id}
+                  className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium"
+                  style={{
+                    backgroundColor: 'var(--bg-mod-subtle)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                  title={friend.username}
+                >
+                  <div
+                    className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold text-white"
+                    style={{ backgroundColor: 'var(--accent-primary)' }}
+                  >
+                    {friend.username.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="max-w-[100px] truncate">{friend.username}</span>
+                </div>
+              ))}
+              {mutualFriends.length > 6 && (
+                <span className="self-center text-xs" style={{ color: 'var(--text-muted)' }}>
+                  +{mutualFriends.length - 6} more
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Note */}
+        <div className="px-7 pb-4">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-primary)' }}>
             Note
           </div>
           <input
@@ -231,20 +416,23 @@ export function UserProfilePopup({ user, position, onClose, roles = [] }: UserPr
           />
         </div>
 
-        <div className="flex gap-4 px-7 pb-7">
+        {/* Actions */}
+        <div className="flex gap-4 px-7 pb-5">
           <button className="btn-primary flex-1 items-center justify-center gap-1.5" onClick={() => void handleMessage()}>
             <MessageSquare size={14} />
             Message
           </button>
-          <button className="icon-btn border-border-subtle bg-bg-mod-subtle" title="Add Friend" onClick={() => void handleAddFriend()}>
-            <UserPlus size={18} />
-          </button>
+          {!isBotUser && (
+            <button className="icon-btn border-border-subtle bg-bg-mod-subtle" title="Add Friend" onClick={() => void handleAddFriend()}>
+              <UserPlus size={18} />
+            </button>
+          )}
           <button className="icon-btn border-border-subtle bg-bg-mod-subtle" title="Block" onClick={() => void handleBlock()}>
             <Ban size={18} />
           </button>
         </div>
         {actionError && (
-          <div className="px-7 pb-7 text-xs font-medium" style={{ color: 'var(--accent-danger)' }}>
+          <div className="px-7 pb-5 text-xs font-medium" style={{ color: 'var(--accent-danger)' }}>
             {actionError}
           </div>
         )}

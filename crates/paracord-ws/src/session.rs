@@ -41,4 +41,9 @@ impl Session {
             self.guild_ids.push(guild_id);
         }
     }
+
+    /// Dynamically remove a guild from this session (e.g. kicked/banned/left).
+    pub fn remove_guild(&mut self, guild_id: i64) {
+        self.guild_ids.retain(|id| *id != guild_id);
+    }
 }

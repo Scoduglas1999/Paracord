@@ -173,3 +173,25 @@ pub async fn get_space_entries(
 
     Ok(rows)
 }
+
+pub async fn purge_entries_older_than(
+    pool: &DbPool,
+    older_than: DateTime<Utc>,
+    limit: i64,
+) -> Result<u64, DbError> {
+    let result = sqlx::query(
+        "DELETE FROM audit_log_entries
+         WHERE id IN (
+             SELECT id
+             FROM audit_log_entries
+             WHERE created_at <= ?1
+             ORDER BY created_at ASC
+             LIMIT ?2
+         )",
+    )
+    .bind(older_than)
+    .bind(limit)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}

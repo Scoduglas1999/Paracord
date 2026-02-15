@@ -4,6 +4,8 @@ use axum::{
     Json,
 };
 use paracord_core::AppState;
+use paracord_federation::client::FederationLeaveRequest;
+use paracord_models::permissions::Permissions;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -42,6 +44,9 @@ pub async fn list_members(
                 "username": m.username,
                 "discriminator": m.discriminator,
                 "avatar_hash": m.user_avatar_hash,
+                "flags": m.user_flags,
+                "bot": paracord_core::is_bot(m.user_flags),
+                "system": false,
             }
         }));
     }
@@ -93,12 +98,13 @@ pub async fn update_member(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-    let mut role_ids: Vec<String> = paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
-        .iter()
-        .map(|role| role.id.to_string())
-        .collect();
+    let mut role_ids: Vec<String> =
+        paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+            .iter()
+            .map(|role| role.id.to_string())
+            .collect();
 
     if let Some(raw_roles) = body.roles {
         if !paracord_core::permissions::is_server_admin(actor_perms) {
@@ -167,6 +173,9 @@ pub async fn update_member(
             }
         }
 
+        // Invalidate permission cache when a user's roles change
+        paracord_core::permissions::invalidate_user(&state.permission_cache, user_id).await;
+
         role_ids = paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
@@ -177,12 +186,29 @@ pub async fn update_member(
 
     let mut timed_out_until = updated.communication_disabled_until;
     if let Some(raw_until) = body.communication_disabled_until {
+        paracord_core::permissions::require_permission(actor_perms, Permissions::MUTE_MEMBERS)?;
+        if user_id == guild.owner_id {
+            return Err(ApiError::Forbidden);
+        }
+        if auth.user_id != guild.owner_id {
+            let actor_top_role_pos = actor_roles.iter().map(|r| r.position).max().unwrap_or(0);
+            let target_roles = paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+            let target_top_role_pos = target_roles.iter().map(|r| r.position).max().unwrap_or(0);
+            if target_top_role_pos >= actor_top_role_pos {
+                return Err(ApiError::Forbidden);
+            }
+        }
+
         let parsed = if raw_until.trim().is_empty() {
             None
         } else {
             Some(
                 chrono::DateTime::parse_from_rfc3339(&raw_until)
-                    .map_err(|_| ApiError::BadRequest("Invalid communication_disabled_until".into()))?
+                    .map_err(|_| {
+                        ApiError::BadRequest("Invalid communication_disabled_until".into())
+                    })?
                     .with_timezone(&chrono::Utc),
             )
         };
@@ -258,6 +284,14 @@ pub async fn kick_member(
     )
     .await;
 
+    if paracord_federation::is_enabled() {
+        let fed_state = state.clone();
+        tokio::spawn(async move {
+            federation_send_leave_rpc_for_mirrored_guild(&fed_state, guild_id, user_id).await;
+            federation_forward_member_event(&fed_state, "m.member.leave", guild_id, user_id).await;
+        });
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -291,5 +325,118 @@ pub async fn leave_guild(
         Some(guild_id),
     );
 
+    if paracord_federation::is_enabled() {
+        let fed_state = state.clone();
+        let leaving_user_id = auth.user_id;
+        tokio::spawn(async move {
+            federation_send_leave_rpc_for_mirrored_guild(&fed_state, guild_id, leaving_user_id)
+                .await;
+            federation_forward_member_event(
+                &fed_state,
+                "m.member.leave",
+                guild_id,
+                leaving_user_id,
+            )
+            .await;
+        });
+    }
+
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn federation_forward_member_event(
+    state: &AppState,
+    event_type: &str,
+    guild_id: i64,
+    user_id: i64,
+) {
+    let user = match paracord_db::users::get_user_by_id(&state.db, user_id).await {
+        Ok(Some(user)) => user,
+        _ => return,
+    };
+
+    let service = crate::routes::federation::build_federation_service();
+    if !service.is_enabled() {
+        return;
+    }
+
+    let outbound =
+        crate::routes::federation::resolve_outbound_context(state, &service, guild_id, None).await;
+    let content = json!({
+        "guild_id": outbound.payload_guild_id.clone(),
+        "user_id": user_id.to_string(),
+    });
+    let envelope = match service.build_custom_envelope(
+        event_type,
+        outbound.room_id.clone(),
+        &user.username,
+        &content,
+        chrono::Utc::now().timestamp_millis(),
+        None,
+        Some(&format!("{}:{}", outbound.payload_guild_id, user_id)),
+    ) {
+        Ok(env) => env,
+        Err(_) => return,
+    };
+
+    let _ = service.persist_event(&state.db, &envelope).await;
+    service
+        .forward_envelope_to_peers(&state.db, &envelope)
+        .await;
+}
+
+pub(crate) async fn federation_send_leave_rpc_for_mirrored_guild(
+    state: &AppState,
+    guild_id: i64,
+    user_id: i64,
+) {
+    let service = crate::routes::federation::build_federation_service();
+    if !service.is_enabled() {
+        return;
+    }
+
+    let outbound =
+        crate::routes::federation::resolve_outbound_context(state, &service, guild_id, None).await;
+    if !outbound.uses_remote_mapping {
+        return;
+    }
+    let Some(peer) =
+        crate::routes::federation::resolve_remote_target_for_outbound_context(state, &outbound)
+            .await
+    else {
+        tracing::warn!(
+            "federation: no trusted remote origin for mirrored guild {} (namespace {:?})",
+            guild_id,
+            outbound.origin_server
+        );
+        return;
+    };
+    let Some(client) = crate::routes::federation::build_signed_federation_client(&service) else {
+        tracing::warn!("federation: signed client unavailable for leave rpc");
+        return;
+    };
+    let Some(local_identity) =
+        crate::routes::federation::local_federated_user_id(state, &service, user_id).await
+    else {
+        tracing::warn!(
+            "federation: cannot build local federated identity for user {}",
+            user_id
+        );
+        return;
+    };
+
+    let payload = FederationLeaveRequest {
+        origin_server: service.server_name().to_string(),
+        room_id: outbound.room_id,
+        user_id: local_identity,
+    };
+    if let Err(err) = client.send_leave(&peer.federation_endpoint, &payload).await {
+        tracing::warn!(
+            "federation: leave rpc failed for mirrored guild {} -> {} ({}): {}",
+            guild_id,
+            peer.server_name,
+            peer.domain,
+            err
+        );
+    }
 }

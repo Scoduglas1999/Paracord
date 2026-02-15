@@ -20,9 +20,9 @@ pub async fn create_emoji(
     animated: bool,
 ) -> Result<EmojiRow, DbError> {
     let row = sqlx::query_as::<_, EmojiRow>(
-        "INSERT INTO emojis (id, guild_id, name, creator_id, animated)
+        "INSERT INTO emojis (id, space_id, name, creator_id, animated)
          VALUES (?1, ?2, ?3, ?4, ?5)
-         RETURNING id, guild_id, name, creator_id, animated, created_at"
+         RETURNING id, space_id AS guild_id, name, creator_id, animated, created_at",
     )
     .bind(id)
     .bind(guild_id)
@@ -36,8 +36,8 @@ pub async fn create_emoji(
 
 pub async fn get_emoji(pool: &DbPool, id: i64) -> Result<Option<EmojiRow>, DbError> {
     let row = sqlx::query_as::<_, EmojiRow>(
-        "SELECT id, guild_id, name, creator_id, animated, created_at
-         FROM emojis WHERE id = ?1"
+        "SELECT id, space_id AS guild_id, name, creator_id, animated, created_at
+         FROM emojis WHERE id = ?1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -47,8 +47,8 @@ pub async fn get_emoji(pool: &DbPool, id: i64) -> Result<Option<EmojiRow>, DbErr
 
 pub async fn get_guild_emojis(pool: &DbPool, guild_id: i64) -> Result<Vec<EmojiRow>, DbError> {
     let rows = sqlx::query_as::<_, EmojiRow>(
-        "SELECT id, guild_id, name, creator_id, animated, created_at
-         FROM emojis WHERE guild_id = ?1 ORDER BY name"
+        "SELECT id, space_id AS guild_id, name, creator_id, animated, created_at
+         FROM emojis WHERE space_id = ?1 ORDER BY name",
     )
     .bind(guild_id)
     .fetch_all(pool)
@@ -56,15 +56,11 @@ pub async fn get_guild_emojis(pool: &DbPool, guild_id: i64) -> Result<Vec<EmojiR
     Ok(rows)
 }
 
-pub async fn update_emoji(
-    pool: &DbPool,
-    id: i64,
-    name: &str,
-) -> Result<EmojiRow, DbError> {
+pub async fn update_emoji(pool: &DbPool, id: i64, name: &str) -> Result<EmojiRow, DbError> {
     let row = sqlx::query_as::<_, EmojiRow>(
         "UPDATE emojis SET name = ?2
          WHERE id = ?1
-         RETURNING id, guild_id, name, creator_id, animated, created_at"
+         RETURNING id, space_id AS guild_id, name, creator_id, animated, created_at",
     )
     .bind(id)
     .bind(name)

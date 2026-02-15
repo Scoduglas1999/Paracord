@@ -82,13 +82,23 @@ async fn try_upnp_igd(
     // TCP: HTTP API, WebSocket signaling, LiveKit proxy
     // UDP: WebRTC media via LiveKit UDP mux on the same port number
     add_upnp_mapping(
-        &gateway, local_ip, server_port, lease_seconds,
-        "Paracord Server", igd_next::PortMappingProtocol::TCP,
-    ).await;
+        &gateway,
+        local_ip,
+        server_port,
+        lease_seconds,
+        "Paracord Server",
+        igd_next::PortMappingProtocol::TCP,
+    )
+    .await;
     add_upnp_mapping(
-        &gateway, local_ip, server_port, lease_seconds,
-        "Paracord Media UDP", igd_next::PortMappingProtocol::UDP,
-    ).await;
+        &gateway,
+        local_ip,
+        server_port,
+        lease_seconds,
+        "Paracord Media UDP",
+        igd_next::PortMappingProtocol::UDP,
+    )
+    .await;
 
     tracing::info!("UPnP port forwarding complete.");
 
@@ -109,13 +119,22 @@ async fn add_upnp_mapping(
     protocol: igd_next::PortMappingProtocol,
 ) {
     let local_addr = SocketAddr::new(local_ip, port);
-    match gateway.add_port(protocol, port, local_addr, lease_seconds, description).await {
+    match gateway
+        .add_port(protocol, port, local_addr, lease_seconds, description)
+        .await
+    {
         Ok(()) => {
             let proto = match protocol {
                 igd_next::PortMappingProtocol::TCP => "TCP",
                 igd_next::PortMappingProtocol::UDP => "UDP",
             };
-            tracing::info!("  Forwarded {} port {} -> {}:{}", proto, port, local_ip, port);
+            tracing::info!(
+                "  Forwarded {} port {} -> {}:{}",
+                proto,
+                port,
+                local_ip,
+                port
+            );
         }
         Err(igd_next::AddPortError::PortInUse) => {
             tracing::debug!("Port {} already mapped (likely ours)", port);
@@ -151,7 +170,8 @@ async fn try_nat_pmp(
 
     // Map the server port — this is the one that must succeed
     let _mapping = crab_nat::PortMapping::new(
-        gw, client,
+        gw,
+        client,
         crab_nat::InternetProtocol::Tcp,
         std::num::NonZeroU16::new(server_port).unwrap(),
         options,
@@ -167,18 +187,18 @@ async fn try_nat_pmp(
         ..Default::default()
     };
     let _ = crab_nat::PortMapping::new(
-        gw, client,
+        gw,
+        client,
         crab_nat::InternetProtocol::Udp,
         std::num::NonZeroU16::new(server_port).unwrap(),
         udp_options,
-    ).await;
+    )
+    .await;
 
     tracing::info!("NAT-PMP/PCP port forwarding complete.");
 
     // NAT-PMP gives us the gateway IP, not the public IP — fetch the real one
-    let public_ip = detect_external_ip()
-        .await
-        .unwrap_or(IpAddr::V4(gateway_ip));
+    let public_ip = detect_external_ip().await.unwrap_or(IpAddr::V4(gateway_ip));
 
     Ok(UpnpResult {
         external_ip: public_ip,
@@ -260,9 +280,14 @@ pub async fn forward_extra_port(port: u16, lease_seconds: u32) {
     };
 
     add_upnp_mapping(
-        &gateway, local_ip, port, lease_seconds,
-        "Paracord HTTPS", igd_next::PortMappingProtocol::TCP,
-    ).await;
+        &gateway,
+        local_ip,
+        port,
+        lease_seconds,
+        "Paracord HTTPS",
+        igd_next::PortMappingProtocol::TCP,
+    )
+    .await;
 }
 
 /// Remove UPnP port mappings on shutdown.

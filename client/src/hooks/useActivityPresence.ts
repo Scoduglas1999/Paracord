@@ -11,6 +11,7 @@ import {
 } from '../lib/activityPresence';
 import { useAuthStore } from '../stores/authStore';
 import { usePresenceStore } from '../stores/presenceStore';
+import { useServerListStore } from '../stores/serverListStore';
 import type { Activity, Presence } from '../types';
 
 const POLL_INTERVAL_MS = 5000;
@@ -52,18 +53,25 @@ function publishPresence(status: Presence['status'], activities: Activity[]): vo
   if (activeConnections.length > 0) {
     for (const conn of activeConnections) {
       connectionManager.updatePresence(conn.serverId, status, activities);
+      const localServerUserId = useServerListStore.getState().getServer(conn.serverId)?.userId;
+      if (localServerUserId) {
+        usePresenceStore.getState().updatePresence({
+          user_id: localServerUserId,
+          status,
+          activities,
+        }, conn.serverId);
+      }
     }
   } else {
     gateway.updatePresence(status, activities);
+    const localUserId = useAuthStore.getState().user?.id;
+    if (!localUserId) return;
+    usePresenceStore.getState().updatePresence({
+      user_id: localUserId,
+      status,
+      activities,
+    });
   }
-
-  const localUserId = useAuthStore.getState().user?.id;
-  if (!localUserId) return;
-  usePresenceStore.getState().updatePresence({
-    user_id: localUserId,
-    status,
-    activities,
-  });
 }
 
 export function useActivityPresence() {
@@ -94,16 +102,22 @@ export function useActivityPresence() {
       inFlight = true;
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const detected = await invoke<ForegroundApplication | null>('get_foreground_application');
-        if (cancelled) return;
 
         const settings = useAuthStore.getState().settings;
         const notifications = (settings?.notifications ?? {}) as Record<string, unknown>;
         const detectionEnabled = notifications['activityDetectionEnabled'] !== false;
+        const status = mapStatusForPresence(settings?.status);
+        const nativeCaptureAllowed = detectionEnabled && status !== 'offline';
+        await invoke('set_activity_sharing_enabled', { enabled: nativeCaptureAllowed });
+
+        const detected = nativeCaptureAllowed
+          ? await invoke<ForegroundApplication | null>('get_foreground_application')
+          : null;
+        if (cancelled) return;
+
         const disabledApps = new Set(
           readStringArray(notifications['activityDetectionDisabledApps']).map(normalizeDetectedAppId)
         );
-        const status = mapStatusForPresence(settings?.status);
 
         const candidate =
           detected && detected.process_name && !isParacordProcess(detected) ? detected : null;
@@ -142,6 +156,9 @@ export function useActivityPresence() {
 
     return () => {
       cancelled = true;
+      void import('@tauri-apps/api/core')
+        .then(({ invoke }) => invoke('set_activity_sharing_enabled', { enabled: false }))
+        .catch(() => undefined);
       window.clearInterval(timer);
     };
   }, [token]);

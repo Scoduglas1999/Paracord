@@ -10,6 +10,32 @@ server_name = "paracord.example.com"
 # Env override: PARACORD_PUBLIC_URL
 # public_url = "https://chat.example.com"
 
+[tls]
+enabled = true
+port = 8443
+# Use CA-issued certificates in production (recommended).
+cert_path = "./data/certs/cert.pem"
+key_path = "./data/certs/key.pem"
+# Self-signed cert auto-generation is intended for local/testing only.
+auto_generate = true
+
+[tls.acme]
+# Optional ACME automation using certbot + HTTP-01 webroot challenges.
+enabled = false
+client_path = "certbot"
+directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+# email = "ops@example.com"
+# domains = ["chat.example.com"]
+webroot_path = "./data/acme-webroot"
+cert_name = "paracord"
+# Optional source overrides if your ACME client writes certs elsewhere.
+# cert_source_path = "/etc/letsencrypt/live/paracord/fullchain.pem"
+# key_source_path = "/etc/letsencrypt/live/paracord/privkey.pem"
+serve_http_challenge = true
+auto_renew = true
+renew_interval_seconds = 43200
+# additional_args = ["--preferred-challenges", "http"]
+
 [database]
 url = "sqlite://./data/paracord.db?mode=rwc"
 max_connections = 5
@@ -17,13 +43,36 @@ max_connections = 5
 [auth]
 # jwt_secret is auto-generated on first run. Override here or via PARACORD_JWT_SECRET env var.
 jwt_secret = "CHANGE_ME_TO_A_RANDOM_64_CHAR_STRING"
-jwt_expiry_seconds = 3600
+jwt_expiry_seconds = 900
 registration_enabled = true
+# Allow users to log in with username (in addition to email) for password auth.
+allow_username_login = true
+# Require email during password registration.
+require_email = false
 
 [storage]
+# Storage backend: "local" (default) or "s3".
+# When set to "s3", configure the [s3] section below and build with `--features s3`.
 storage_type = "local"
 path = "./data/uploads"
 # max_upload_size is optional and defaults to 50MB.
+
+# [s3]
+# # S3-compatible object storage (MinIO, AWS S3, R2, DigitalOcean Spaces, etc.).
+# # Only used when storage.storage_type = "s3".
+# bucket = "paracord-uploads"
+# region = "us-east-1"
+# # Custom endpoint for non-AWS providers:
+# # endpoint_url = "https://minio.example.com"
+# # force_path_style = true
+# # access_key_id = "your-access-key"
+# # secret_access_key = "your-secret-key"
+# # Optional key prefix for all objects:
+# # prefix = "paracord/"
+# # Optional CDN base URL (skips presigned URLs):
+# # cdn_url = "https://cdn.example.com"
+# # Presigned URL expiry (default 3600s):
+# # presign_expiry_seconds = 3600
 
 [media]
 storage_path = "./data/files"
@@ -31,9 +80,9 @@ max_file_size = 1073741824  # 1GB in bytes
 p2p_threshold = 1073741824  # Files over 1GB use P2P
 
 [livekit]
-# api_key and api_secret are auto-generated on first run.
-api_key = "devkey"
-api_secret = "secret"
+# Use long random values in production.
+api_key = "CHANGE_ME_TO_RANDOM_LIVEKIT_KEY"
+api_secret = "CHANGE_ME_TO_RANDOM_LIVEKIT_SECRET"
 # Internal URL used by the server to communicate with LiveKit (token creation, room management).
 url = "ws://localhost:7880"
 http_url = "http://localhost:7880"
@@ -44,15 +93,60 @@ http_url = "http://localhost:7880"
 # public_url = "wss://chat.example.com/livekit"
 
 [federation]
-enabled = false
-# Optional in MVP rollout. Enable only after keys are configured on disk.
-# signing_key_path = "/etc/paracord/federation_signing_key.pem"
+enabled = true
+# The domain name used in federated identities (e.g., @user:chat.example.com).
+# Defaults to server.server_name if not set.
+# domain = "chat.example.com"
+# Path to the ed25519 signing key file (hex-encoded 32 bytes).
+signing_key_path = "./data/federation_signing_key.hex"
+# Allow other servers to discover this server's federation info.
+allow_discovery = false
 
 [network]
-# Automatically forward ports via UPnP on startup (default: true).
+# Automatically forward ports via UPnP on startup (default: false).
 # When enabled, the server discovers your router, forwards required ports,
 # detects your public IP, and prints a shareable URL. Set to false if you
 # are behind a VPN, inside Docker, or prefer manual port forwarding.
-upnp = true
+upnp = false
+# Secondary confirmation to avoid accidental internet exposure via UPnP.
+upnp_confirm_exposure = false
 # How long each UPnP mapping lasts in seconds (auto-renewed). 0 = permanent on some routers.
 upnp_lease_seconds = 3600
+# On Windows, optionally auto-create local firewall allow rules for Paracord binaries.
+windows_firewall_auto_allow = false
+
+[retention]
+# Enabled by default to bound sensitive data retention.
+enabled = true
+interval_seconds = 3600
+batch_size = 256
+# Set integer day values to activate each retention policy.
+# message_days = 180
+# attachment_days = 30
+# audit_log_days = 365
+# security_event_days = 30
+# session_days = 30
+
+[backup]
+# Backup configuration. Backups include a SQLite snapshot and optionally media files.
+backup_dir = "./data/backups"
+# Enable automatic periodic backups.
+auto_backup_enabled = false
+# Interval between automatic backups in seconds (default: 86400 = 24 hours).
+auto_backup_interval_seconds = 86400
+# Include media files (uploads, files) in backups.
+include_media = true
+# Maximum number of backups to keep (oldest are pruned automatically).
+max_backups = 10
+
+[at_rest]
+# Optional at-rest encryption profile for privacy-focused operators.
+enabled = false
+# Name of env var that provides the 32-byte master key (hex/base64).
+key_env = "PARACORD_AT_REST_KEY"
+# Requires SQLCipher-enabled SQLite; startup fails if requested but unavailable.
+encrypt_sqlite = false
+# Encrypts attachment payload bytes on disk with AES-256-GCM.
+encrypt_files = false
+# Enable during migration if existing attachment files are plaintext.
+allow_plaintext_file_reads = false

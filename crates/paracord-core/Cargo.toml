@@ -10,6 +10,7 @@ paracord-models = { workspace = true }
 paracord-db = { workspace = true }
 paracord-util = { workspace = true }
 paracord-media = { workspace = true }
+paracord-federation = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,3 +21,8 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+moka = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+flate2 = "1"
+tar = "0.4"
+tempfile = { workspace = true }

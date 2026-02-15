@@ -16,6 +16,9 @@ import { AdminPage } from './pages/AdminPage';
 import { InvitePage } from './pages/InvitePage';
 import { TermsPage } from './pages/TermsPage';
 import { PrivacyPage } from './pages/PrivacyPage';
+import { DiscoveryPage } from './pages/DiscoveryPage';
+import { DeveloperPage } from './pages/DeveloperPage';
+import { BotAuthorizePage } from './pages/BotAuthorizePage';
 import { useAccountStore } from './stores/accountStore';
 import { useServerListStore } from './stores/serverListStore';
 import { useAuthStore } from './stores/authStore';
@@ -72,6 +75,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isUnlocked = useAccountStore((s) => s.isUnlocked);
   const servers = useServerListStore((s) => s.servers);
   const token = useAuthStore((s) => s.token);
+  const sessionBootstrapComplete = useAuthStore((s) => s.sessionBootstrapComplete);
   const settings = useAuthStore((s) => s.settings);
   const hasFetchedSettings = useAuthStore((s) => s.hasFetchedSettings);
   const fetchSettings = useAuthStore((s) => s.fetchSettings);
@@ -83,6 +87,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
       void fetchSettings();
     }
   }, [token, hasFetchedSettings, fetchSettings]);
+
+  if (!sessionBootstrapComplete) {
+    return (
+      <div className="auth-shell">
+        <p className="text-text-muted">Restoring session...</p>
+      </div>
+    );
+  }
 
   if (serverStatus === 'loading') {
     return (
@@ -134,6 +146,15 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 function AuthRoute({ children }: { children: React.ReactNode }) {
   const serverStatus = useServerStatus();
+  const sessionBootstrapComplete = useAuthStore((s) => s.sessionBootstrapComplete);
+
+  if (!sessionBootstrapComplete) {
+    return (
+      <div className="auth-shell">
+        <p className="text-text-muted">Restoring session...</p>
+      </div>
+    );
+  }
 
   if (serverStatus === 'loading') {
     return (
@@ -200,7 +221,10 @@ export default function App() {
         <Route path="friends" element={<FriendsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="admin" element={<AdminPage />} />
+        <Route path="discovery" element={<DiscoveryPage />} />
+        <Route path="oauth2/authorize" element={<BotAuthorizePage />} />
         <Route path="guilds/:guildId/settings" element={<GuildSettingsPage />} />
+        <Route path="developers" element={<DeveloperPage />} />
       </Route>
 
       {/* Default: send to app (which handles auth redirects) */}

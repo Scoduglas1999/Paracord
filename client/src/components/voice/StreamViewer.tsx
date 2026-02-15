@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
+  AlertTriangle,
   Maximize,
   Minimize,
   Volume1,
@@ -22,6 +23,7 @@ interface StreamViewerProps {
   expectingStream?: boolean;
   onStopStream?: () => void;
   onStopWatching?: () => void;
+  issueMessage?: string | null;
   /** When true, skip managing screen share subscriptions (managed externally). */
   skipSubscriptionManagement?: boolean;
 }
@@ -32,6 +34,7 @@ export function StreamViewer({
   expectingStream = false,
   onStopStream,
   onStopWatching,
+  issueMessage = null,
   skipSubscriptionManagement = false,
 }: StreamViewerProps) {
   const [volume, setVolume] = useState(1);
@@ -46,6 +49,7 @@ export function StreamViewer({
     'auto' | 'low' | 'medium' | 'high' | 'source'
   >('auto');
   const [isMaximized, setIsMaximized] = useState(false);
+  const [showIssueDetails, setShowIssueDetails] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isCompactLayout, setIsCompactLayout] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -53,12 +57,19 @@ export function StreamViewer({
   });
   const room = useVoiceStore((s) => s.room);
   const selfStream = useVoiceStore((s) => s.selfStream);
+  const systemAudioCaptureActive = useVoiceStore((s) => s.systemAudioCaptureActive);
+  const showSystemAudioPrivacyWarning = useVoiceStore((s) => s.showSystemAudioPrivacyWarning);
+  const acknowledgeSystemAudioPrivacyWarning = useVoiceStore(
+    (s) => s.acknowledgeSystemAudioPrivacyWarning
+  );
   const previewStreamerId = useVoiceStore((s) => s.previewStreamerId);
   const localUserId = useAuthStore((s) => s.user?.id ?? null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const streamStartTime = useRef<number>(Date.now());
   const screenShareAudioRef = useRef<HTMLAudioElement | null>(null);
+  const subscriptionSignatureRef = useRef<string>('__init__');
+  const lastMissingAudioWarningAtRef = useRef<number>(0);
 
   const displayName = streamerName ?? activeStreamerName ?? 'Someone';
 
@@ -108,6 +119,12 @@ export function StreamViewer({
     return () => mediaQuery.removeEventListener('change', updateCompactLayout);
   }, []);
 
+  useEffect(() => {
+    if (!issueMessage) {
+      setShowIssueDetails(false);
+    }
+  }, [issueMessage]);
+
   // Clean up screen share audio element
   const cleanupScreenShareAudio = useCallback(() => {
     const audioEl = screenShareAudioRef.current;
@@ -132,6 +149,9 @@ export function StreamViewer({
   const setScreenShareSubscriptions = useCallback(
     (targetIdentities: Set<string>) => {
       if (!room) return;
+      const signature = Array.from(targetIdentities).sort().join('|');
+      if (signature === subscriptionSignatureRef.current) return;
+      subscriptionSignatureRef.current = signature;
       for (const participant of room.remoteParticipants.values()) {
         const shouldSubscribe = targetIdentities.has(participant.identity);
         for (const publication of participant.videoTrackPublications.values()) {
@@ -209,35 +229,23 @@ export function StreamViewer({
             break;
           }
         }
-        // Log all audio publications for diagnostics
         const audioPubs = [...participant.audioTrackPublications.values()];
-        console.info(
-          `[stream] ${participant.identity} audio publications:`,
-          audioPubs.map((p) => ({
-            source: p.source,
-            subscribed: p.isSubscribed,
-            hasTrack: !!p.track,
-            trackSid: p.trackSid,
-          }))
-        );
         for (const publication of audioPubs) {
-          if (
-            publication.source === Track.Source.ScreenShareAudio &&
-            publication.track
-          ) {
-            if (!publication.isSubscribed) {
-              publication.setSubscribed(true);
-            }
+          if (publication.source !== Track.Source.ScreenShareAudio) continue;
+          if (!publication.isSubscribed) {
+            publication.setSubscribed(true);
+          }
+          if (publication.track) {
             foundAudioTrack = publication.track.mediaStreamTrack;
-            console.info('[stream] Found ScreenShareAudio track:', {
-              readyState: foundAudioTrack?.readyState,
-              enabled: foundAudioTrack?.enabled,
-            });
             break;
           }
         }
-        if (!foundAudioTrack) {
-          console.warn('[stream] No ScreenShareAudio track found — streamer may not be publishing audio');
+        if (!foundAudioTrack && foundVideoTrack) {
+          const now = Date.now();
+          if (now - lastMissingAudioWarningAtRef.current > 6000) {
+            lastMissingAudioWarningAtRef.current = now;
+            console.warn('[stream] No ScreenShareAudio track found — streamer may not be publishing audio');
+          }
         }
       }
     }
@@ -263,10 +271,9 @@ export function StreamViewer({
       videoEl.srcObject = null;
     }
 
-    // Also maintain the separate <audio> element as a fallback for cases
-    // where the audio track arrives after the video or needs independent
-    // volume control.
-    if (foundAudioTrack && !watchingSelf) {
+    // Fallback hidden <audio> only when we have stream audio but no video
+    // track attached yet. Otherwise audio is carried by the <video> stream.
+    if (foundAudioTrack && !watchingSelf && !foundVideoTrack) {
       let audioEl = screenShareAudioRef.current;
       if (!audioEl) {
         audioEl = document.createElement('audio');
@@ -327,7 +334,7 @@ export function StreamViewer({
     room.on(RoomEvent.LocalTrackPublished, attachTrack);
     room.on(RoomEvent.LocalTrackUnpublished, attachTrack);
 
-    const pollInterval = setInterval(attachTrack, 2000);
+    const pollInterval = setInterval(attachTrack, 3000);
 
     return () => {
       clearInterval(pollInterval);
@@ -348,6 +355,8 @@ export function StreamViewer({
       if (!skipSubRef.current) {
         setScreenShareSubscriptions(new Set<string>());
       }
+      subscriptionSignatureRef.current = '__init__';
+      lastMissingAudioWarningAtRef.current = 0;
     };
   }, [room, attachTrack, cleanupScreenShareAudio, setScreenShareSubscriptions]);
 
@@ -365,6 +374,51 @@ export function StreamViewer({
       }
       style={{ backgroundColor: 'var(--bg-tertiary)' }}
     >
+      {issueMessage && (
+        <div className="absolute left-3 top-3 z-30">
+          <button
+            onClick={() => setShowIssueDetails((prev) => !prev)}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-amber-400/60 bg-amber-500/15 text-amber-300 transition-colors hover:bg-amber-500/25"
+            title="Stream warning"
+            aria-label="Show stream warning"
+          >
+            <AlertTriangle size={14} />
+          </button>
+          {showIssueDetails && (
+            <div
+              className="mt-2 w-72 rounded-xl border px-3 py-2 text-xs font-medium leading-relaxed shadow-xl"
+              style={{
+                borderColor: 'rgba(245, 158, 11, 0.45)',
+                backgroundColor: 'rgba(17, 24, 39, 0.92)',
+                color: 'var(--text-primary)',
+              }}
+            >
+              {issueMessage}
+            </div>
+          )}
+        </div>
+      )}
+      {showSystemAudioPrivacyWarning && (
+        <div className="absolute inset-x-3 top-14 z-30 max-w-xl rounded-xl border border-amber-400/55 bg-amber-500/14 p-3 text-xs shadow-xl sm:top-16">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle size={15} className="mt-0.5 text-amber-300" />
+            <div className="flex-1">
+              <div className="font-semibold text-amber-200">System Audio Capture Is Active</div>
+              <div className="mt-1 text-amber-100/90">
+                Your stream can include audio from other apps and meetings. Stop streaming
+                immediately if private audio is playing.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={acknowledgeSystemAudioPrivacyWarning}
+              className="rounded-md border border-amber-300/65 px-2 py-1 text-[11px] font-semibold text-amber-100 transition-colors hover:bg-amber-500/20"
+            >
+              I understand
+            </button>
+          </div>
+        </div>
+      )}
       <div
         className="relative z-10 flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-5 sm:py-3"
         style={{
@@ -391,6 +445,12 @@ export function StreamViewer({
           <span className="hidden text-sm font-mono text-text-muted sm:inline">
             {formatTime(elapsedSeconds)}
           </span>
+          {systemAudioCaptureActive && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/55 bg-amber-500/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-amber-200">
+              <AlertTriangle size={11} />
+              System Audio
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">

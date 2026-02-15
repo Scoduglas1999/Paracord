@@ -1,7 +1,133 @@
 import { create } from 'zustand';
-import type { Message, PaginationParams } from '../types';
+import type {
+  EditMessageRequest,
+  Message,
+  MessageE2eePayload,
+  PaginationParams,
+  SendMessageRequest,
+} from '../types';
 import { channelApi } from '../api/channels';
+import { extractApiError } from '../api/client';
 import { DEFAULT_MESSAGE_FETCH_LIMIT } from '../lib/constants';
+import { decryptDmMessage, encryptDmMessage } from '../lib/dmE2ee';
+import { hasUnlockedPrivateKey, withUnlockedPrivateKey } from '../lib/accountSession';
+import { useChannelStore } from './channelStore';
+import { toast } from './toastStore';
+import { usePollStore } from './pollStore';
+
+const ENCRYPTED_DM_PLACEHOLDER = '[Encrypted message]';
+
+function findChannel(channelId: string) {
+  const channelsByGuild = useChannelStore.getState().channelsByGuild;
+  for (const channels of Object.values(channelsByGuild)) {
+    const channel = channels.find((entry) => entry.id === channelId);
+    if (channel) return channel;
+  }
+  return null;
+}
+
+function getDmPeerPublicKey(channelId: string): string | null {
+  const channel = findChannel(channelId);
+  if (!channel) return null;
+  const channelType = channel.channel_type ?? channel.type;
+  if (channelType !== 1 || channel.guild_id) return null;
+  return channel.recipient?.public_key || null;
+}
+
+function isDmChannel(channelId: string): boolean {
+  const channel = findChannel(channelId);
+  if (!channel) return false;
+  const channelType = channel.channel_type ?? channel.type;
+  return channelType === 1 && !channel.guild_id;
+}
+
+async function decryptMessageForChannel(channelId: string, message: Message): Promise<Message> {
+  const payload = message.e2ee;
+  if (!payload) return message;
+  const peerPublicKey = getDmPeerPublicKey(channelId);
+  if (!peerPublicKey || !hasUnlockedPrivateKey()) {
+    return {
+      ...message,
+      content: message.content ?? ENCRYPTED_DM_PLACEHOLDER,
+    };
+  }
+  try {
+    const plaintext = await withUnlockedPrivateKey((privateKey) =>
+      decryptDmMessage(channelId, payload, privateKey, peerPublicKey)
+    );
+    return {
+      ...message,
+      content: plaintext,
+    };
+  } catch {
+    return {
+      ...message,
+      content: ENCRYPTED_DM_PLACEHOLDER,
+    };
+  }
+}
+
+async function decryptMessagesForChannel(channelId: string, messages: Message[]): Promise<Message[]> {
+  return Promise.all(messages.map((message) => decryptMessageForChannel(channelId, message)));
+}
+
+async function buildSendMessageRequest(
+  channelId: string,
+  content: string,
+  referencedMessageId?: string,
+  attachmentIds?: string[],
+): Promise<SendMessageRequest> {
+  const normalizedContent = content.trim();
+  const request: SendMessageRequest = {
+    content: normalizedContent,
+    referenced_message_id: referencedMessageId,
+    attachment_ids: attachmentIds,
+  };
+  if (!isDmChannel(channelId) || normalizedContent.length === 0) {
+    return request;
+  }
+
+  const peerPublicKey = getDmPeerPublicKey(channelId);
+  if (!peerPublicKey) {
+    throw new Error('Unable to encrypt this DM: recipient key is unavailable');
+  }
+  if (!hasUnlockedPrivateKey()) {
+    throw new Error('Unlock your account to send encrypted DMs');
+  }
+
+  const e2ee = await withUnlockedPrivateKey((privateKey) =>
+    encryptDmMessage(channelId, normalizedContent, privateKey, peerPublicKey)
+  );
+  request.content = '';
+  request.e2ee = e2ee;
+  return request;
+}
+
+async function buildEditMessageRequest(channelId: string, content: string): Promise<EditMessageRequest> {
+  const normalizedContent = content.trim();
+  const request: EditMessageRequest = { content: normalizedContent };
+  if (!isDmChannel(channelId)) {
+    return request;
+  }
+  if (!normalizedContent) {
+    throw new Error('Encrypted DMs cannot be edited to empty content');
+  }
+
+  const peerPublicKey = getDmPeerPublicKey(channelId);
+  if (!peerPublicKey) {
+    throw new Error('Unable to encrypt this DM edit: recipient key is unavailable');
+  }
+  if (!hasUnlockedPrivateKey()) {
+    throw new Error('Unlock your account to edit encrypted DMs');
+  }
+
+  const e2ee: MessageE2eePayload = await withUnlockedPrivateKey((privateKey) =>
+    encryptDmMessage(channelId, normalizedContent, privateKey, peerPublicKey)
+  );
+  request.content = '';
+  request.e2ee = e2ee;
+  return request;
+}
 
 interface MessageState {
   // Messages indexed by channel ID (kept as Record for backward compat)
@@ -60,45 +186,66 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
         limit: DEFAULT_MESSAGE_FETCH_LIMIT,
         ...params,
       });
+      const decrypted = await decryptMessagesForChannel(channelId, data);
+      if (!params?.before) {
+        usePollStore.getState().clearPollsForChannel(channelId);
+      }
+      for (const message of decrypted) {
+        if (message.poll) {
+          usePollStore.getState().upsertPoll(message.poll);
+        }
+      }
       set((state) => {
         const existing = params?.before ? state.messages[channelId] || [] : [];
         // API returns newest first (ORDER BY id DESC); reverse to
         // chronological order (oldest at top, newest at bottom).
-        const sorted = [...data].reverse();
+        const sorted = [...decrypted].reverse();
         const merged = params?.before ? [...sorted, ...existing] : sorted;
         return {
           messages: { ...state.messages, [channelId]: merged },
-          hasMore: { ...state.hasMore, [channelId]: data.length >= DEFAULT_MESSAGE_FETCH_LIMIT },
+          hasMore: {
+            ...state.hasMore,
+            [channelId]: decrypted.length >= DEFAULT_MESSAGE_FETCH_LIMIT,
+          },
           loading: { ...state.loading, [channelId]: false },
         };
       });
-    } catch {
+    } catch (err) {
       set((state) => ({ loading: { ...state.loading, [channelId]: false } }));
+      toast.error(`Failed to load messages: ${extractApiError(err)}`);
     }
   },
 
   sendMessage: async (channelId, content, referencedMessageId, attachmentIds) => {
-    const { data } = await channelApi.sendMessage(channelId, {
+    const request = await buildSendMessageRequest(
+      channelId,
       content,
-      referenced_message_id: referencedMessageId,
-      attachment_ids: attachmentIds,
-    });
+      referencedMessageId,
+      attachmentIds,
+    );
+    const { data } = await channelApi.sendMessage(channelId, request);
+    const decrypted = await decryptMessageForChannel(channelId, data);
+    if (decrypted.poll) {
+      usePollStore.getState().upsertPoll(decrypted.poll);
+    }
     // Optimistic: the gateway will also deliver MESSAGE_CREATE, addMessage dedupes
     set((state) => {
       const existing = state.messages[channelId] || [];
-      if (existing.some((m) => m.id === data.id)) return state;
-      return { messages: { ...state.messages, [channelId]: [...existing, data] } };
+      if (existing.some((m) => m.id === decrypted.id)) return state;
+      return { messages: { ...state.messages, [channelId]: [...existing, decrypted] } };
     });
   },
 
   editMessage: async (channelId, messageId, content) => {
-    const { data } = await channelApi.editMessage(channelId, messageId, content);
+    const request = await buildEditMessageRequest(channelId, content);
+    const { data } = await channelApi.editMessage(channelId, messageId, request);
+    const decrypted = await decryptMessageForChannel(channelId, data);
     set((state) => {
       const existing = state.messages[channelId] || [];
       return {
         messages: {
           ...state.messages,
-          [channelId]: existing.map((m) => (m.id === messageId ? data : m)),
+          [channelId]: existing.map((m) => (m.id === messageId ? decrypted : m)),
         },
       };
     });
@@ -123,9 +270,10 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
   fetchPins: async (channelId) => {
     try {
       const { data } = await channelApi.getPins(channelId);
-      set((state) => ({ pins: { ...state.pins, [channelId]: data } }));
-    } catch {
-      /* ignore */
+      const decrypted = await decryptMessagesForChannel(channelId, data);
+      set((state) => ({ pins: { ...state.pins, [channelId]: decrypted } }));
+    } catch (err) {
+      toast.error(`Failed to load pinned messages: ${extractApiError(err)}`);
     }
   },
 
@@ -293,16 +441,60 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
     set((state) => {
       const existing = state.messages[channelId] || [];
       if (existing.some((m) => m.id === message.id)) return state;
-      return { messages: { ...state.messages, [channelId]: [...existing, message] } };
+      const baseMessage = {
+        ...message,
+        content: message.e2ee ? (message.content ?? ENCRYPTED_DM_PLACEHOLDER) : message.content,
+      };
+      if (baseMessage.poll) {
+        usePollStore.getState().upsertPoll(baseMessage.poll);
+      }
+      if (baseMessage.e2ee) {
+        void decryptMessageForChannel(channelId, baseMessage).then((decrypted) => {
+          set((innerState) => {
+            const current = innerState.messages[channelId] || [];
+            return {
+              messages: {
+                ...innerState.messages,
+                [channelId]: current.map((entry) =>
+                  entry.id === decrypted.id ? decrypted : entry
+                ),
+              },
+            };
+          });
+        });
+      }
+      return { messages: { ...state.messages, [channelId]: [...existing, baseMessage] } };
     }),
 
   updateMessage: (channelId, message) =>
     set((state) => {
       const existing = state.messages[channelId] || [];
+      const baseMessage = {
+        ...message,
+        content: message.e2ee ? (message.content ?? ENCRYPTED_DM_PLACEHOLDER) : message.content,
+      };
+      if (baseMessage.poll) {
+        usePollStore.getState().upsertPoll(baseMessage.poll);
+      }
+      if (baseMessage.e2ee) {
+        void decryptMessageForChannel(channelId, baseMessage).then((decrypted) => {
+          set((innerState) => {
+            const current = innerState.messages[channelId] || [];
+            return {
+              messages: {
+                ...innerState.messages,
+                [channelId]: current.map((entry) =>
+                  entry.id === decrypted.id ? decrypted : entry
+                ),
+              },
+            };
+          });
+        });
+      }
       return {
         messages: {
           ...state.messages,
-          [channelId]: existing.map((m) => (m.id === message.id ? message : m)),
+          [channelId]: existing.map((m) => (m.id === baseMessage.id ? baseMessage : m)),
         },
       };
     }),

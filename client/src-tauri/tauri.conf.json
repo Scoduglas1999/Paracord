@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickkadutskyi/jb-tauri-v2-schema/main/schema.json",
   "productName": "Paracord",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "identifier": "com.paracord.app",
   "build": {
     "frontendDist": "../dist",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' asset: data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:"
     }
   },
   "bundle": {

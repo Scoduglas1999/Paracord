@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { Guild } from '../types';
 import { guildApi } from '../api/guilds';
+import { extractApiError } from '../api/client';
+import { toast } from './toastStore';
 
 interface GuildState {
   guilds: Guild[];
@@ -29,8 +31,9 @@ export const useGuildStore = create<GuildState>()((set, _get) => ({
     try {
       const { data } = await guildApi.getAll();
       set({ guilds: data, isLoading: false });
-    } catch {
+    } catch (err) {
       set({ isLoading: false });
+      toast.error(`Failed to load servers: ${extractApiError(err)}`);
     }
   },
 

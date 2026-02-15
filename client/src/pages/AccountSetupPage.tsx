@@ -71,7 +71,7 @@ export function AccountSetupPage() {
         const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
         if (serverUrl) {
           setStoredServerUrl(serverUrl);
-          const token = localStorage.getItem('token');
+          const token = useAuthStore.getState().token;
           let serverName = serverUrl;
           try {
             serverName = new URL(serverUrl).host;

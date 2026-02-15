@@ -1,6 +1,6 @@
 use crate::error::CoreError;
 use crate::permissions;
-use crate::{USER_FLAG_ADMIN, is_admin};
+use crate::{is_admin, USER_FLAG_ADMIN};
 use paracord_db::DbPool;
 use paracord_models::permissions::Permissions;
 use serde::Serialize;
@@ -158,7 +158,8 @@ pub async fn admin_update_guild(
     paracord_db::guilds::get_guild(pool, guild_id)
         .await?
         .ok_or(CoreError::NotFound)?;
-    let updated = paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash).await?;
+    let updated =
+        paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash).await?;
     Ok(updated)
 }
 

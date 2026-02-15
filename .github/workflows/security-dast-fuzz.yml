@@ -1,0 +1,117 @@
+name: Security DAST and Fuzz
+
+on:
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: "0 7 * * 2"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dast-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build server (API-only)
+        run: cargo build --release --bin paracord-server --no-default-features
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install security test dependencies
+        run: pip install requests
+
+      - name: Prepare runtime config
+        run: |
+          cat > /tmp/paracord-security.toml <<'EOF'
+          [server]
+          bind_address = "127.0.0.1:8080"
+          server_name = "localhost"
+
+          [database]
+          url = "sqlite:///tmp/paracord-security.db?mode=rwc"
+          max_connections = 5
+
+          [auth]
+          jwt_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+          jwt_expiry_seconds = 900
+          registration_enabled = true
+
+          [storage]
+          storage_type = "local"
+          path = "/tmp/paracord-uploads"
+
+          [media]
+          storage_path = "/tmp/paracord-files"
+          max_file_size = 10485760
+          p2p_threshold = 10485760
+
+          [livekit]
+          api_key = "paracord_ci_key"
+          api_secret = "paracord_ci_secret_0123456789abcdef"
+          url = "ws://127.0.0.1:7880"
+          http_url = "http://127.0.0.1:7880"
+
+          [federation]
+          enabled = false
+
+          [network]
+          upnp = false
+          upnp_lease_seconds = 3600
+
+          [tls]
+          enabled = false
+          port = 8443
+          cert_path = "/tmp/paracord-certs/cert.pem"
+          key_path = "/tmp/paracord-certs/key.pem"
+          auto_generate = false
+
+          [retention]
+          enabled = true
+          interval_seconds = 300
+          batch_size = 128
+          security_event_days = 30
+          session_days = 30
+          EOF
+
+      - name: Start server
+        run: |
+          ./target/release/paracord-server --config /tmp/paracord-security.toml > /tmp/paracord-server.log 2>&1 &
+          echo $! > /tmp/paracord-server.pid
+
+      - name: Wait for server health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/health > /dev/null; then
+              echo "Server is up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server failed to start in time."
+          cat /tmp/paracord-server.log
+          exit 1
+
+      - name: DAST smoke checks
+        run: python3 scripts/security_dast_smoke.py --base-url http://127.0.0.1:8080
+
+      - name: API fuzz smoke checks
+        run: python3 scripts/security_api_fuzz.py --base-url http://127.0.0.1:8080 --iterations 80
+
+      - name: Dump server log on failure
+        if: failure()
+        run: cat /tmp/paracord-server.log
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f /tmp/paracord-server.pid ]; then
+            kill "$(cat /tmp/paracord-server.pid)" || true
+          fi

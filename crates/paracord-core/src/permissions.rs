@@ -1,9 +1,63 @@
 use crate::error::CoreError;
-use paracord_models::permissions::Permissions;
+use crate::PermissionCacheKey;
 use paracord_db::DbPool;
+use paracord_models::permissions::Permissions;
 
 pub const OVERWRITE_TARGET_ROLE: i16 = 0;
 pub const OVERWRITE_TARGET_MEMBER: i16 = 1;
+
+/// Compute channel permissions with cache lookup.  Falls back to
+/// `compute_channel_permissions` on cache miss and stores the result.
+pub async fn compute_channel_permissions_cached(
+    cache: &moka::future::Cache<PermissionCacheKey, Permissions>,
+    pool: &DbPool,
+    guild_id: i64,
+    channel_id: i64,
+    guild_owner_id: i64,
+    user_id: i64,
+) -> Result<Permissions, CoreError> {
+    let key = (user_id, channel_id);
+    if let Some(perms) = cache.get(&key).await {
+        return Ok(perms);
+    }
+    let perms =
+        compute_channel_permissions(pool, guild_id, channel_id, guild_owner_id, user_id).await?;
+    cache.insert(key, perms).await;
+    Ok(perms)
+}
+
+/// Invalidate cached permissions for a specific user in a specific channel.
+pub async fn invalidate_user_channel(
+    cache: &moka::future::Cache<PermissionCacheKey, Permissions>,
+    user_id: i64,
+    channel_id: i64,
+) {
+    cache.invalidate(&(user_id, channel_id)).await;
+}
+
+/// Invalidate all cached permissions for a specific channel (all users).
+/// Since moka doesn't support prefix invalidation, we invalidate the whole cache
+/// when a channel's overwrites change.
+pub async fn invalidate_channel(
+    cache: &moka::future::Cache<PermissionCacheKey, Permissions>,
+    _channel_id: i64,
+) {
+    cache.invalidate_all();
+}
+
+/// Invalidate all cached permissions for a user across all channels.
+/// Used when a user's roles change.
+pub async fn invalidate_user(
+    cache: &moka::future::Cache<PermissionCacheKey, Permissions>,
+    _user_id: i64,
+) {
+    cache.invalidate_all();
+}
+
+/// Invalidate the entire permission cache (e.g. when roles are modified).
+pub async fn invalidate_all(cache: &moka::future::Cache<PermissionCacheKey, Permissions>) {
+    cache.invalidate_all();
+}
 
 /// Compute effective permissions for a member in a guild
 pub fn compute_base_permissions(
@@ -36,7 +90,7 @@ pub fn require_permission(perms: Permissions, required: Permissions) -> Result<(
 }
 
 pub fn is_server_admin(perms: Permissions) -> bool {
-    perms.contains(Permissions::ADMINISTRATOR) || perms.contains(Permissions::MANAGE_GUILD)
+    perms.contains(Permissions::ADMINISTRATOR)
 }
 
 /// Compute permissions from a set of Role rows
@@ -61,12 +115,20 @@ pub fn compute_permissions_from_roles(
     perms
 }
 
-pub async fn is_guild_member(pool: &DbPool, guild_id: i64, user_id: i64) -> Result<bool, CoreError> {
+pub async fn is_guild_member(
+    pool: &DbPool,
+    guild_id: i64,
+    user_id: i64,
+) -> Result<bool, CoreError> {
     let member = paracord_db::members::get_member(pool, user_id, guild_id).await?;
     Ok(member.is_some())
 }
 
-pub async fn ensure_guild_member(pool: &DbPool, guild_id: i64, user_id: i64) -> Result<(), CoreError> {
+pub async fn ensure_guild_member(
+    pool: &DbPool,
+    guild_id: i64,
+    user_id: i64,
+) -> Result<(), CoreError> {
     if !is_guild_member(pool, guild_id, user_id).await? {
         return Err(CoreError::Forbidden);
     }
@@ -91,13 +153,15 @@ pub async fn compute_channel_permissions(
         .ok_or(CoreError::NotFound)?;
 
     let role_ids: std::collections::HashSet<i64> = roles.iter().map(|r| r.id).collect();
-    let required_role_ids = paracord_db::channels::parse_required_role_ids(&channel.required_role_ids);
+    let required_role_ids =
+        paracord_db::channels::parse_required_role_ids(&channel.required_role_ids);
     if !required_role_ids.is_empty() && !required_role_ids.iter().any(|id| role_ids.contains(id)) {
         perms.remove(Permissions::VIEW_CHANNEL);
         return Ok(perms);
     }
 
-    let overwrites = paracord_db::channel_overwrites::get_channel_overwrites(pool, channel_id).await?;
+    let overwrites =
+        paracord_db::channel_overwrites::get_channel_overwrites(pool, channel_id).await?;
     if overwrites.is_empty() {
         return Ok(perms);
     }
@@ -135,4 +199,120 @@ pub async fn compute_channel_permissions(
     }
 
     Ok(perms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use paracord_db::roles::RoleRow;
+
+    fn make_role(id: i64, space_id: i64, permissions: i64) -> RoleRow {
+        RoleRow {
+            id,
+            space_id,
+            name: format!("role-{}", id),
+            color: 0,
+            hoist: false,
+            position: 0,
+            permissions,
+            managed: false,
+            mentionable: false,
+            server_wide: false,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn owner_gets_all_permissions() {
+        let role_perms = vec![(1_i64, 0_i64)]; // no perms
+        let perms = compute_base_permissions(&role_perms, 42, 42);
+        assert_eq!(perms, Permissions::all());
+    }
+
+    #[test]
+    fn admin_bit_grants_all_permissions() {
+        let role_perms = vec![(1, Permissions::ADMINISTRATOR.bits())];
+        let perms = compute_base_permissions(&role_perms, 99, 1);
+        assert_eq!(perms, Permissions::all());
+    }
+
+    #[test]
+    fn regular_member_gets_combined_role_permissions() {
+        let send = Permissions::SEND_MESSAGES.bits();
+        let view = Permissions::VIEW_CHANNEL.bits();
+        let role_perms = vec![(1, send), (2, view)];
+        let perms = compute_base_permissions(&role_perms, 99, 1);
+        assert!(perms.contains(Permissions::SEND_MESSAGES));
+        assert!(perms.contains(Permissions::VIEW_CHANNEL));
+        assert!(!perms.contains(Permissions::ADMINISTRATOR));
+    }
+
+    #[test]
+    fn no_roles_means_no_permissions() {
+        let role_perms: Vec<(i64, i64)> = vec![];
+        let perms = compute_base_permissions(&role_perms, 99, 1);
+        assert_eq!(perms, Permissions::empty());
+    }
+
+    #[test]
+    fn require_permission_succeeds_when_present() {
+        let perms = Permissions::SEND_MESSAGES | Permissions::VIEW_CHANNEL;
+        assert!(require_permission(perms, Permissions::SEND_MESSAGES).is_ok());
+    }
+
+    #[test]
+    fn require_permission_fails_when_missing() {
+        let perms = Permissions::VIEW_CHANNEL;
+        let result = require_permission(perms, Permissions::ADMINISTRATOR);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CoreError::MissingPermission));
+    }
+
+    #[test]
+    fn is_server_admin_true_for_admin() {
+        assert!(is_server_admin(
+            Permissions::ADMINISTRATOR | Permissions::SEND_MESSAGES
+        ));
+    }
+
+    #[test]
+    fn is_server_admin_false_for_non_admin() {
+        assert!(!is_server_admin(
+            Permissions::SEND_MESSAGES | Permissions::VIEW_CHANNEL
+        ));
+    }
+
+    #[test]
+    fn compute_permissions_from_roles_owner_bypass() {
+        let roles = vec![make_role(1, 100, 0)];
+        let perms = compute_permissions_from_roles(&roles, 42, 42);
+        assert_eq!(perms, Permissions::all());
+    }
+
+    #[test]
+    fn compute_permissions_from_roles_admin_bypass() {
+        let roles = vec![make_role(1, 100, Permissions::ADMINISTRATOR.bits())];
+        let perms = compute_permissions_from_roles(&roles, 99, 1);
+        assert_eq!(perms, Permissions::all());
+    }
+
+    #[test]
+    fn compute_permissions_from_roles_combines_multiple() {
+        let roles = vec![
+            make_role(1, 100, Permissions::VIEW_CHANNEL.bits()),
+            make_role(2, 100, Permissions::SEND_MESSAGES.bits()),
+        ];
+        let perms = compute_permissions_from_roles(&roles, 99, 1);
+        assert!(perms.contains(Permissions::VIEW_CHANNEL));
+        assert!(perms.contains(Permissions::SEND_MESSAGES));
+        assert!(!perms.contains(Permissions::KICK_MEMBERS));
+    }
+
+    #[test]
+    fn compute_permissions_from_roles_empty_roles() {
+        let roles: Vec<RoleRow> = vec![];
+        let perms = compute_permissions_from_roles(&roles, 99, 1);
+        assert_eq!(perms, Permissions::empty());
+    }
 }

@@ -1,7 +1,9 @@
 import { getPublicKeyAsync, signAsync, utils } from '@noble/ed25519';
 import { scryptAsync } from '@noble/hashes/scrypt.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes, randomBytes } from '@noble/hashes/utils.js';
 import { wordlist } from './bip39-wordlist';
+import { secureDelete, secureGet, secureSet } from './secureStorage';
 
 export interface AccountKeystore {
   version: 1;
@@ -21,6 +23,7 @@ export interface UnlockedAccount {
 }
 
 export const ACCOUNT_STORAGE_KEY = 'paracord:account';
+const ACCOUNT_EXISTS_KEY = 'paracord:account:exists';
 
 const SCRYPT_N = 2 ** 17;
 const SCRYPT_R = 8;
@@ -105,8 +108,9 @@ async function decryptPrivateKey(
   }
 }
 
-function storeKeystore(keystore: AccountKeystore): void {
-  localStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(keystore));
+async function storeKeystore(keystore: AccountKeystore): Promise<void> {
+  await secureSet(ACCOUNT_STORAGE_KEY, JSON.stringify(keystore));
+  localStorage.setItem(ACCOUNT_EXISTS_KEY, '1');
 }
 
 export async function createAccount(
@@ -129,7 +133,7 @@ export async function createAccount(
     username,
     ...(displayName !== undefined && { displayName }),
   };
-  storeKeystore(keystore);
+  await storeKeystore(keystore);
 
   return {
     publicKey,
@@ -140,7 +144,7 @@ export async function createAccount(
 }
 
 export async function unlockAccount(password: string): Promise<UnlockedAccount> {
-  const keystore = getStoredKeystore();
+  const keystore = await getStoredKeystore();
   if (!keystore) {
     throw new Error('No account found in storage');
   }
@@ -178,11 +182,14 @@ export async function signChallenge(
 }
 
 export function hasAccount(): boolean {
-  return localStorage.getItem(ACCOUNT_STORAGE_KEY) !== null;
+  return (
+    localStorage.getItem(ACCOUNT_EXISTS_KEY) === '1' ||
+    localStorage.getItem(ACCOUNT_STORAGE_KEY) !== null
+  );
 }
 
-export function getStoredKeystore(): AccountKeystore | null {
-  const raw = localStorage.getItem(ACCOUNT_STORAGE_KEY);
+export async function getStoredKeystore(): Promise<AccountKeystore | null> {
+  const raw = await secureGet(ACCOUNT_STORAGE_KEY);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as AccountKeystore;
@@ -195,8 +202,8 @@ export function getStoredKeystore(): AccountKeystore | null {
   }
 }
 
-export function updateKeystoreProfile(username: string, displayName?: string): void {
-  const keystore = getStoredKeystore();
+export async function updateKeystoreProfile(username: string, displayName?: string): Promise<void> {
+  const keystore = await getStoredKeystore();
   if (!keystore) {
     throw new Error('No account found in storage');
   }
@@ -206,15 +213,15 @@ export function updateKeystoreProfile(username: string, displayName?: string): v
   } else {
     delete keystore.displayName;
   }
-  storeKeystore(keystore);
+  await storeKeystore(keystore);
 }
 
-export function exportKeystore(): string | null {
-  const raw = localStorage.getItem(ACCOUNT_STORAGE_KEY);
-  return raw ?? null;
+export async function exportKeystore(): Promise<string | null> {
+  const raw = await secureGet(ACCOUNT_STORAGE_KEY);
+  return raw;
 }
 
-export function importKeystore(json: string): void {
+export async function importKeystore(json: string): Promise<void> {
   let parsed: AccountKeystore;
   try {
     parsed = JSON.parse(json) as AccountKeystore;
@@ -231,11 +238,12 @@ export function importKeystore(json: string): void {
   ) {
     throw new Error('Invalid keystore format');
   }
-  storeKeystore(parsed);
+  await storeKeystore(parsed);
 }
 
-export function deleteAccount(): void {
-  localStorage.removeItem(ACCOUNT_STORAGE_KEY);
+export async function deleteAccount(): Promise<void> {
+  await secureDelete(ACCOUNT_STORAGE_KEY);
+  localStorage.removeItem(ACCOUNT_EXISTS_KEY);
 }
 
 export function generateRecoveryPhrase(privateKey: Uint8Array): string {
@@ -246,11 +254,8 @@ export function generateRecoveryPhrase(privateKey: Uint8Array): string {
     throw new Error('Private key must be 32 bytes');
   }
 
-  // 256 bits entropy + 8-bit XOR-fold checksum = 264 bits = 24 x 11-bit word indices
-  let checksum = 0;
-  for (let i = 0; i < 32; i++) {
-    checksum ^= privateKey[i];
-  }
+  // 256 bits entropy + first 8 bits of SHA-256 checksum = 264 bits.
+  const checksum = sha256(privateKey)[0];
 
   // Build a bit stream: 256 bits from the key + 8 bits checksum = 264 bits
   const allBytes = new Uint8Array(33);
@@ -322,13 +327,17 @@ export async function recoverFromPhrase(
   const privateKey = allBytes.slice(0, 32);
   const storedChecksum = allBytes[32];
 
-  // Verify checksum
-  let checksum = 0;
-  for (let i = 0; i < 32; i++) {
-    checksum ^= privateKey[i];
-  }
-  if (checksum !== storedChecksum) {
-    throw new Error('Invalid recovery phrase (checksum mismatch)');
+  // Verify checksum.
+  // Accept legacy XOR-fold phrases for backward compatibility.
+  const strongChecksum = sha256(privateKey)[0];
+  if (strongChecksum !== storedChecksum) {
+    let legacyChecksum = 0;
+    for (let i = 0; i < 32; i++) {
+      legacyChecksum ^= privateKey[i];
+    }
+    if (legacyChecksum !== storedChecksum) {
+      throw new Error('Invalid recovery phrase (checksum mismatch)');
+    }
   }
 
   const publicKeyBytes = await getPublicKeyAsync(privateKey);
@@ -345,7 +354,7 @@ export async function recoverFromPhrase(
     username,
     ...(displayName !== undefined && { displayName }),
   };
-  storeKeystore(keystore);
+  await storeKeystore(keystore);
 
   return {
     publicKey,

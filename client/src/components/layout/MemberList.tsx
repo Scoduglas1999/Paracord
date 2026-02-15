@@ -6,7 +6,11 @@ import { UserProfilePopup } from '../user/UserProfile';
 import { useMemberStore } from '../../stores/memberStore';
 import { usePresenceStore } from '../../stores/presenceStore';
 import { useGuildStore } from '../../stores/guildStore';
+import { useServerListStore } from '../../stores/serverListStore';
+import { useAuthStore } from '../../stores/authStore';
+import { useVoiceStore } from '../../stores/voiceStore';
 import { formatActivityLabel, getPrimaryActivity } from '../../lib/activityPresence';
+import { SkeletonMember } from '../ui/Skeleton';
 
 interface MemberWithUser {
   user_id: string;
@@ -14,6 +18,7 @@ interface MemberWithUser {
   avatar_hash: string | null;
   nick: string | null;
   roles: string[];
+  bot?: boolean;
   status?: 'online' | 'idle' | 'dnd' | 'offline';
   activityText?: string | null;
 }
@@ -30,12 +35,32 @@ const STATUS_COLORS: Record<string, string> = {
   offline: 'var(--status-offline)',
 };
 
+export function resolveMemberStatus(
+  presenceStatus: MemberWithUser['status'] | undefined,
+  inCurrentGuildVoice: boolean,
+  isAuthenticatedSelfMember: boolean,
+): MemberWithUser['status'] {
+  if (presenceStatus) return presenceStatus;
+  if (isAuthenticatedSelfMember || inCurrentGuildVoice) return 'online';
+  return 'offline';
+}
+
 export function MemberList({ members: propMembers, roles = [] }: MemberListProps) {
   const selectedGuildId = useGuildStore(s => s.selectedGuildId);
+  const activeServerId = useServerListStore(s => s.activeServerId);
+  const activeServer = useServerListStore((s) =>
+    s.activeServerId ? s.servers.find((server) => server.id === s.activeServerId) : undefined
+  );
+  const authUserId = useAuthStore((s) => s.user?.id);
+  const authToken = useAuthStore((s) => s.token);
   const storeMembers = useMemberStore(s => selectedGuildId ? s.members.get(selectedGuildId) : undefined);
   const fetchMembers = useMemberStore(s => s.fetchMembers);
-  // Subscribe to the entire presences map so we re-render on any presence change
-  const presences = usePresenceStore(s => s.presences);
+  // Subscribe so presence updates trigger recomputation.
+  const presences = usePresenceStore((s) => s.presences);
+  const getPresence = usePresenceStore((s) => s.getPresence);
+  const voiceParticipants = useVoiceStore((s) => s.participants);
+  const selfUserId = activeServer?.userId ?? authUserId;
+  const isAuthenticated = Boolean(authToken && selfUserId);
 
   useEffect(() => {
     if (selectedGuildId && !storeMembers) {
@@ -46,7 +71,17 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
   const members: MemberWithUser[] = useMemo(() => {
     if (propMembers) return propMembers;
     return (storeMembers || []).map(m => {
-      const presence = presences.get(m.user.id);
+      const presence = getPresence(m.user.id, activeServerId ?? undefined);
+      const voiceState = voiceParticipants.get(m.user.id);
+      const inCurrentGuildVoice =
+        Boolean(voiceState?.channel_id) &&
+        (!selectedGuildId || voiceState?.guild_id === selectedGuildId);
+      const isAuthenticatedSelfMember = isAuthenticated && m.user.id === selfUserId;
+      const derivedStatus = resolveMemberStatus(
+        presence?.status as MemberWithUser['status'] | undefined,
+        inCurrentGuildVoice,
+        isAuthenticatedSelfMember,
+      );
       const activity = getPrimaryActivity(presence);
       return {
         user_id: m.user.id,
@@ -54,11 +89,12 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
         avatar_hash: m.user.avatar || null,
         nick: m.nick || null,
         roles: m.roles ?? [],
-        status: (presence?.status as MemberWithUser['status']) ?? 'offline',
+        bot: m.user.bot,
+        status: derivedStatus,
         activityText: formatActivityLabel(activity),
       };
     });
-  }, [propMembers, storeMembers, presences]);
+  }, [propMembers, storeMembers, presences, getPresence, activeServerId, voiceParticipants, selectedGuildId, isAuthenticated, selfUserId]);
   const [showOffline, setShowOffline] = useState(false);
   const [selectedMember, setSelectedMember] = useState<MemberWithUser | null>(null);
   const [popupPos, setPopupPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -116,13 +152,20 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
         />
       </div>
       <div className="min-w-0">
-        <div
-          className="truncate text-sm font-semibold text-text-secondary transition-colors group-hover:text-text-primary"
-          style={{
-            opacity: member.status === 'offline' ? 0.4 : 1,
-          }}
-        >
-          {member.nick || member.username}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div
+            className="truncate text-sm font-semibold text-text-secondary transition-colors group-hover:text-text-primary"
+            style={{
+              opacity: member.status === 'offline' ? 0.4 : 1,
+            }}
+          >
+            {member.nick || member.username}
+          </div>
+          {member.bot && (
+            <span className="shrink-0 rounded-md border border-accent-primary/35 bg-accent-primary/12 px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-accent-primary">
+              Bot
+            </span>
+          )}
         </div>
         {member.activityText && member.status !== 'offline' && (
           <div className="truncate text-xs text-text-muted">{member.activityText}</div>
@@ -131,15 +174,27 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
     </button>
   );
 
+  const isMemberListLoading = !propMembers && !storeMembers && !!selectedGuildId;
+
   return (
     <div
       className="flex flex-col overflow-y-auto scrollbar-thin"
+      role="complementary"
+      aria-label="Member list"
       style={{
         width: 'var(--member-list-width)',
         minWidth: 'var(--member-list-width)',
       }}
     >
       <div className="px-3 pt-4.5">
+        {isMemberListLoading ? (
+          <div aria-label="Loading members">
+            {Array.from({ length: 7 }, (_, i) => (
+              <SkeletonMember key={i} />
+            ))}
+          </div>
+        ) : (
+        <>
         <div className="mb-6 rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-3.5 py-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">Members</div>
           <div className="mt-0.5 text-base font-semibold text-text-primary">{members.length}</div>
@@ -195,6 +250,8 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
             <p className="text-xs text-center text-text-muted">No members to display</p>
           </div>
         )}
+        </>
+        )}
       </div>
 
       {selectedMember && createPortal(
@@ -205,7 +262,7 @@ export function MemberList({ members: propMembers, roles = [] }: MemberListProps
             discriminator: '0000',
             avatar_hash: selectedMember.avatar_hash,
             display_name: selectedMember.nick,
-            bot: false,
+            bot: selectedMember.bot ?? false,
             system: false,
             flags: 0,
             created_at: '',

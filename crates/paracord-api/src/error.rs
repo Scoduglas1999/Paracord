@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,25 +26,57 @@ pub enum ApiError {
     Internal(#[from] anyhow::Error),
 }
 
+impl ApiError {
+    /// Machine-readable error code string.
+    fn error_code(&self) -> &'static str {
+        match self {
+            ApiError::NotFound => "NOT_FOUND",
+            ApiError::Unauthorized => "UNAUTHORIZED",
+            ApiError::Forbidden => "FORBIDDEN",
+            ApiError::BadRequest(_) => "BAD_REQUEST",
+            ApiError::Conflict(_) => "CONFLICT",
+            ApiError::RateLimited => "RATE_LIMITED",
+            ApiError::ServiceUnavailable(_) => "SERVICE_UNAVAILABLE",
+            ApiError::Internal(_) => "INTERNAL_ERROR",
+        }
+    }
+
+    fn status_code(&self) -> StatusCode {
+        match self {
+            ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
-            ApiError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()),
-            ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
-            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate limited".to_string()),
-            ApiError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+        let status = self.status_code();
+        let code = self.error_code();
+
+        let message = match &self {
             ApiError::Internal(err) => {
                 tracing::error!("API internal error: {err:#}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal server error".to_string(),
-                )
+                "internal server error".to_string()
             }
+            other => other.to_string(),
         };
-        (status, Json(json!({ "error": message, "message": message }))).into_response()
+
+        let body = json!({
+            "code": code,
+            "message": message,
+            // Keep legacy "error" field for backwards compatibility
+            "error": message,
+            "details": Value::Null,
+        });
+
+        (status, Json(body)).into_response()
     }
 }
 

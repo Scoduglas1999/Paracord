@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamConfig {
@@ -123,13 +123,16 @@ pub struct ScreenCaptureConfig {
 impl ScreenCaptureConfig {
     /// Create a config from a named quality preset.
     pub fn from_preset(preset_name: &str) -> Option<Self> {
-        quality_presets().into_iter().find(|p| p.name == preset_name).map(|p| Self {
-            width: p.width,
-            height: p.height,
-            framerate: p.framerate,
-            bitrate_kbps: p.bitrate_kbps,
-            simulcast: true,
-        })
+        quality_presets()
+            .into_iter()
+            .find(|p| p.name == preset_name)
+            .map(|p| Self {
+                width: p.width,
+                height: p.height,
+                framerate: p.framerate,
+                bitrate_kbps: p.bitrate_kbps,
+                simulcast: true,
+            })
     }
 
     /// Default 1080p60 config.

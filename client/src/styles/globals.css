@@ -170,6 +170,8 @@
   --sidebar-bg: rgba(10, 14, 23, 0.65);
   --sidebar-border: rgba(255, 255, 255, 0.08);
   --sidebar-active-indicator: var(--color-accent-primary);
+  --bg-code: rgba(255, 255, 255, 0.06);
+  --border-code: rgba(255, 255, 255, 0.04);
 }
 
 :root[data-density='compact'] {
@@ -241,6 +243,8 @@
   --ambient-glow-success: rgba(31, 159, 114, 0.14);
   --ambient-glow-danger: rgba(215, 59, 97, 0.08);
   --accent-primary-rgb: 71, 111, 255;
+  --bg-code: rgba(47, 70, 120, 0.1);
+  --border-code: rgba(47, 70, 120, 0.08);
 }
 
 :root[data-theme='amoled'] {
@@ -289,6 +293,8 @@
   --ambient-glow-success: transparent;
   --ambient-glow-danger: transparent;
   --accent-primary-rgb: 116, 141, 255;
+  --bg-code: rgba(255, 255, 255, 0.08);
+  --border-code: rgba(255, 255, 255, 0.06);
 }
 
 * {
@@ -370,9 +376,15 @@ html[data-theme='amoled'] #root {
   width: 4px;
 }
 
+/* Skeleton loading animation */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
 /* Focus styles */
 :focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -1087,6 +1099,19 @@ html[data-theme='amoled'] #root {
 
 .animation-scale-in {
   animation: scale-in var(--duration-normal) var(--ease-out);
+}
+
+/* Toast slide-in animation */
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 /* Hover action button (message action bar items) */

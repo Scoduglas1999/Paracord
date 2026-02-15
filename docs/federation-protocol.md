@@ -42,12 +42,18 @@ All federated events are sent as signed envelopes:
   - `X-Paracord-Timestamp`
   - `X-Paracord-Signature`
 - Signature scope includes method, path, timestamp, and request body hash.
+- Inbound validation checks both:
+  - transport-hop authenticity (`X-Paracord-*` sender signature)
+  - envelope origin authenticity (`signatures` for `origin_server`)
+- This allows authenticated relay in non-full-mesh federation topologies.
 
 ## Replay and Idempotency
 
 - Reject requests with timestamp skew outside tolerance window.
 - Use `event_id` idempotency checks on ingest.
 - Persist processed event IDs and drop duplicates.
+- Enforce transport-level replay cache keyed by signed request material.
+- Use monotonic `depth` values (timestamp-based in MVP) for paginated room sync.
 
 ## Federation APIs (MVP)
 
@@ -77,6 +83,7 @@ Add support tables for:
 - outbound queue
 - per-server trust state
 - per-event delivery attempts
+- transport replay cache
 
 ## Deferred Beyond MVP
 

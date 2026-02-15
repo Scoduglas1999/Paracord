@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import type { Channel } from '../types';
 import { guildApi } from '../api/guilds';
 import { channelApi } from '../api/channels';
+import { extractApiError } from '../api/client';
+import { toast } from './toastStore';
 
 function normalizeChannel(channel: Channel): Channel {
   return {
@@ -9,6 +11,9 @@ function normalizeChannel(channel: Channel): Channel {
     type: (channel.type ?? channel.channel_type ?? 0) as Channel['type'],
     channel_type: channel.channel_type ?? channel.type ?? 0,
     required_role_ids: channel.required_role_ids ?? [],
+    thread_metadata: channel.thread_metadata ?? null,
+    owner_id: channel.owner_id ?? null,
+    message_count: channel.message_count ?? null,
     created_at: channel.created_at ?? new Date().toISOString(),
   };
 }
@@ -55,8 +60,9 @@ export const useChannelStore = create<ChannelState>()((set, _get) => ({
         const channels = state.selectedGuildId === guildId ? sorted : state.channels;
         return { channelsByGuild, channels, isLoading: false };
       });
-    } catch {
+    } catch (err) {
       set({ isLoading: false });
+      toast.error(`Failed to load channels: ${extractApiError(err)}`);
     }
   },
 

@@ -6,9 +6,13 @@ import {
   hasAccount,
   updateKeystoreProfile,
   deleteAccount,
-  generateRecoveryPhrase,
   recoverFromPhrase,
 } from '../lib/account';
+import {
+  clearUnlockedPrivateKey,
+  getRecoveryPhraseFromUnlockedKey,
+  setUnlockedPrivateKey,
+} from '../lib/accountSession';
 
 interface AccountState {
   // Public info (persisted)
@@ -18,7 +22,6 @@ interface AccountState {
 
   // Runtime state (not persisted)
   isUnlocked: boolean;
-  privateKey: Uint8Array | null; // in-memory only, never persisted
   isLoading: boolean;
   error: string | null;
 
@@ -26,22 +29,21 @@ interface AccountState {
   create: (username: string, password: string, displayName?: string) => Promise<void>;
   unlock: (password: string) => Promise<void>;
   lock: () => void;
-  updateProfile: (username: string, displayName?: string) => void;
+  updateProfile: (username: string, displayName?: string) => Promise<void>;
   getRecoveryPhrase: () => string | null;
   recover: (phrase: string, username: string, password: string, displayName?: string) => Promise<void>;
-  deleteAccount: () => void;
+  deleteAccount: () => Promise<void>;
   clearError: () => void;
   hasAccount: () => boolean;
 }
 
 export const useAccountStore = create<AccountState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       publicKey: null,
       username: null,
       displayName: null,
       isUnlocked: false,
-      privateKey: null,
       isLoading: false,
       error: null,
 
@@ -49,12 +51,12 @@ export const useAccountStore = create<AccountState>()(
         set({ isLoading: true, error: null });
         try {
           const account = await createAccount(username, password, displayName);
+          setUnlockedPrivateKey(account.privateKey);
           set({
             publicKey: account.publicKey,
             username: account.username,
             displayName: account.displayName || null,
             isUnlocked: true,
-            privateKey: account.privateKey,
             isLoading: false,
           });
         } catch (err) {
@@ -68,12 +70,12 @@ export const useAccountStore = create<AccountState>()(
         set({ isLoading: true, error: null });
         try {
           const account = await unlockAccount(password);
+          setUnlockedPrivateKey(account.privateKey);
           set({
             publicKey: account.publicKey,
             username: account.username,
             displayName: account.displayName || null,
             isUnlocked: true,
-            privateKey: account.privateKey,
             isLoading: false,
           });
         } catch (err) {
@@ -84,33 +86,31 @@ export const useAccountStore = create<AccountState>()(
       },
 
       lock: () => {
+        clearUnlockedPrivateKey();
         set({
           isUnlocked: false,
-          privateKey: null,
         });
       },
 
-      updateProfile: (username, displayName) => {
-        updateKeystoreProfile(username, displayName);
+      updateProfile: async (username, displayName) => {
+        await updateKeystoreProfile(username, displayName);
         set({ username, displayName: displayName || null });
       },
 
       getRecoveryPhrase: () => {
-        const { privateKey } = get();
-        if (!privateKey) return null;
-        return generateRecoveryPhrase(privateKey);
+        return getRecoveryPhraseFromUnlockedKey();
       },
 
       recover: async (phrase, username, password, displayName) => {
         set({ isLoading: true, error: null });
         try {
           const account = await recoverFromPhrase(phrase, username, password, displayName);
+          setUnlockedPrivateKey(account.privateKey);
           set({
             publicKey: account.publicKey,
             username: account.username,
             displayName: account.displayName || null,
             isUnlocked: true,
-            privateKey: account.privateKey,
             isLoading: false,
           });
         } catch (err) {
@@ -120,14 +120,14 @@ export const useAccountStore = create<AccountState>()(
         }
       },
 
-      deleteAccount: () => {
-        deleteAccount();
+      deleteAccount: async () => {
+        await deleteAccount();
+        clearUnlockedPrivateKey();
         set({
           publicKey: null,
           username: null,
           displayName: null,
           isUnlocked: false,
-          privateKey: null,
         });
       },
 

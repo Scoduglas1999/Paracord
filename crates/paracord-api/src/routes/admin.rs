@@ -1,44 +1,39 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use paracord_core::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use tokio_util::io::ReaderStream;
 
 use crate::error::ApiError;
 use crate::middleware::AdminUser;
+use crate::routes::security;
 
 // ── Restart & Update ─────────────────────────────────────────────────
 
 pub async fn restart_update(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    // Gate behind environment variable for security — shell execution has been
-    // removed entirely.  The server only triggers a graceful shutdown; the
-    // process supervisor (systemd / Docker) is responsible for restarting it.
-    if std::env::var("PARACORD_ALLOW_UPDATE").as_deref() != Ok("1") {
-        return Err(ApiError::Forbidden);
-    }
-
-    // Broadcast SERVER_RESTART to all connected clients
-    state.event_bus.dispatch(
-        "SERVER_RESTART",
-        json!({"message": "Server is restarting..."}),
+    // This endpoint intentionally does not execute shell scripts or build steps.
+    // Update automation must be performed out-of-process using signed release artifacts.
+    security::log_security_event(
+        &state,
+        "admin.remote_update.denied",
+        Some(admin.user_id),
         None,
-    );
-
-    // Trigger graceful shutdown after a brief delay to allow the WS broadcast to flush
-    let shutdown = state.shutdown.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        shutdown.notify_one();
-    });
-
-    Ok(Json(json!({"status": "restarting"})))
+        None,
+        Some(&headers),
+        Some(json!({ "reason": "endpoint_disabled_for_security" })),
+    )
+    .await;
+    Err(ApiError::Forbidden)
 }
 
 // ── Stats ───────────────────────────────────────────────────────────────
@@ -54,6 +49,49 @@ pub async fn get_stats(
         "total_messages": stats.total_messages,
         "total_channels": stats.total_channels,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct SecurityEventsQuery {
+    pub before: Option<i64>,
+    pub limit: Option<i64>,
+    pub action: Option<String>,
+}
+
+pub async fn list_security_events(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Query(params): Query<SecurityEventsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+    let rows = paracord_db::security_events::list_events(
+        &state.db,
+        params.action.as_deref(),
+        params.before,
+        limit,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let payload: Vec<Value> = rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "id": row.id.to_string(),
+                "actor_user_id": row.actor_user_id.map(|id| id.to_string()),
+                "action": row.action,
+                "target_user_id": row.target_user_id.map(|id| id.to_string()),
+                "session_id": row.session_id,
+                "device_id": row.device_id,
+                "user_agent": row.user_agent,
+                "ip_address": row.ip_address,
+                "details": row.details,
+                "created_at": row.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(payload)))
 }
 
 // ── Settings ────────────────────────────────────────────────────────────
@@ -119,32 +157,28 @@ fn validate_setting(key: &str, value: &str) -> Result<(), String> {
 
 pub async fn update_settings(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
+    headers: HeaderMap,
     Json(body): Json<HashMap<String, String>>,
 ) -> Result<Json<Value>, ApiError> {
-    // Reject unknown keys
     for key in body.keys() {
         if !ALLOWED_SETTINGS.contains(&key.as_str()) {
-            return Err(ApiError::BadRequest(format!(
-                "unknown setting: \"{key}\""
-            )));
+            return Err(ApiError::BadRequest(format!("unknown setting: \"{key}\"")));
         }
     }
 
-    // Validate values
     for (key, value) in &body {
-        validate_setting(key, value).map_err(|e| ApiError::BadRequest(e))?;
+        validate_setting(key, value).map_err(ApiError::BadRequest)?;
     }
 
-    // Sanitize string values (trim whitespace)
     let sanitized: HashMap<String, String> = body
         .into_iter()
-        .map(|(k, v)| {
-            let v = match k.as_str() {
-                "server_name" | "server_description" => v.trim().to_string(),
-                _ => v,
+        .map(|(key, value)| {
+            let value = match key.as_str() {
+                "server_name" | "server_description" => value.trim().to_string(),
+                _ => value,
             };
-            (k, v)
+            (key, value)
         })
         .collect();
 
@@ -181,6 +215,18 @@ pub async fn update_settings(
             _ => {}
         }
     }
+
+    let changed_keys: Vec<&str> = sanitized.keys().map(String::as_str).collect();
+    security::log_security_event(
+        &state,
+        "admin.settings.update",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "keys": changed_keys })),
+    )
+    .await;
 
     Ok(Json(json!({
         "registration_enabled": settings.registration_enabled.to_string(),
@@ -247,6 +293,7 @@ pub struct UpdateUserRequest {
 pub async fn update_user(
     State(state): State<AppState>,
     admin: AdminUser,
+    headers: HeaderMap,
     Path(user_id): Path<i64>,
     Json(body): Json<UpdateUserRequest>,
 ) -> Result<Json<Value>, ApiError> {
@@ -261,6 +308,17 @@ pub async fn update_user(
         let updated = paracord_db::users::update_user_flags(&state.db, user_id, flags)
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+        security::log_security_event(
+            &state,
+            "admin.user.flags.update",
+            Some(admin.user_id),
+            Some(user_id),
+            None,
+            Some(&headers),
+            Some(json!({ "flags": flags })),
+        )
+        .await;
 
         return Ok(Json(json!({
             "id": updated.id.to_string(),
@@ -280,6 +338,7 @@ pub async fn update_user(
 pub async fn delete_user(
     State(state): State<AppState>,
     admin: AdminUser,
+    headers: HeaderMap,
     Path(user_id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     if user_id == admin.user_id {
@@ -287,6 +346,16 @@ pub async fn delete_user(
     }
 
     paracord_core::admin::admin_delete_user(&state.db, user_id).await?;
+    security::log_security_event(
+        &state,
+        "admin.user.delete",
+        Some(admin.user_id),
+        Some(user_id),
+        None,
+        Some(&headers),
+        None,
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -326,7 +395,8 @@ pub async fn list_guilds(
 
 pub async fn update_guild(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
+    headers: HeaderMap,
     Path(guild_id): Path<i64>,
     Json(body): Json<UpdateGuildRequest>,
 ) -> Result<Json<Value>, ApiError> {
@@ -352,12 +422,24 @@ pub async fn update_guild(
         .event_bus
         .dispatch("GUILD_UPDATE", guild_json.clone(), Some(guild_id));
 
+    security::log_security_event(
+        &state,
+        "admin.guild.update",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "guild_id": guild_id.to_string() })),
+    )
+    .await;
+
     Ok(Json(guild_json))
 }
 
 pub async fn delete_guild(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    admin: AdminUser,
+    headers: HeaderMap,
     Path(guild_id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     paracord_core::admin::admin_delete_guild(&state.db, guild_id).await?;
@@ -368,5 +450,206 @@ pub async fn delete_guild(
         Some(guild_id),
     );
 
+    security::log_security_event(
+        &state,
+        "admin.guild.delete",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "guild_id": guild_id.to_string() })),
+    )
+    .await;
+
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Backups ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateBackupRequest {
+    pub include_media: Option<bool>,
+}
+
+pub async fn create_backup(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    headers: HeaderMap,
+    Json(body): Json<Option<CreateBackupRequest>>,
+) -> Result<Json<Value>, ApiError> {
+    let include_media = body.and_then(|b| b.include_media).unwrap_or(true);
+
+    let filename = paracord_core::backup::create_backup(
+        &state.config.database_url,
+        &state.config.backup_dir,
+        &state.config.storage_path,
+        &state.config.media_storage_path,
+        include_media,
+    )
+    .await?;
+
+    security::log_security_event(
+        &state,
+        "admin.backup.create",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "filename": &filename, "include_media": include_media })),
+    )
+    .await;
+
+    Ok(Json(json!({ "filename": filename })))
+}
+
+pub async fn list_backups(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Value>, ApiError> {
+    let backups = paracord_core::backup::list_backups(&state.config.backup_dir).await?;
+
+    let list: Vec<Value> = backups
+        .into_iter()
+        .map(|b| {
+            json!({
+                "name": b.name,
+                "size_bytes": b.size_bytes,
+                "created_at": b.created_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "backups": list })))
+}
+
+#[derive(Deserialize)]
+pub struct RestoreBackupRequest {
+    pub name: String,
+}
+
+pub async fn restore_backup(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    headers: HeaderMap,
+    Json(body): Json<RestoreBackupRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // Validate the name to prevent path traversal
+    if body.name.contains("..") || body.name.contains('/') || body.name.contains('\\') {
+        return Err(ApiError::BadRequest("Invalid backup name".into()));
+    }
+
+    paracord_core::backup::restore_backup(
+        &body.name,
+        &state.config.backup_dir,
+        &state.config.database_url,
+        &state.config.storage_path,
+        &state.config.media_storage_path,
+    )
+    .await?;
+
+    security::log_security_event(
+        &state,
+        "admin.backup.restore",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "filename": &body.name })),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "message": "Backup restored. Server restart recommended.",
+        "filename": body.name,
+    })))
+}
+
+pub async fn download_backup(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Path(name): Path<String>,
+) -> Result<axum::response::Response<Body>, ApiError> {
+    // Validate the name to prevent path traversal
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(ApiError::BadRequest("Invalid backup name".into()));
+    }
+    if !name.ends_with(".tar.gz") {
+        return Err(ApiError::BadRequest("Invalid backup filename".into()));
+    }
+
+    let path = paracord_core::backup::backup_file_path(&state.config.backup_dir, &name);
+    if !path.exists() {
+        return Err(ApiError::NotFound);
+    }
+
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to open backup: {e}")))?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok(axum::response::Response::builder()
+        .header("content-type", "application/gzip")
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{name}\""),
+        )
+        .body(body)
+        .unwrap())
+}
+
+pub async fn delete_backup(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(ApiError::BadRequest("Invalid backup name".into()));
+    }
+    if !name.ends_with(".tar.gz") {
+        return Err(ApiError::BadRequest("Invalid backup filename".into()));
+    }
+
+    let path = paracord_core::backup::backup_file_path(&state.config.backup_dir, &name);
+    if !path.exists() {
+        return Err(ApiError::NotFound);
+    }
+
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("Failed to delete backup: {e}")))?;
+
+    security::log_security_event(
+        &state,
+        "admin.backup.delete",
+        Some(admin.user_id),
+        None,
+        None,
+        Some(&headers),
+        Some(json!({ "filename": &name })),
+    )
+    .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_setting;
+
+    #[test]
+    fn validate_setting_rejects_unknown_bool_value() {
+        assert!(validate_setting("registration_enabled", "maybe").is_err());
+    }
+
+    #[test]
+    fn validate_setting_rejects_zero_limits() {
+        assert!(validate_setting("max_members_per_guild", "0").is_err());
+    }
+
+    #[test]
+    fn validate_setting_accepts_valid_numeric_limits() {
+        assert!(validate_setting("max_guilds_per_user", "100").is_ok());
+    }
 }

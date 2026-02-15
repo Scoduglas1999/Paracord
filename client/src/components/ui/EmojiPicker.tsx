@@ -1,4 +1,7 @@
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import type { GuildEmoji } from '../../types';
+import { emojiApi } from '../../api/emojis';
+import { buildGuildEmojiImageUrl, formatCustomEmojiToken } from '../../lib/customEmoji';
 
 // ---------------------------------------------------------------------------
 // Emoji data
@@ -264,18 +267,58 @@ interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
   onClose: () => void;
   position?: { x: number; y: number };
+  guildId?: string;
 }
 
-export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
+export function EmojiPicker({ onSelect, onClose, position, guildId }: EmojiPickerProps) {
   const [favorites, setFavorites] = useState<string[]>(loadFavorites);
   const [customizeMode, setCustomizeMode] = useState(false);
   const [customizeSlot, setCustomizeSlot] = useState<number | null>(null);
   const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<'unicode' | 'server'>('unicode');
   const [activeCategory, setActiveCategory] = useState(0);
+  const [serverEmojis, setServerEmojis] = useState<GuildEmoji[]>([]);
+  const [loadingServerEmojis, setLoadingServerEmojis] = useState(false);
 
   const gridRef = useRef<HTMLDivElement>(null);
   const categoryRefs = useRef<(HTMLDivElement | null)[]>([]);
   const pickerRef = useRef<HTMLDivElement>(null);
+
+  const fetchServerEmojis = useCallback(() => {
+    if (!guildId) {
+      setServerEmojis([]);
+      return;
+    }
+    setLoadingServerEmojis(true);
+    emojiApi
+      .listGuild(guildId)
+      .then(({ data }) => {
+        setServerEmojis(data);
+      })
+      .catch(() => {
+        setServerEmojis([]);
+      })
+      .finally(() => {
+        setLoadingServerEmojis(false);
+      });
+  }, [guildId]);
+
+  useEffect(() => {
+    fetchServerEmojis();
+  }, [fetchServerEmojis]);
+
+  // Listen for real-time emoji changes from the gateway
+  useEffect(() => {
+    if (!guildId) return;
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.guild_id === guildId) {
+        fetchServerEmojis();
+      }
+    };
+    window.addEventListener('paracord:emojis-changed', handler);
+    return () => window.removeEventListener('paracord:emojis-changed', handler);
+  }, [guildId, fetchServerEmojis]);
 
   // Filtered categories when searching
   const filteredCategories = useMemo(() => {
@@ -307,9 +350,17 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
     return [{ name: 'Search Results', icon: '\u{1F50D}', emojis: flat }];
   }, [search]);
 
+  const filteredServerEmojis = useMemo(() => {
+    if (!search.trim()) {
+      return serverEmojis;
+    }
+    const query = search.trim().toLowerCase();
+    return serverEmojis.filter((emoji) => emoji.name.toLowerCase().includes(query));
+  }, [search, serverEmojis]);
+
   // Track scroll to highlight active category tab
   const handleGridScroll = useCallback(() => {
-    if (!gridRef.current || search.trim()) return;
+    if (!gridRef.current || search.trim() || activeTab !== 'unicode') return;
     const scrollTop = gridRef.current.scrollTop;
     let closest = 0;
     for (let i = 0; i < categoryRefs.current.length; i++) {
@@ -319,7 +370,7 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
       }
     }
     setActiveCategory(closest);
-  }, [search]);
+  }, [search, activeTab]);
 
   // Scroll to category on tab click
   const scrollToCategory = useCallback((index: number) => {
@@ -345,6 +396,14 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
       onClose();
     },
     [customizeMode, customizeSlot, favorites, onSelect, onClose],
+  );
+
+  const handleServerEmojiClick = useCallback(
+    (emoji: GuildEmoji) => {
+      onSelect(formatCustomEmojiToken(emoji.name, emoji.id, emoji.animated));
+      onClose();
+    },
+    [onSelect, onClose]
   );
 
   // Compute clamped position for popup mode
@@ -496,6 +555,51 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
       </div>
 
       {/* ── Search ── */}
+      {!!guildId && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 6,
+            padding: '8px 12px 2px',
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setActiveTab('unicode')}
+            style={{
+              height: 30,
+              borderRadius: 8,
+              border: '1px solid var(--border-subtle)',
+              background: activeTab === 'unicode' ? 'var(--bg-mod-strong)' : 'transparent',
+              color: 'var(--text-secondary)',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Unicode
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('server')}
+            style={{
+              height: 30,
+              borderRadius: 8,
+              border: '1px solid var(--border-subtle)',
+              background: activeTab === 'server' ? 'var(--bg-mod-strong)' : 'transparent',
+              color: 'var(--text-secondary)',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Server Emojis
+          </button>
+        </div>
+      )}
+
       <div style={{ padding: '8px 12px 4px', flexShrink: 0 }}>
         <div
           style={{
@@ -511,7 +615,7 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
           <SearchIcon className="" />
           <input
             type="text"
-            placeholder="Search emoji..."
+            placeholder={activeTab === 'server' ? 'Search server emojis...' : 'Search emoji...'}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{
@@ -539,77 +643,170 @@ export function EmojiPicker({ onSelect, onClose, position }: EmojiPickerProps) {
           scrollbarColor: 'var(--scrollbar-auto-thumb) transparent',
         }}
       >
-        {filteredCategories.map((cat, ci) => (
-          <div
-            key={cat.name}
-            ref={(el) => {
-              categoryRefs.current[ci] = el;
-            }}
-          >
-            {/* Category label */}
+        {activeTab === 'server' ? (
+          loadingServerEmojis ? (
+            <div style={{ padding: '14px 8px', fontSize: 13, color: 'var(--text-muted)' }}>
+              Loading server emojis...
+            </div>
+          ) : !guildId ? (
+            <div style={{ padding: '14px 8px', fontSize: 13, color: 'var(--text-muted)' }}>
+              Server emojis are available in guild channels.
+            </div>
+          ) : filteredServerEmojis.length === 0 ? (
+            <div style={{ padding: '14px 8px', fontSize: 13, color: 'var(--text-muted)' }}>
+              No matching server emojis.
+            </div>
+          ) : (
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  color: 'var(--text-muted)',
+                  padding: '8px 4px 6px',
+                  userSelect: 'none',
+                }}
+              >
+                Server Emojis
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(6, 1fr)',
+                  gap: 6,
+                }}
+              >
+                {filteredServerEmojis.map((emoji) => (
+                  <button
+                    key={emoji.id}
+                    type="button"
+                    title={`:${emoji.name}:`}
+                    onClick={() => handleServerEmojiClick(emoji)}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 3,
+                      width: '100%',
+                      minHeight: 56,
+                      padding: '4px 2px',
+                      background: 'transparent',
+                      border: 'none',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.1s',
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--bg-mod-subtle)';
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <img
+                      src={buildGuildEmojiImageUrl(guildId, emoji.id)}
+                      alt={emoji.name}
+                      loading="lazy"
+                      style={{
+                        width: 26,
+                        height: 26,
+                        objectFit: 'contain',
+                      }}
+                    />
+                    <span
+                      style={{
+                        maxWidth: '100%',
+                        fontSize: 10,
+                        lineHeight: 1.2,
+                        color: 'var(--text-muted)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {emoji.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        ) : (
+          filteredCategories.map((cat, ci) => (
             <div
-              style={{
-                fontSize: 11,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                color: 'var(--text-muted)',
-                padding: '8px 4px 4px',
-                userSelect: 'none',
+              key={cat.name}
+              ref={(el) => {
+                categoryRefs.current[ci] = el;
               }}
             >
-              {cat.name}
-            </div>
+              {/* Category label */}
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  color: 'var(--text-muted)',
+                  padding: '8px 4px 4px',
+                  userSelect: 'none',
+                }}
+              >
+                {cat.name}
+              </div>
 
-            {/* Emoji grid */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(8, 1fr)',
-                gap: 2,
-              }}
-            >
-              {cat.emojis.map((emoji, ei) => (
-                <button
-                  key={`${cat.name}-${ei}`}
-                  type="button"
-                  title={emoji}
-                  onClick={() => handleEmojiClick(emoji)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    width: '100%',
-                    aspectRatio: '1',
-                    fontSize: 22,
-                    lineHeight: 1,
-                    background: 'transparent',
-                    border: 'none',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                    transition: 'background-color 0.1s, transform 0.1s',
-                  }}
-                  onMouseEnter={(e) => {
-                    const el = e.currentTarget as HTMLElement;
-                    el.style.backgroundColor = 'var(--bg-mod-subtle)';
-                    el.style.transform = 'scale(1.18)';
-                  }}
-                  onMouseLeave={(e) => {
-                    const el = e.currentTarget as HTMLElement;
-                    el.style.backgroundColor = 'transparent';
-                    el.style.transform = 'scale(1)';
-                  }}
-                >
-                  {emoji}
-                </button>
-              ))}
+              {/* Emoji grid */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(8, 1fr)',
+                  gap: 2,
+                }}
+              >
+                {cat.emojis.map((emoji, ei) => (
+                  <button
+                    key={`${cat.name}-${ei}`}
+                    type="button"
+                    title={emoji}
+                    onClick={() => handleEmojiClick(emoji)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: '100%',
+                      aspectRatio: '1',
+                      fontSize: 22,
+                      lineHeight: 1,
+                      background: 'transparent',
+                      border: 'none',
+                      borderRadius: 8,
+                      cursor: 'pointer',
+                      transition: 'background-color 0.1s, transform 0.1s',
+                    }}
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = 'var(--bg-mod-subtle)';
+                      el.style.transform = 'scale(1.18)';
+                    }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLElement;
+                      el.style.backgroundColor = 'transparent';
+                      el.style.transform = 'scale(1)';
+                    }}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* ── Category Tabs ── */}
-      {!search.trim() && (
+      {!search.trim() && activeTab === 'unicode' && (
         <div
           style={{
             display: 'flex',

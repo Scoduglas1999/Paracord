@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { Member } from '../types';
 import { guildApi } from '../api/guilds';
+import { extractApiError } from '../api/client';
+import { toast } from './toastStore';
 
 interface MemberState {
   // Members indexed by guild ID
@@ -29,8 +31,9 @@ export const useMemberStore = create<MemberState>()((set, get) => ({
         members.set(guildId, data);
         return { members, isLoading: false };
       });
-    } catch {
+    } catch (err) {
       set({ isLoading: false });
+      toast.error(`Failed to load members: ${extractApiError(err)}`);
     }
   },
 

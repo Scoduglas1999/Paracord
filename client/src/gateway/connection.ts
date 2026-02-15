@@ -9,6 +9,7 @@ import { useVoiceStore } from '../stores/voiceStore';
 import { useTypingStore } from '../stores/typingStore';
 import { useRelationshipStore } from '../stores/relationshipStore';
 import { useUIStore } from '../stores/uiStore';
+import { useServerListStore } from '../stores/serverListStore';
 import { GatewayEvents } from './events';
 import { getStoredServerUrl } from '../lib/apiBaseUrl';
 import { connectionManager } from '../lib/connectionManager';
@@ -149,6 +150,7 @@ class GatewayConnection {
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
   private handleDispatch(event: string, data: any) {
+    const scopeId = useServerListStore.getState().activeServerId ?? undefined;
     switch (event) {
       case GatewayEvents.READY:
         this.sessionId = data.session_id;
@@ -180,7 +182,7 @@ class GatewayConnection {
           // Load initial presences for this guild if the server provided them
           if (g.presences?.length) {
             for (const p of g.presences) {
-              usePresenceStore.getState().updatePresence(p);
+              usePresenceStore.getState().updatePresence(p, scopeId);
             }
           }
 
@@ -196,7 +198,7 @@ class GatewayConnection {
             user_id: data.user.id,
             status: 'online',
             activities: [],
-          });
+          }, scopeId);
         }
         break;
 
@@ -253,7 +255,7 @@ class GatewayConnection {
         break;
 
       case GatewayEvents.PRESENCE_UPDATE:
-        usePresenceStore.getState().updatePresence(data);
+        usePresenceStore.getState().updatePresence(data, scopeId);
         break;
 
       case GatewayEvents.VOICE_STATE_UPDATE:
@@ -303,6 +305,22 @@ class GatewayConnection {
       case GatewayEvents.RELATIONSHIP_ADD:
       case GatewayEvents.RELATIONSHIP_REMOVE:
         void useRelationshipStore.getState().fetchRelationships();
+        break;
+
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_CREATE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_UPDATE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_DELETE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_USER_ADD:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_USER_REMOVE:
+        window.dispatchEvent(new CustomEvent('paracord:scheduled-events-changed', {
+          detail: { guild_id: data.guild_id },
+        }));
+        break;
+
+      case GatewayEvents.GUILD_EMOJIS_UPDATE:
+        window.dispatchEvent(new CustomEvent('paracord:emojis-changed', {
+          detail: { guild_id: data.guild_id },
+        }));
         break;
 
       case GatewayEvents.SERVER_RESTART:

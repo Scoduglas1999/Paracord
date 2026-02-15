@@ -7,9 +7,7 @@ import { connectionManager } from '../lib/connectionManager';
 export function useGateway() {
   const token = useAuthStore((s) => s.token);
   const serverCount = useServerListStore((s) => s.servers.length);
-  const managedServerCount = useServerListStore((s) =>
-    s.servers.filter((server) => Boolean(server.token)).length
-  );
+  const serversHydrated = useServerListStore((s) => s.hydrated);
 
   useEffect(() => {
     if (!token) {
@@ -18,10 +16,17 @@ export function useGateway() {
       return;
     }
 
-    // Multi-server mode owns gateway sockets via connectionManager.
-    // Keep the legacy singleton gateway disconnected to avoid duplicate
-    // sockets for the same user/session.
-    if (serverCount > 0 && managedServerCount > 0) {
+    // Wait for persisted server-list state to hydrate before deciding between
+    // legacy single-socket mode and per-server connectionManager mode.
+    // This prevents startup oscillation and transient /gateway failures.
+    if (!serversHydrated) {
+      return;
+    }
+
+    // If there are any configured servers, always use connectionManager.
+    // It can authenticate missing tokens and prevents startup bouncing
+    // between legacy gateway and per-server sockets.
+    if (serverCount > 0) {
       gateway.disconnect();
       connectionManager.connectAll().catch(() => {
         // Per-server errors are handled inside connectionManager.
@@ -34,5 +39,5 @@ export function useGateway() {
     return () => {
       gateway.disconnect();
     };
-  }, [token, serverCount, managedServerCount]);
+  }, [token, serverCount, serversHydrated]);
 }

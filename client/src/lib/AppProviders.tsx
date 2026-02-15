@@ -6,8 +6,11 @@ import { useActivityPresence } from '../hooks/useActivityPresence';
 import { useAuthStore } from '../stores/authStore';
 import { useGuildStore } from '../stores/guildStore';
 import { useVoiceStore } from '../stores/voiceStore';
+import { useServerListStore } from '../stores/serverListStore';
 import { RestartBanner } from '../components/RestartBanner';
 import { UpdateNotification } from '../components/UpdateNotification';
+import { ToastContainer } from '../components/ui/Toast';
+import { ImageLightbox } from '../components/ui/ImageLightbox';
 
 function AppInitializer({ children }: { children: ReactNode }) {
   // Initialize gateway connection when authenticated
@@ -19,6 +22,8 @@ function AppInitializer({ children }: { children: ReactNode }) {
   // Detect foreground desktop app and publish "Playing ..." presence.
   useActivityPresence();
   const token = useAuthStore((s) => s.token);
+  const initializeSession = useAuthStore((s) => s.initializeSession);
+  const hydrateServerTokens = useServerListStore((s) => s.hydrateTokens);
   const fetchUser = useAuthStore((s) => s.fetchUser);
   const fetchSettings = useAuthStore((s) => s.fetchSettings);
   const settings = useAuthStore((s) => s.settings);
@@ -26,6 +31,14 @@ function AppInitializer({ children }: { children: ReactNode }) {
   const voiceConnected = useVoiceStore((s) => s.connected);
   const applyAudioInputDevice = useVoiceStore((s) => s.applyAudioInputDevice);
   const applyAudioOutputDevice = useVoiceStore((s) => s.applyAudioOutputDevice);
+
+  useEffect(() => {
+    void hydrateServerTokens();
+  }, [hydrateServerTokens]);
+
+  useEffect(() => {
+    void initializeSession();
+  }, [initializeSession]);
 
   useEffect(() => {
     if (token) {
@@ -54,6 +67,8 @@ function AppInitializer({ children }: { children: ReactNode }) {
     <>
       <RestartBanner />
       <UpdateNotification />
+      <ToastContainer />
+      <ImageLightbox />
       {children}
     </>
   );

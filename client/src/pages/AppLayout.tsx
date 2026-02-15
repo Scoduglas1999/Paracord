@@ -7,7 +7,9 @@ import { MemberList } from '../components/layout/MemberList';
 import { CommandPalette } from '../components/layout/CommandPalette';
 import { useUIStore } from '../stores/uiStore';
 import { useGuildStore } from '../stores/guildStore';
+import { useKeyboardNavigation } from '../hooks/useKeyboardNavigation';
 export function AppLayout() {
+  useKeyboardNavigation();
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed);
   const memberPanelOpen = useUIStore((s) => s.memberPanelOpen);
@@ -83,6 +85,8 @@ export function AppLayout() {
         {/* Unified sidebar */}
         {showShell && !isMobile && (
           <motion.aside
+            role="navigation"
+            aria-label="Server navigation"
             initial={false}
             animate={{
               width: sidebarCollapsed ? 64 : 280,
@@ -107,6 +111,8 @@ export function AppLayout() {
                 style={{ backgroundColor: 'var(--overlay-backdrop)' }}
               />
               <motion.aside
+                role="navigation"
+                aria-label="Server navigation"
                 initial={{ x: '-105%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '-105%' }}
@@ -120,7 +126,7 @@ export function AppLayout() {
         </AnimatePresence>
 
         {/* Main content area */}
-        <main className="flex min-w-0 flex-1">
+        <main role="main" className="flex min-w-0 flex-1" aria-label="Main content">
           {isSettingsRoute ? (
             <div className="relative h-full w-full overflow-hidden rounded-xl border border-border-subtle/70 bg-bg-tertiary/80 sm:rounded-2xl">
               <AnimatePresence mode="wait">
@@ -157,7 +163,7 @@ export function AppLayout() {
 
         {/* Member list panel */}
         {showMemberPanel && !isMobile && (
-          <div className="hidden h-full overflow-hidden rounded-2xl 2xl:block">
+          <div role="complementary" aria-label="Member list panel" className="hidden h-full overflow-hidden rounded-2xl 2xl:block">
             <div className="glass-rail h-full overflow-hidden">
               <MemberList />
             </div>
@@ -177,6 +183,8 @@ export function AppLayout() {
                 style={{ backgroundColor: 'var(--overlay-backdrop)' }}
               />
               <motion.div
+                role="complementary"
+                aria-label="Member list panel"
                 initial={{ x: '105%' }}
                 animate={{ x: 0 }}
                 exit={{ x: '105%' }}

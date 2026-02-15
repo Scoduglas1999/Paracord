@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::{Child, Command};
@@ -97,10 +98,7 @@ fn write_livekit_config(
 ) -> std::io::Result<PathBuf> {
     let is_local_only = external_ip.is_none();
 
-    let mut lines = vec![
-        format!("port: {livekit_port}"),
-        "rtc:".to_string(),
-    ];
+    let mut lines = vec![format!("port: {livekit_port}"), "rtc:".to_string()];
 
     if is_local_only {
         // Local-only mode: disable external IP detection so LiveKit
@@ -176,9 +174,20 @@ fn write_livekit_config(
         local_ip,
     );
 
-    let dir = std::env::temp_dir();
-    let path = dir.join("paracord-livekit.yaml");
-    std::fs::write(&path, config)?;
+    let mut file = tempfile::Builder::new()
+        .prefix("paracord-livekit-")
+        .suffix(".yaml")
+        .tempfile_in(std::env::temp_dir())?;
+    file.write_all(config.as_bytes())?;
+    file.flush()?;
+    let (_persisted_file, path) = file.keep()?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(path)
 }
 
@@ -211,7 +220,14 @@ pub async fn start_livekit(
         }
     };
 
-    let config_path = match write_livekit_config(api_key, api_secret, port, server_port, external_ip, local_ip) {
+    let config_path = match write_livekit_config(
+        api_key,
+        api_secret,
+        port,
+        server_port,
+        external_ip,
+        local_ip,
+    ) {
         Ok(path) => path,
         Err(e) => {
             tracing::error!("Failed to write LiveKit config: {}", e);
@@ -224,7 +240,10 @@ pub async fn start_livekit(
         .await
         .is_ok()
     {
-        tracing::info!("LiveKit already running on port {}, skipping managed start", port);
+        tracing::info!(
+            "LiveKit already running on port {}, skipping managed start",
+            port
+        );
         tracing::info!(
             "NOTE: Ensure the pre-existing LiveKit uses api_key='{}' and the matching api_secret. \
              Mismatched keys cause 'permissions denied' on all admin API calls.",
@@ -269,8 +288,13 @@ pub async fn start_livekit(
     // Give LiveKit a moment to start — needs time to bind ports and init
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
-    tracing::info!("Managed LiveKit server started (PID: {})",
-        child.id().map(|id| id.to_string()).unwrap_or_else(|| "unknown".into()));
+    tracing::info!(
+        "Managed LiveKit server started (PID: {})",
+        child
+            .id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unknown".into())
+    );
 
     Some(LiveKitProcess { child, config_path })
 }

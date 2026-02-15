@@ -5,7 +5,6 @@
   "permissions": [
     "core:default",
     "os:default",
-    "shell:default",
     "notification:default",
     "updater:default"
   ]

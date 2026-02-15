@@ -32,5 +32,8 @@
 ## Federation MVP
 
 - [ ] `.well-known` and federation key endpoints reachable.
+- [ ] Inbound federation transport signatures verified (`X-Paracord-*` headers).
+- [ ] Federation replay cache blocks duplicated signed requests.
 - [ ] Federated event ingest and retrieval tested across two servers.
 - [ ] Duplicate event ingestion is deduplicated by `event_id`.
+- [ ] Run `scripts/federation_deployed_live_validation.py` against staging/production-like nodes before launch.

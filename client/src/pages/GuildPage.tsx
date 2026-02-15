@@ -1,22 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { EyeOff, LayoutList, Monitor, MonitorOff, PanelLeft, PhoneOff, PictureInPicture2, Users } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { AlertTriangle, EyeOff, LayoutList, Monitor, MonitorOff, PanelLeft, PhoneOff, PictureInPicture2, Users } from 'lucide-react';
 import { RoomEvent, Track } from 'livekit-client';
 import { TopBar } from '../components/layout/TopBar';
 import { MessageList } from '../components/message/MessageList';
 import { MessageInput } from '../components/message/MessageInput';
+import { ThreadPanel } from '../components/message/ThreadPanel';
+import { ForumView } from '../components/channel/ForumView';
 import { StreamViewer } from '../components/voice/StreamViewer';
 import { VideoGrid } from '../components/voice/VideoGrid';
 import { SplitPane } from '../components/voice/SplitPane';
 import type { PaneSource } from '../components/voice/SplitPaneSourcePicker';
 import { useChannelStore } from '../stores/channelStore';
 import { useGuildStore } from '../stores/guildStore';
+import { useUIStore } from '../stores/uiStore';
 import { useVoice } from '../hooks/useVoice';
 import { useStream } from '../hooks/useStream';
 import { useWebcamTiles } from '../hooks/useWebcamTiles';
 import { useScreenShareSubscriptions } from '../hooks/useScreenShareSubscriptions';
 import { useVoiceStore } from '../stores/voiceStore';
 import { useAuthStore } from '../stores/authStore';
+import { SearchPanel } from '../components/message/SearchPanel';
+import { channelApi } from '../api/channels';
 import type { Message } from '../types';
 
 function getStreamErrorMessage(error: unknown): string {
@@ -54,6 +59,7 @@ type VideoLayout = 'top' | 'side' | 'pip' | 'hidden';
 
 export function GuildPage() {
   const { guildId, channelId } = useParams();
+  const navigate = useNavigate();
   const selectGuild = useGuildStore((s) => s.selectGuild);
   const channels = useChannelStore((s) => s.channels);
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
@@ -74,11 +80,13 @@ export function GuildPage() {
   } = useVoice();
   const { selfStream, startStream, stopStream } = useStream();
   const currentUserId = useAuthStore((s) => s.user?.id ?? null);
+  const searchPanelOpen = useUIStore((s) => s.searchPanelOpen);
   const watchedStreamerId = useVoiceStore((s) => s.watchedStreamerId);
   const setWatchedStreamer = useVoiceStore((s) => s.setWatchedStreamer);
   const [replyingTo, setReplyingTo] = useState<{ id: string; author: string; content: string } | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [streamStarting, setStreamStarting] = useState(false);
+  const [showStreamIssueDetails, setShowStreamIssueDetails] = useState(false);
   const [captureQuality, setCaptureQuality] = useState('1080p60');
   const [videoLayout, setVideoLayout] = useState<VideoLayout>('top');
   const [activeStreamers, setActiveStreamers] = useState<string[]>([]);
@@ -88,6 +96,7 @@ export function GuildPage() {
   });
   const room = useVoiceStore((s) => s.room);
   const previewStreamerId = useVoiceStore((s) => s.previewStreamerId);
+  const streamAudioWarning = useVoiceStore((s) => s.streamAudioWarning);
 
   // Split-pane state for Side mode
   const [splitState, setSplitState] = useState<{ left: PaneSource; right: PaneSource }>({
@@ -99,11 +108,18 @@ export function GuildPage() {
 
   const channelName = channel?.name || 'general';
   const isVoice = channel?.type === 2;
+  const isForum = channel?.type === 7 || channel?.channel_type === 7;
+  const isThread = channel?.type === 6 || channel?.channel_type === 6;
+  const parentChannelId = isThread ? channel?.parent_id ?? null : null;
+  const parentChannel = parentChannelId ? channels.find((c) => c.id === parentChannelId) : null;
+  const showThreadSplit = Boolean(!isVoice && isThread && guildId && parentChannel);
   const inSelectedVoiceChannel = Boolean(isVoice && voiceConnected && voiceChannelId === channelId);
   const voiceJoinPending = Boolean(isVoice && voiceJoining && joiningChannelId === channelId);
   const voiceJoinError = connectionErrorChannelId === channelId ? connectionError : null;
   const participantCount = Array.from(participants.values()).filter((p) => p.channel_id === channelId).length;
   const activeStreamerSet = useMemo(() => new Set(activeStreamers), [activeStreamers]);
+  const ownStreamIssueMessage = selfStream ? streamAudioWarning : null;
+  const streamIssueMessage = streamError || ownStreamIssueMessage;
   const watchedStreamerName = useMemo(() => {
     if (!watchedStreamerId) return undefined;
     if (currentUserId != null && watchedStreamerId === currentUserId) return 'You';
@@ -124,9 +140,28 @@ export function GuildPage() {
       selectChannel(channelId);
       setReplyingTo(null);
       setStreamError(null);
+      setShowStreamIssueDetails(false);
       setWatchedStreamer(null);
     }
   }, [channelId, selectChannel, setWatchedStreamer]);
+
+  useEffect(() => {
+    if (!channelId) return;
+    channelApi
+      .get(channelId)
+      .then(({ data }) => {
+        useChannelStore.getState().updateChannel(data);
+      })
+      .catch(() => {
+        /* keep existing channel cache on failure */
+      });
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!streamIssueMessage) {
+      setShowStreamIssueDetails(false);
+    }
+  }, [streamIssueMessage]);
 
   useEffect(() => {
     if (!room || !inSelectedVoiceChannel) {
@@ -364,6 +399,11 @@ export function GuildPage() {
     <StreamViewer
       streamerId={watchedStreamerId}
       streamerName={watchedStreamerName}
+      issueMessage={
+        currentUserId != null && watchedStreamerId === currentUserId
+          ? ownStreamIssueMessage
+          : null
+      }
       expectingStream={Boolean(
         currentUserId != null &&
         watchedStreamerId === currentUserId &&
@@ -374,6 +414,7 @@ export function GuildPage() {
       onStopStream={() => {
         stopStream();
         setStreamError(null);
+        setShowStreamIssueDetails(false);
       }}
     />
   ) : null;
@@ -384,6 +425,7 @@ export function GuildPage() {
         channelName={channelName}
         channelTopic={channel?.topic}
         isVoice={isVoice}
+        isForum={isForum}
       />
       {isVoice ? (
         <div className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 text-text-muted sm:gap-3 sm:p-4 md:gap-4 md:p-5">
@@ -428,6 +470,7 @@ export function GuildPage() {
                         disabled={streamStarting}
                         onClick={async () => {
                           setStreamError(null);
+                          setShowStreamIssueDetails(false);
                           setStreamStarting(true);
                           try {
                             await startStream(captureQuality);
@@ -448,11 +491,36 @@ export function GuildPage() {
                       onClick={() => {
                         stopStream();
                         setStreamError(null);
+                        setShowStreamIssueDetails(false);
                       }}
                     >
                       <MonitorOff size={16} />
                       Stop Stream
                     </button>
+                  )}
+                  {streamIssueMessage && (
+                    <div className="relative self-end sm:self-auto">
+                      <button
+                        onClick={() => setShowStreamIssueDetails((prev) => !prev)}
+                        className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-400/60 bg-amber-500/12 text-amber-300 transition-colors hover:bg-amber-500/24"
+                        title="Show stream issue details"
+                        aria-label="Show stream issue details"
+                      >
+                        <AlertTriangle size={16} />
+                      </button>
+                      {showStreamIssueDetails && (
+                        <div
+                          className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border px-3 py-2 text-xs font-medium leading-relaxed shadow-xl"
+                          style={{
+                            borderColor: 'rgba(245, 158, 11, 0.45)',
+                            backgroundColor: 'rgba(17, 24, 39, 0.92)',
+                            color: 'var(--text-primary)',
+                          }}
+                        >
+                          {streamIssueMessage}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               ) : (
@@ -478,11 +546,6 @@ export function GuildPage() {
                 </div>
               )}
             </div>
-            {streamError && (
-              <div className="mt-3 rounded-xl border border-accent-danger/50 bg-accent-danger/10 px-3.5 py-2.5 text-sm font-medium text-accent-danger">
-                {streamError}
-              </div>
-            )}
           </div>
           {inSelectedVoiceChannel && (
             <div className="flex min-h-0 flex-1 flex-col gap-1.5 sm:gap-2">
@@ -522,8 +585,13 @@ export function GuildPage() {
                     participantNames={participantNames}
                     currentUserId={currentUserId}
                     selfStream={selfStream}
+                    streamIssueMessage={ownStreamIssueMessage}
                     activeStreamerSet={activeStreamerSet}
-                    onStopStream={() => { stopStream(); setStreamError(null); }}
+                    onStopStream={() => {
+                      stopStream();
+                      setStreamError(null);
+                      setShowStreamIssueDetails(false);
+                    }}
                   />
                   <SplitPane
                     source={splitState.right}
@@ -534,8 +602,13 @@ export function GuildPage() {
                     participantNames={participantNames}
                     currentUserId={currentUserId}
                     selfStream={selfStream}
+                    streamIssueMessage={ownStreamIssueMessage}
                     activeStreamerSet={activeStreamerSet}
-                    onStopStream={() => { stopStream(); setStreamError(null); }}
+                    onStopStream={() => {
+                      stopStream();
+                      setStreamError(null);
+                      setShowStreamIssueDetails(false);
+                    }}
                   />
                 </div>
               ) : watchedStreamerId ? (
@@ -585,26 +658,68 @@ export function GuildPage() {
             </div>
           )}
         </div>
+      ) : isForum ? (
+        <ForumView channelId={channelId!} channelName={channelName} />
       ) : (
-        <>
-          <MessageList
-            channelId={channelId!}
-            onReply={(msg: Message) =>
-              setReplyingTo({
-                id: msg.id,
-                author: msg.author.username,
-                content: msg.content || '',
-              })
-            }
-          />
-          <MessageInput
-            channelId={channelId!}
-            guildId={guildId}
-            channelName={channelName}
-            replyingTo={replyingTo}
-            onCancelReply={() => setReplyingTo(null)}
-          />
-        </>
+        <div className="flex min-h-0 flex-1">
+          {showThreadSplit ? (
+            isPhoneLayout ? (
+              <ThreadPanel
+                guildId={guildId!}
+                threadChannelId={channelId!}
+                threadName={channelName}
+                parentChannelName={parentChannel?.name || 'unknown'}
+                className="w-full border-l-0"
+                onClose={() => {
+                  useChannelStore.getState().selectChannel(parentChannel!.id);
+                  navigate(`/app/guilds/${guildId}/channels/${parentChannel!.id}`);
+                }}
+              />
+            ) : (
+              <>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="panel-divider flex shrink-0 items-center gap-2 border-b border-border-subtle/70 px-4 py-2.5 text-xs text-text-muted">
+                    Parent Channel
+                    <span className="font-semibold text-text-secondary">#{parentChannel?.name || 'unknown'}</span>
+                  </div>
+                  <MessageList channelId={parentChannel!.id} />
+                </div>
+                <ThreadPanel
+                  guildId={guildId!}
+                  threadChannelId={channelId!}
+                  threadName={channelName}
+                  parentChannelName={parentChannel?.name || 'unknown'}
+                  className="w-[min(460px,42vw)] max-w-[40rem]"
+                  onClose={() => {
+                    useChannelStore.getState().selectChannel(parentChannel!.id);
+                    navigate(`/app/guilds/${guildId}/channels/${parentChannel!.id}`);
+                  }}
+                />
+              </>
+            )
+          ) : (
+            <div className="flex min-w-0 flex-1 flex-col">
+              <MessageList
+                channelId={channelId!}
+                onReply={(msg: Message) =>
+                  setReplyingTo({
+                    id: msg.id,
+                    author: msg.author.username,
+                    content: msg.content || '',
+                  })
+                }
+              />
+              <MessageInput
+                channelId={channelId!}
+                guildId={guildId}
+                channelName={channelName}
+                replyingTo={replyingTo}
+                onCancelReply={() => setReplyingTo(null)}
+              />
+            </div>
+          )}
+          {searchPanelOpen && !showThreadSplit && <SearchPanel />}
+        </div>
       )}
     </div>
   );

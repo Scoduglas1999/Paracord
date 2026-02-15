@@ -1,7 +1,14 @@
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
+use rand::RngCore;
 use serde::Serialize;
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::Manager;
 
 #[tauri::command]
 pub fn greet(name: &str) -> String {
@@ -109,10 +116,149 @@ fn process_name_from_path(path: &str) -> Option<String> {
         .filter(|name| !name.trim().is_empty())
 }
 
+const SECURE_STORE_SERVICE: &str = "com.paracord.app";
+const SECURE_STORE_KEY_PREFIX: &str = "paracord:";
+const SECURE_STORE_FALLBACK_KEY_FILE: &str = "secure-store-fallback.key";
+const SECURE_STORE_FALLBACK_NONCE_LEN: usize = 12;
+static ACTIVITY_SHARING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn validate_secure_store_key(key: &str) -> Result<(), String> {
+    if !key.starts_with(SECURE_STORE_KEY_PREFIX) {
+        return Err("secure store key must start with 'paracord:'".into());
+    }
+    if key.len() > 128 {
+        return Err("secure store key is too long".into());
+    }
+    Ok(())
+}
+
+fn secure_store_fallback_key_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let mut dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+    dir.push("security");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create security directory: {e}"))?;
+    Ok(dir.join(SECURE_STORE_FALLBACK_KEY_FILE))
+}
+
+fn load_or_create_secure_store_fallback_key(app: &tauri::AppHandle) -> Result<[u8; 32], String> {
+    let path = secure_store_fallback_key_path(app)?;
+    if path.is_file() {
+        let existing =
+            std::fs::read(&path).map_err(|e| format!("failed to read fallback key: {e}"))?;
+        if existing.len() != 32 {
+            return Err("fallback key has invalid length".into());
+        }
+        let mut key = [0_u8; 32];
+        key.copy_from_slice(&existing);
+        return Ok(key);
+    }
+
+    let mut key = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("failed to create fallback key: {e}"))?;
+        std::io::Write::write_all(&mut file, &key)
+            .map_err(|e| format!("failed to write fallback key: {e}"))?;
+        let _ = file.sync_all();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(key)
+}
+
+#[tauri::command]
+pub fn secure_store_set(key: String, value: String) -> Result<(), String> {
+    validate_secure_store_key(&key)?;
+    let entry = keyring::Entry::new(SECURE_STORE_SERVICE, &key)
+        .map_err(|e| format!("secure store init failed: {e}"))?;
+    entry
+        .set_password(&value)
+        .map_err(|e| format!("secure store write failed: {e}"))
+}
+
+#[tauri::command]
+pub fn secure_store_get(key: String) -> Result<Option<String>, String> {
+    validate_secure_store_key(&key)?;
+    let entry = keyring::Entry::new(SECURE_STORE_SERVICE, &key)
+        .map_err(|e| format!("secure store init failed: {e}"))?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(format!("secure store read failed: {err}")),
+    }
+}
+
+#[tauri::command]
+pub fn secure_store_delete(key: String) -> Result<(), String> {
+    validate_secure_store_key(&key)?;
+    let entry = keyring::Entry::new(SECURE_STORE_SERVICE, &key)
+        .map_err(|e| format!("secure store init failed: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(format!("secure store delete failed: {err}")),
+    }
+}
+
+#[tauri::command]
+pub fn secure_store_fallback_encrypt(
+    app: tauri::AppHandle,
+    plaintext: String,
+) -> Result<String, String> {
+    let key = load_or_create_secure_store_fallback_key(&app)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| "invalid fallback key".to_string())?;
+    let mut nonce_bytes = [0_u8; SECURE_STORE_FALLBACK_NONCE_LEN];
+    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_bytes())
+        .map_err(|_| "fallback encryption failed".to_string())?;
+
+    let mut payload = Vec::with_capacity(SECURE_STORE_FALLBACK_NONCE_LEN + ciphertext.len());
+    payload.extend_from_slice(&nonce_bytes);
+    payload.extend_from_slice(&ciphertext);
+    Ok(BASE64_STANDARD.encode(payload))
+}
+
+#[tauri::command]
+pub fn secure_store_fallback_decrypt(
+    app: tauri::AppHandle,
+    payload: String,
+) -> Result<String, String> {
+    let key = load_or_create_secure_store_fallback_key(&app)?;
+    let decoded = BASE64_STANDARD
+        .decode(payload.as_bytes())
+        .map_err(|_| "fallback payload is not valid base64".to_string())?;
+    if decoded.len() <= SECURE_STORE_FALLBACK_NONCE_LEN {
+        return Err("fallback payload is invalid".into());
+    }
+
+    let nonce = Nonce::from_slice(&decoded[..SECURE_STORE_FALLBACK_NONCE_LEN]);
+    let ciphertext = &decoded[SECURE_STORE_FALLBACK_NONCE_LEN..];
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| "invalid fallback key".to_string())?;
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "fallback decryption failed".to_string())?;
+
+    String::from_utf8(plaintext).map_err(|_| "fallback plaintext is not valid utf-8".to_string())
+}
+
+#[tauri::command]
+pub fn set_activity_sharing_enabled(enabled: bool) {
+    ACTIVITY_SHARING_ENABLED.store(enabled, Ordering::SeqCst);
+}
+
 #[cfg(windows)]
-fn get_window_title(
-    hwnd: windows::Win32::Foundation::HWND,
-) -> Option<String> {
+fn get_window_title(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
 
     unsafe {
@@ -140,7 +286,8 @@ fn get_window_title(
 fn get_process_executable_path(pid: u32) -> Option<String> {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_core::PWSTR;
 
@@ -289,10 +436,16 @@ fn detect_foreground_application_linux() -> Option<ForegroundApplication> {
 
 #[tauri::command]
 pub fn get_foreground_application() -> Option<ForegroundApplication> {
+    if !ACTIVITY_SHARING_ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+
     #[cfg(windows)]
     {
         use windows::Win32::System::Threading::GetCurrentProcessId;
-        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId,
+        };
 
         unsafe {
             let hwnd = GetForegroundWindow();

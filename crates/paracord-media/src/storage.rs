@@ -12,14 +12,88 @@ pub enum StorageError {
     NotFound(String),
     #[error("file too large: {0}")]
     TooLarge(String),
+    #[error("storage backend error: {0}")]
+    Backend(String),
 }
 
+/// Unified storage backend trait for file persistence.
+///
+/// Implementations exist for local filesystem and S3-compatible object stores.
+/// All keys are slash-delimited paths (e.g. `attachments/12345.png`).
 #[allow(async_fn_in_trait)]
-pub trait Storage: Send + Sync {
+pub trait StorageBackend: Send + Sync {
+    /// Store `data` under `key`, returning the canonical key.
     async fn store(&self, key: &str, data: &[u8]) -> Result<String, StorageError>;
+
+    /// Retrieve the raw bytes for `key`.
     async fn retrieve(&self, key: &str) -> Result<Vec<u8>, StorageError>;
+
+    /// Delete the object at `key`. No-op if it does not exist.
     async fn delete(&self, key: &str) -> Result<(), StorageError>;
+
+    /// Check whether `key` exists in the store.
+    async fn exists(&self, key: &str) -> Result<bool, StorageError>;
+
+    /// Return a URL suitable for the client to fetch this object.
+    ///
+    /// For local storage this returns the API download path (e.g. `/api/v1/attachments/123`).
+    /// For S3 storage this can return a presigned URL.
+    async fn get_url(&self, key: &str) -> Result<String, StorageError>;
 }
+
+/// Enum-dispatch wrapper that implements `StorageBackend` and is `Clone + Send + Sync`.
+///
+/// This avoids the dyn-safety limitations of `async fn in trait`.
+#[derive(Clone)]
+pub enum Storage {
+    Local(LocalStorage),
+    #[cfg(feature = "s3")]
+    S3(crate::s3::S3Storage),
+}
+
+impl Storage {
+    pub async fn store(&self, key: &str, data: &[u8]) -> Result<String, StorageError> {
+        match self {
+            Storage::Local(s) => s.store(key, data).await,
+            #[cfg(feature = "s3")]
+            Storage::S3(s) => s.store(key, data).await,
+        }
+    }
+
+    pub async fn retrieve(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        match self {
+            Storage::Local(s) => s.retrieve(key).await,
+            #[cfg(feature = "s3")]
+            Storage::S3(s) => s.retrieve(key).await,
+        }
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        match self {
+            Storage::Local(s) => s.delete(key).await,
+            #[cfg(feature = "s3")]
+            Storage::S3(s) => s.delete(key).await,
+        }
+    }
+
+    pub async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        match self {
+            Storage::Local(s) => s.exists(key).await,
+            #[cfg(feature = "s3")]
+            Storage::S3(s) => s.exists(key).await,
+        }
+    }
+
+    pub async fn get_url(&self, key: &str) -> Result<String, StorageError> {
+        match self {
+            Storage::Local(s) => s.get_url(key).await,
+            #[cfg(feature = "s3")]
+            Storage::S3(s) => s.get_url(key).await,
+        }
+    }
+}
+
+// ── Local filesystem backend ─────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct LocalStorage {
@@ -34,7 +108,7 @@ impl LocalStorage {
     }
 }
 
-impl Storage for LocalStorage {
+impl StorageBackend for LocalStorage {
     async fn store(&self, key: &str, data: &[u8]) -> Result<String, StorageError> {
         let path = self.base_path.join(key);
         if let Some(parent) = path.parent() {
@@ -58,6 +132,21 @@ impl Storage for LocalStorage {
             fs::remove_file(&path).await?;
         }
         Ok(())
+    }
+
+    async fn exists(&self, key: &str) -> Result<bool, StorageError> {
+        let path = self.base_path.join(key);
+        Ok(path.exists())
+    }
+
+    async fn get_url(&self, key: &str) -> Result<String, StorageError> {
+        // Extract the attachment ID from the key for the API path.
+        // Keys are formatted as `attachments/{id}.{ext}`.
+        let stem = Path::new(key)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(key);
+        Ok(format!("/api/v1/attachments/{}", stem))
     }
 }
 

@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Users, Server, Settings, BarChart3, Shield, ShieldOff, Trash2, Pencil } from 'lucide-react';
+import { ArrowLeft, Users, Server, Settings, BarChart3, Shield, ShieldOff, Trash2, Pencil, HardDrive, Download, Plus, Loader2, RotateCcw } from 'lucide-react';
 import { adminApi } from '../api/admin';
+import { extractApiError } from '../api/client';
+import { toast } from '../stores/toastStore';
 import { useAuthStore } from '../stores/authStore';
 import { isAdmin, UserFlags } from '../types';
 
-type Tab = 'overview' | 'users' | 'guilds' | 'settings';
+type Tab = 'overview' | 'users' | 'guilds' | 'settings' | 'security' | 'backups';
 
 export function AdminPage() {
   const navigate = useNavigate();
@@ -31,6 +33,8 @@ export function AdminPage() {
             { id: 'users' as Tab, label: 'Users', icon: Users },
             { id: 'guilds' as Tab, label: 'Guilds', icon: Server },
             { id: 'settings' as Tab, label: 'Settings', icon: Settings },
+            { id: 'security' as Tab, label: 'Security', icon: Shield },
+            { id: 'backups' as Tab, label: 'Backups', icon: HardDrive },
           ]).map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -54,6 +58,8 @@ export function AdminPage() {
         {activeTab === 'users' && <UsersPanel />}
         {activeTab === 'guilds' && <GuildsPanel />}
         {activeTab === 'settings' && <SettingsPanel />}
+        {activeTab === 'security' && <SecurityPanel />}
+        {activeTab === 'backups' && <BackupsPanel />}
       </div>
     </div>
   );
@@ -70,7 +76,12 @@ function OverviewPanel() {
   } | null>(null);
 
   useEffect(() => {
-    adminApi.getStats().then(({ data }) => setStats(data)).catch(() => {});
+    adminApi
+      .getStats()
+      .then(({ data }) => setStats(data))
+      .catch((err) => {
+        toast.error(`Failed to load admin stats: ${extractApiError(err)}`);
+      });
   }, []);
 
   if (!stats) {
@@ -124,10 +135,15 @@ function UsersPanel() {
   const limit = 25;
 
   const fetchUsers = () => {
-    adminApi.getUsers({ offset, limit }).then(({ data }) => {
-      setUsers(data.users);
-      setTotal(data.total);
-    }).catch(() => {});
+    adminApi
+      .getUsers({ offset, limit })
+      .then(({ data }) => {
+        setUsers(data.users);
+        setTotal(data.total);
+      })
+      .catch((err) => {
+        toast.error(`Failed to load users: ${extractApiError(err)}`);
+      });
   };
 
   useEffect(() => {
@@ -141,8 +157,8 @@ function UsersPanel() {
     try {
       await adminApi.updateUser(userId, { flags: newFlags });
       fetchUsers();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.error(`Failed to update user role: ${extractApiError(err)}`);
     }
   };
 
@@ -151,8 +167,8 @@ function UsersPanel() {
     try {
       await adminApi.deleteUser(userId);
       fetchUsers();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.error(`Failed to delete user: ${extractApiError(err)}`);
     }
   };
 
@@ -294,7 +310,12 @@ function GuildsPanel() {
   const [saving, setSaving] = useState(false);
 
   const fetchGuilds = () => {
-    adminApi.getGuilds().then(({ data }) => setGuilds(data.guilds)).catch(() => {});
+    adminApi
+      .getGuilds()
+      .then(({ data }) => setGuilds(data.guilds))
+      .catch((err) => {
+        toast.error(`Failed to load guilds: ${extractApiError(err)}`);
+      });
   };
 
   useEffect(() => {
@@ -328,8 +349,8 @@ function GuildsPanel() {
         )
       );
       closeEdit();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.error(`Failed to save guild: ${extractApiError(err)}`);
     } finally {
       setSaving(false);
     }
@@ -341,8 +362,8 @@ function GuildsPanel() {
       await adminApi.deleteGuild(guildId);
       if (editingGuild?.id === guildId) closeEdit();
       fetchGuilds();
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.error(`Failed to delete guild: ${extractApiError(err)}`);
     }
   };
 
@@ -367,7 +388,7 @@ function GuildsPanel() {
               <tr key={g.id} className="border-b border-border-subtle/50 last:border-b-0 transition-colors hover:bg-bg-mod-subtle/30">
                 <td className="px-6 py-5 font-medium text-text-primary">{g.name}</td>
                 <td className="max-w-xs truncate px-6 py-5 text-text-secondary">
-                  {g.description || '—'}
+                  {g.description || '-'}
                 </td>
                 <td className="px-6 py-5 text-text-secondary">
                   {new Date(g.created_at).toLocaleDateString()}
@@ -454,13 +475,119 @@ function GuildsPanel() {
 
 // ── Settings ──────────────────────────────────────────────────────────
 
+function SecurityPanel() {
+  const [events, setEvents] = useState<Array<{
+    id: string;
+    actor_user_id?: string | null;
+    action: string;
+    target_user_id?: string | null;
+    session_id?: string | null;
+    ip_address?: string | null;
+    created_at: string;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionFilter, setActionFilter] = useState('');
+
+  const fetchEvents = async () => {
+    setLoading(true);
+    try {
+      const { data } = await adminApi.listSecurityEvents({
+        limit: 200,
+        action: actionFilter.trim() || undefined,
+      });
+      setEvents(data);
+    } catch (err) {
+      toast.error(`Failed to load security events: ${extractApiError(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchEvents();
+  }, []);
+
+  return (
+    <div>
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-semibold text-text-primary">Security Events</h2>
+          <p className="text-sm text-text-muted">Recent authentication and admin activity.</p>
+        </div>
+        <button
+          onClick={() => void fetchEvents()}
+          className="rounded-lg border border-border-subtle px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-mod-subtle"
+        >
+          Refresh
+        </button>
+      </div>
+
+      <div className="mb-6 flex gap-3">
+        <input
+          type="text"
+          value={actionFilter}
+          onChange={(e) => setActionFilter(e.target.value)}
+          placeholder="Filter by action (e.g. auth.login)"
+          className="h-12 w-full max-w-md rounded-lg border border-border-subtle bg-bg-secondary px-4 text-sm text-text-primary outline-none transition-colors focus:border-accent-primary"
+        />
+        <button
+          onClick={() => void fetchEvents()}
+          className="rounded-lg border border-border-subtle px-4 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-mod-subtle"
+        >
+          Apply
+        </button>
+      </div>
+
+      {loading ? (
+        <p className="text-text-muted">Loading security events...</p>
+      ) : events.length === 0 ? (
+        <div className="rounded-xl border border-border-subtle bg-bg-secondary/60 px-6 py-10 text-center text-text-muted">
+          No security events found.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border-subtle">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-border-subtle bg-bg-secondary/60">
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Time</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Action</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Actor</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Target</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">IP</th>
+                <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Session</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((event) => (
+                <tr key={event.id} className="border-b border-border-subtle/50 last:border-b-0 align-top hover:bg-bg-mod-subtle/20">
+                  <td className="px-4 py-3 text-text-secondary">{new Date(event.created_at).toLocaleString()}</td>
+                  <td className="px-4 py-3 font-medium text-text-primary">{event.action}</td>
+                  <td className="px-4 py-3 text-text-secondary">{event.actor_user_id || '-'}</td>
+                  <td className="px-4 py-3 text-text-secondary">{event.target_user_id || '-'}</td>
+                  <td className="px-4 py-3 text-text-secondary">{event.ip_address || '-'}</td>
+                  <td className="px-4 py-3 text-text-secondary">{event.session_id || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsPanel() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    adminApi.getSettings().then(({ data }) => setSettings(data)).catch(() => {});
+    adminApi
+      .getSettings()
+      .then(({ data }) => setSettings(data))
+      .catch((err) => {
+        toast.error(`Failed to load settings: ${extractApiError(err)}`);
+      });
   }, []);
 
   const handleSave = async () => {
@@ -470,8 +597,8 @@ function SettingsPanel() {
       setSettings(data);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      toast.error(`Failed to update settings: ${extractApiError(err)}`);
     } finally {
       setSaving(false);
     }
@@ -584,6 +711,227 @@ function SettingsPanel() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Backups ────────────────────────────────────────────────────────────
+
+type BackupRow = {
+  name: string;
+  size_bytes: number;
+  created_at: string;
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function BackupsPanel() {
+  const [backups, setBackups] = useState<BackupRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [includeMedia, setIncludeMedia] = useState(true);
+  const [restoringName, setRestoringName] = useState<string | null>(null);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [downloadingName, setDownloadingName] = useState<string | null>(null);
+
+  const fetchBackups = async () => {
+    try {
+      const { data } = await adminApi.listBackups();
+      setBackups(data.backups);
+    } catch (err) {
+      toast.error(`Failed to load backups: ${extractApiError(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBackups();
+  }, []);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      const { data } = await adminApi.createBackup(includeMedia);
+      toast.success(`Backup created: ${data.filename}`);
+      fetchBackups();
+    } catch (err) {
+      toast.error(`Failed to create backup: ${extractApiError(err)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleDownload = async (name: string) => {
+    setDownloadingName(name);
+    try {
+      const { data } = await adminApi.downloadBackup(name);
+      const blob = data instanceof Blob ? data : new Blob([data]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(`Failed to download backup: ${extractApiError(err)}`);
+    } finally {
+      setDownloadingName(null);
+    }
+  };
+
+  const handleDelete = async (name: string) => {
+    if (!confirm(`Delete backup "${name}"? This cannot be undone.`)) return;
+    setDeletingName(name);
+    try {
+      await adminApi.deleteBackup(name);
+      toast.success(`Backup deleted: ${name}`);
+      setBackups((prev) => prev.filter((b) => b.name !== name));
+    } catch (err) {
+      toast.error(`Failed to delete backup: ${extractApiError(err)}`);
+    } finally {
+      setDeletingName(null);
+    }
+  };
+
+  const handleRestore = async (name: string) => {
+    if (
+      !confirm(
+        `Restore backup "${name}" now?\n\nThis will overwrite current data on disk. A server restart is recommended after restore.`
+      )
+    ) {
+      return;
+    }
+    setRestoringName(name);
+    try {
+      const { data } = await adminApi.restoreBackup(name);
+      toast.success(data.message || `Backup restored: ${name}`);
+    } catch (err) {
+      toast.error(`Failed to restore backup: ${extractApiError(err)}`);
+    } finally {
+      setRestoringName(null);
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="mb-6 text-xl font-semibold text-text-primary">Backups</h2>
+
+      {/* Create backup controls */}
+      <div className="mb-8 flex flex-wrap items-center gap-6">
+        <button
+          onClick={handleCreate}
+          disabled={creating}
+          className="btn-primary inline-flex items-center gap-2"
+        >
+          {creating ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Plus size={16} />
+          )}
+          {creating ? 'Creating Backup...' : 'Create Backup'}
+        </button>
+
+        <label className="flex items-center gap-2 text-sm text-text-secondary">
+          <input
+            type="checkbox"
+            checked={includeMedia}
+            onChange={(e) => setIncludeMedia(e.target.checked)}
+            className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+          />
+          Include media files
+        </label>
+      </div>
+
+      {/* Backups list */}
+      {loading ? (
+        <p className="text-text-muted">Loading backups...</p>
+      ) : backups.length === 0 ? (
+        <div className="rounded-xl border border-border-subtle bg-bg-secondary/60 px-6 py-10 text-center text-text-muted">
+          No backups yet. Create your first backup above.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-border-subtle">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-border-subtle bg-bg-secondary/60">
+                <th className="px-6 py-5 text-xs font-semibold uppercase tracking-wide text-text-secondary">Filename</th>
+                <th className="px-6 py-5 text-xs font-semibold uppercase tracking-wide text-text-secondary">Date</th>
+                <th className="px-6 py-5 text-xs font-semibold uppercase tracking-wide text-text-secondary">Size</th>
+                <th className="px-6 py-5 text-xs font-semibold uppercase tracking-wide text-text-secondary">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups.map((b) => (
+                <tr
+                  key={b.name}
+                  className="border-b border-border-subtle/50 last:border-b-0 transition-colors hover:bg-bg-mod-subtle/30"
+                >
+                  <td className="px-6 py-5 font-medium text-text-primary">
+                    <span className="font-mono text-xs">{b.name}</span>
+                  </td>
+                  <td className="px-6 py-5 text-text-secondary">
+                    {b.created_at
+                      ? new Date(b.created_at).toLocaleString()
+                      : '-'}
+                  </td>
+                  <td className="px-6 py-5 text-text-secondary">
+                    {formatBytes(b.size_bytes)}
+                  </td>
+                  <td className="px-6 py-5">
+                    <div className="flex items-center gap-4">
+                      <button
+                        onClick={() => handleRestore(b.name)}
+                        disabled={restoringName === b.name}
+                        className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-mod-subtle hover:text-text-primary disabled:opacity-50"
+                        title="Restore backup"
+                      >
+                        {restoringName === b.name ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <RotateCcw size={16} />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleDownload(b.name)}
+                        disabled={downloadingName === b.name}
+                        className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-mod-subtle hover:text-text-primary disabled:opacity-50"
+                        title="Download backup"
+                      >
+                        {downloadingName === b.name ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Download size={16} />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(b.name)}
+                        disabled={deletingName === b.name}
+                        className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-accent-danger/10 hover:text-accent-danger disabled:opacity-50"
+                        title="Delete backup"
+                      >
+                        {deletingName === b.name ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={16} />
+                        )}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

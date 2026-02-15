@@ -1,13 +1,15 @@
-use serde::{Serialize, Deserialize};
-use jsonwebtoken::{encode, Header, Algorithm, EncodingKey};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const LIVEKIT_TOKEN_TTL_SECONDS: u64 = 7_200;
 
 #[derive(Debug, Clone)]
 pub struct LiveKitConfig {
     pub api_key: String,
     pub api_secret: String,
-    pub url: String,       // ws://localhost:7880
-    pub http_url: String,  // http://localhost:7880
+    pub url: String,      // ws://localhost:7880
+    pub http_url: String, // http://localhost:7880
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,10 +67,10 @@ pub struct LiveKitClaims {
 /// Audio bitrate presets for voice channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioBitrate {
-    Low,     // 64 kbps
+    Low, // 64 kbps
     #[default]
-    Medium,  // 96 kbps
-    High,    // 128 kbps
+    Medium, // 96 kbps
+    High, // 128 kbps
 }
 
 impl AudioBitrate {
@@ -187,7 +189,7 @@ impl LiveKitConfig {
         };
 
         let claims = LiveKitClaims {
-            exp: now + 86400,
+            exp: now + LIVEKIT_TOKEN_TTL_SECONDS,
             iss: self.api_key.clone(),
             sub: user_id.to_string(),
             name: Some(user_name.to_string()),
@@ -229,7 +231,7 @@ impl LiveKitConfig {
         });
 
         let claims = LiveKitClaims {
-            exp: now + 86400,
+            exp: now + LIVEKIT_TOKEN_TTL_SECONDS,
             iss: self.api_key.clone(),
             sub: user_id.to_string(),
             name: Some(user_name.to_string()),
@@ -278,7 +280,7 @@ impl LiveKitConfig {
         });
 
         let claims = LiveKitClaims {
-            exp: now + 86400,
+            exp: now + LIVEKIT_TOKEN_TTL_SECONDS,
             iss: self.api_key.clone(),
             sub: user_id.to_string(),
             name: Some(user_name.to_string()),
@@ -319,7 +321,7 @@ impl LiveKitConfig {
     ) -> Result<String, anyhow::Error> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let claims = LiveKitClaims {
-            exp: now + 86400,
+            exp: now + LIVEKIT_TOKEN_TTL_SECONDS,
             iss: self.api_key.clone(),
             sub: user_id.to_string(),
             name: Some(user_name.to_string()),
@@ -365,7 +367,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/CreateRoom", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/CreateRoom",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
@@ -393,7 +398,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/DeleteRoom", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/DeleteRoom",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
@@ -411,12 +419,18 @@ impl LiveKitConfig {
     }
 
     /// List participants in a room.
-    pub async fn list_participants(&self, room_name: &str) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+    pub async fn list_participants(
+        &self,
+        room_name: &str,
+    ) -> Result<Vec<serde_json::Value>, anyhow::Error> {
         let admin_token = self.generate_room_admin_token(room_name)?;
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/ListParticipants", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/ListParticipants",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
@@ -431,7 +445,8 @@ impl LiveKitConfig {
         }
 
         let body: serde_json::Value = resp.json().await?;
-        let participants = body.get("participants")
+        let participants = body
+            .get("participants")
             .and_then(|p| p.as_array())
             .cloned()
             .unwrap_or_default();
@@ -448,7 +463,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/ListRooms", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/ListRooms",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({}))
@@ -482,7 +500,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/MutePublishedTrack", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/MutePublishedTrack",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
@@ -523,7 +544,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/UpdateParticipant", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/UpdateParticipant",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({
@@ -552,7 +576,10 @@ impl LiveKitConfig {
 
         let client = Self::api_client();
         let resp = client
-            .post(format!("{}/twirp/livekit.RoomService/RemoveParticipant", self.http_url))
+            .post(format!(
+                "{}/twirp/livekit.RoomService/RemoveParticipant",
+                self.http_url
+            ))
             .header("Authorization", format!("Bearer {}", admin_token))
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({

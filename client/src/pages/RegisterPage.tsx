@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useAccountStore } from '../stores/accountStore';
@@ -16,8 +16,25 @@ export function RegisterPage() {
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [requireEmail, setRequireEmail] = useState(false);
   const navigate = useNavigate();
   const register = useAuthStore((s) => s.register);
+
+  useEffect(() => {
+    let cancelled = false;
+    authApi
+      .options()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setRequireEmail(data.require_email);
+      })
+      .catch(() => {
+        // Keep conservative defaults when options are unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,7 +69,7 @@ export function RegisterPage() {
         setStoredServerUrl(serverUrl);
         const serverStore = useServerListStore.getState();
         const existingServer = serverStore.getServerByUrl(serverUrl);
-        const token = localStorage.getItem('token');
+        const token = useAuthStore.getState().token;
         if (!existingServer) {
           let serverName = serverUrl;
           try {
@@ -94,15 +111,15 @@ export function RegisterPage() {
           <div className="space-y-7">
             <label className="block">
               <span className="mb-3 block text-xs font-semibold uppercase tracking-wide text-text-secondary">
-                Email <span className="text-accent-danger">*</span>
+                Email {requireEmail && <span className="text-accent-danger">*</span>}
               </span>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                required
+                required={requireEmail}
                 className="input-field"
-                placeholder="you@example.com"
+                placeholder={requireEmail ? 'you@example.com' : 'Optional'}
               />
             </label>
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useAccountStore } from '../stores/accountStore';
@@ -12,14 +12,56 @@ import {
 import { hasAccount } from '../lib/account';
 import { authApi } from '../api/auth';
 
+type LoginIdentifierMode = {
+  allowUsernameInput: boolean;
+  label: string;
+  inputType: 'text' | 'email';
+  placeholder: string;
+};
+
+export function resolveLoginIdentifierMode(
+  allowUsernameLogin: boolean,
+  requireEmail: boolean,
+): LoginIdentifierMode {
+  // Optional-email mode requires username-compatible login input to avoid lockout.
+  const allowUsernameInput = allowUsernameLogin || !requireEmail;
+  return {
+    allowUsernameInput,
+    label: allowUsernameInput ? 'Email or Username' : 'Email',
+    inputType: allowUsernameInput ? 'text' : 'email',
+    placeholder: allowUsernameInput ? 'you@example.com or username' : 'you@example.com',
+  };
+}
+
 export function LoginPage() {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [allowUsernameLogin, setAllowUsernameLogin] = useState(true);
+  const [requireEmail, setRequireEmail] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
   const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
+
+  useEffect(() => {
+    let cancelled = false;
+    authApi
+      .options()
+      .then(({ data }) => {
+        if (cancelled) return;
+        setAllowUsernameLogin(data.allow_username_login);
+        setRequireEmail(data.require_email);
+      })
+      .catch(() => {
+        // Keep conservative defaults when options are unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleChangeServer = () => {
     clearStoredServerUrl();
@@ -29,9 +71,17 @@ export function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const now = Date.now();
+    if (now < cooldownUntil) {
+      const waitSeconds = Math.ceil((cooldownUntil - now) / 1000);
+      setError(`Too many attempts. Try again in ${waitSeconds}s.`);
+      return;
+    }
     setLoading(true);
     try {
-      await login(email, password);
+      await login(identifier, password);
+      setFailedAttempts(0);
+      setCooldownUntil(0);
 
       // If the user already has a local keypair, attach it to this server account.
       if (hasAccount()) {
@@ -50,7 +100,7 @@ export function LoginPage() {
         setStoredServerUrl(serverUrl);
         const serverStore = useServerListStore.getState();
         const existingServer = serverStore.getServerByUrl(serverUrl);
-        const token = localStorage.getItem('token');
+        const token = useAuthStore.getState().token;
         if (!existingServer) {
           let serverName = serverUrl;
           try {
@@ -67,12 +117,20 @@ export function LoginPage() {
       // Go straight to the app — legacy token auth works without a local
       // keypair. Users can set up a local crypto identity later in Settings.
       navigate('/app');
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Invalid email or password');
+    } catch {
+      const nextFailures = failedAttempts + 1;
+      setFailedAttempts(nextFailures);
+      if (nextFailures >= 3) {
+        const backoffSeconds = Math.min(30, 2 ** Math.min(5, nextFailures - 3));
+        setCooldownUntil(Date.now() + backoffSeconds * 1000);
+      }
+      setError('Login failed. Check your credentials and try again.');
     } finally {
       setLoading(false);
     }
   };
+
+  const identifierMode = resolveLoginIdentifierMode(allowUsernameLogin, requireEmail);
 
   return (
     <div className="auth-shell">
@@ -91,15 +149,15 @@ export function LoginPage() {
         <div className="space-y-7">
           <label className="block">
             <span className="mb-3 block text-xs font-semibold uppercase tracking-wide text-text-secondary">
-              Email <span className="text-accent-danger">*</span>
+              {identifierMode.label} <span className="text-accent-danger">*</span>
             </span>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type={identifierMode.inputType}
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
               required
               className="input-field"
-              placeholder="you@example.com"
+              placeholder={identifierMode.placeholder}
             />
           </label>
 
@@ -122,7 +180,11 @@ export function LoginPage() {
           Forgot your password? Contact your server administrator to reset your credentials.
         </p>
 
-        <button type="submit" disabled={loading} className="btn-primary mt-10 w-full">
+        <button
+          type="submit"
+          disabled={loading || Date.now() < cooldownUntil}
+          className="btn-primary mt-10 w-full"
+        >
           {loading ? 'Logging in...' : 'Log In'}
         </button>
 

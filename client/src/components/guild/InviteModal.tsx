@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Copy, Check, Link } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { inviteApi } from '../../api/invites';
 import { getStoredServerUrl } from '../../lib/apiBaseUrl';
 import { toPortableUri } from '../../lib/portableLinks';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 interface InviteModalProps {
   guildName: string;
@@ -34,6 +35,7 @@ function resolveServerBaseUrl(): string {
 }
 
 export function InviteModal({ guildName, channelId, onClose }: InviteModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const [copiedPortable, setCopiedPortable] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [expiration, setExpiration] = useState('7days');
@@ -65,6 +67,8 @@ export function InviteModal({ guildName, channelId, onClose }: InviteModalProps)
     generateInvite();
   }, [channelId, expiration, maxUses]);
 
+  useFocusTrap(dialogRef, true, onClose);
+
   const handleCopyPortable = async () => {
     await navigator.clipboard?.writeText(portableLink);
     setCopiedPortable(true);
@@ -84,15 +88,20 @@ export function InviteModal({ guildName, channelId, onClose }: InviteModalProps)
       style={{ position: 'fixed', inset: 0, width: '100vw', height: '100dvh' }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="invite-modal-title"
+        tabIndex={-1}
         className="glass-modal modal-content max-h-[min(86dvh,42rem)] w-[min(92vw,32rem)] overflow-auto rounded-2xl border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="relative px-8 pb-5 pt-8 sm:px-8 sm:pt-8">
-          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5">
+          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5" aria-label="Close">
             <X size={20} />
           </button>
-          <h2 className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+          <h2 id="invite-modal-title" className="text-2xl font-semibold" style={{ color: 'var(--text-primary)' }}>
             Invite friends to {guildName}
           </h2>
         </div>

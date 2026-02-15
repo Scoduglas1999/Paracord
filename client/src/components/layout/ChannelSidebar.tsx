@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Hash, Volume2, ChevronDown, ChevronRight, Settings, Mic, MicOff, Headphones, HeadphoneOff, Search, Plus, Video } from 'lucide-react';
+import { Hash, Volume2, ChevronDown, ChevronRight, Settings, Mic, MicOff, Headphones, HeadphoneOff, Search, Plus, Video, MessageSquare } from 'lucide-react';
 import { useChannelStore } from '../../stores/channelStore';
 import { useGuildStore } from '../../stores/guildStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -356,6 +356,7 @@ export function ChannelSidebar() {
             {!collapsedCategories.has(cat.id || '') && cat.channels.sort((a, b) => a.position - b.position).map(ch => {
               const isSelected = selectedChannelId === ch.id;
               const isVoice = ch.type === 2 || ch.channel_type === 2;
+              const isForum = ch.type === 7 || ch.channel_type === 7;
               const voiceMembers = isVoice ? (channelParticipants.get(ch.id) || []) : [];
               return (
                 <div key={ch.id}>
@@ -378,6 +379,8 @@ export function ChannelSidebar() {
                   >
                     {isVoice ? (
                       <Volume2 size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
+                    ) : isForum ? (
+                      <MessageSquare size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
                     ) : (
                       <Hash size={16} className="mr-1.5 text-text-muted group-hover:text-text-secondary" />
                     )}
@@ -416,7 +419,10 @@ export function ChannelSidebar() {
                     )}
                   </div>
                   {isVoice && voiceMembers.length > 0 && (
-                    <div className="mb-2 ml-8 mt-0.5 space-y-1">
+                    <div
+                      className="mb-2 mt-0.5 ml-10 space-y-1 border-l pl-2.5"
+                      style={{ borderColor: 'var(--border-subtle)' }}
+                    >
                       {voiceMembers.map((vs) => {
                         const isSpeaking = speakingUsers.has(vs.user_id);
                         return (

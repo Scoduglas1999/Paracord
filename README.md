@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  A decentralized, self-hostable, open-source Discord alternative.
+  A self-hostable, open-source Discord alternative with federation in active development.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 ## The Why
 
-On February 9th, 2026, Discord's CEO announced that they would be starting to roll out age verification in the coming month. This meant that all accounts would be labeled as "teen" and one would have to prove they were an adult through an AI powered face scan or uploading government issued ID. The privacy implications of this should be incredibly obvious, and at least my group of friends that regularly used Discord were 100% against giving Discord any of this information, and frankly, didn't feel they should have to. But Discord doesn't have any magic that makes them untouchable in the software space, so here we are, a completely decentralized Discord alternative, gotten up and running in under a week from their announcement. Many new features will be coming to Paracord at breakneck speed, and it already includes many of Nitro's big features like high resolution streaming, just without the paywall :).
+On February 9th, 2026, Discord's CEO announced that they would be starting to roll out age verification in the coming month. This meant that all accounts would be labeled as "teen" and one would have to prove they were an adult through an AI powered face scan or uploading government issued ID. The privacy implications of this should be incredibly obvious, and at least my group of friends that regularly used Discord were 100% against giving Discord any of this information, and frankly, didn't feel they should have to. So Paracord was built as a privacy-first, self-hosted alternative in under a week, with full federation and decentralized operation now being built out in active phases. Many new features will be coming to Paracord at breakneck speed, and it already includes many of Nitro's big features like high resolution streaming, just without the paywall :).
 
 ## Features
 
@@ -87,7 +87,7 @@ Dark, light, and AMOLED black themes. Compact or cozy message density. The UI is
 
 ### Coming Soon
 
-- **Federation** — Server-to-server communication (infrastructure scaffolded, protocol not yet active)
+- **Federation hardening** — Signed transport, replay protection, durable delivery queues, and full cross-server parity in progress
 - **Video calls** — Camera in voice channels (backend support exists, UI in progress)
 - **Custom emojis** — Database ready, upload and management UI coming
 - **macOS native audio capture** — Falls back to browser audio today; ScreenCaptureKit planned

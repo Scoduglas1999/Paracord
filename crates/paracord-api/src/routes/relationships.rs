@@ -61,8 +61,11 @@ pub async fn add_friend(
     } else if let Some(username) = body.username.as_deref() {
         let user = paracord_db::users::get_user_by_username_only(&state.db, username)
             .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
-            .ok_or(ApiError::NotFound)?;
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+        let Some(user) = user else {
+            // Return an indistinguishable success response to reduce account enumeration.
+            return Ok(StatusCode::NO_CONTENT);
+        };
         user.id
     } else {
         return Err(ApiError::BadRequest(

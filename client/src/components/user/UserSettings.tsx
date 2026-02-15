@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Monitor, Sun, Moon } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
@@ -10,7 +10,15 @@ import { APP_NAME } from '../../lib/constants';
 import { hasAccount as hasLocalCryptoAccount } from '../../lib/account';
 import { isAdmin } from '../../types';
 import { adminApi } from '../../api/admin';
+import { apiClient, extractApiError } from '../../api/client';
+import { authApi, type AuthSession } from '../../api/auth';
 import { cn } from '../../lib/utils';
+import {
+  isEnabled as isNotificationsEnabled,
+  setEnabled as setNotificationsEnabled,
+  isPermissionGranted as checkNotificationPermission,
+  requestPermission as requestNotificationPermission,
+} from '../../lib/notifications';
 import {
   getKnownActivityAppsFromStorage,
   normalizeDetectedAppId,
@@ -30,6 +38,7 @@ type SettingsSection =
   | 'notifications'
   | 'activity'
   | 'keybinds'
+  | 'identity'
   | 'about'
   | 'server';
 
@@ -40,6 +49,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; adminOnly?: boolean }[] =
   { id: 'notifications', label: 'Notifications' },
   { id: 'activity', label: 'Activity Privacy' },
   { id: 'keybinds', label: 'Keybinds' },
+  { id: 'identity', label: 'Identity' },
   { id: 'server', label: 'Server', adminOnly: true },
   { id: 'about', label: 'About' },
 ];
@@ -50,6 +60,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
   const user = useAuthStore(s => s.user);
   const settings = useAuthStore(s => s.settings);
   const logout = useAuthStore(s => s.logout);
+  const fetchUser = useAuthStore(s => s.fetchUser);
   const fetchSettings = useAuthStore(s => s.fetchSettings);
   const updateSettings = useAuthStore(s => s.updateSettings);
   const updateUser = useAuthStore(s => s.updateUser);
@@ -87,6 +98,33 @@ export function UserSettings({ onClose }: UserSettingsProps) {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 768px)').matches;
   });
+  const [notifEnabled, setNotifEnabled] = useState(() => isNotificationsEnabled());
+  const [notifPermission, setNotifPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [sessions, setSessions] = useState<AuthSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionBusyId, setSessionBusyId] = useState<string | null>(null);
+  const [emailCurrentPassword, setEmailCurrentPassword] = useState('');
+  const [passwordCurrentPassword, setPasswordCurrentPassword] = useState('');
+  const [accountNewPassword, setAccountNewPassword] = useState('');
+  const [accountConfirmPassword, setAccountConfirmPassword] = useState('');
+  const [accountNewEmail, setAccountNewEmail] = useState('');
+  const [accountActionLoading, setAccountActionLoading] = useState(false);
+  const [accountDataExporting, setAccountDataExporting] = useState(false);
+
+  // Identity portability state
+  const [exportIncludeMessages, setExportIncludeMessages] = useState(false);
+  const [exportIncludeRelationships, setExportIncludeRelationships] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<Record<string, unknown> | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [identityStatus, setIdentityStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    void checkNotificationPermission().then((granted) => {
+      setNotifPermission(granted ? 'granted' : 'denied');
+    });
+  }, []);
 
   useEffect(() => {
     void fetchSettings();
@@ -96,8 +134,9 @@ export function UserSettings({ onClose }: UserSettingsProps) {
     if (user) {
       setDisplayName(user.display_name || '');
       setBio(user.bio || '');
+      setAccountNewEmail(user.email || '');
     }
-  }, [user?.id, user?.display_name, user?.bio]);
+  }, [user?.id, user?.display_name, user?.bio, user?.email]);
 
   useEffect(() => {
     if (settings) {
@@ -240,6 +279,110 @@ export function UserSettings({ onClose }: UserSettingsProps) {
     }
   };
 
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const { data } = await authApi.listSessions();
+      setSessions(data);
+    } catch (err) {
+      setStatusText(`Failed to load sessions: ${extractApiError(err)}`);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeSection !== 'account') return;
+    void loadSessions();
+  }, [activeSection, loadSessions]);
+
+  const revokeSession = async (sessionId: string) => {
+    if (sessionBusyId) return;
+    if (!window.confirm('Sign out this session?')) return;
+    setSessionBusyId(sessionId);
+    try {
+      await authApi.revokeSession(sessionId);
+      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      if (!sessions.find((session) => session.id === sessionId)?.current) {
+        setStatusText('Session revoked.');
+      }
+    } catch (err) {
+      setStatusText(`Failed to revoke session: ${extractApiError(err)}`);
+    } finally {
+      setSessionBusyId(null);
+    }
+  };
+
+  const submitPasswordChange = async () => {
+    const current = passwordCurrentPassword.trim();
+    const nextPassword = accountNewPassword.trim();
+    const confirm = accountConfirmPassword.trim();
+    if (!current || !nextPassword) {
+      setStatusText('Current password and new password are required.');
+      return;
+    }
+    if (nextPassword !== confirm) {
+      setStatusText('New password confirmation does not match.');
+      return;
+    }
+    setAccountActionLoading(true);
+    try {
+      await authApi.changePassword(current, nextPassword);
+      setPasswordCurrentPassword('');
+      setAccountNewPassword('');
+      setAccountConfirmPassword('');
+      setStatusText('Password updated. Other sessions were signed out.');
+      await loadSessions();
+    } catch (err) {
+      setStatusText(`Failed to change password: ${extractApiError(err)}`);
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  const submitEmailChange = async () => {
+    const current = emailCurrentPassword.trim();
+    const nextEmail = accountNewEmail.trim();
+    if (!current || !nextEmail) {
+      setStatusText('Current password and new email are required.');
+      return;
+    }
+    setAccountActionLoading(true);
+    try {
+      await authApi.changeEmail(current, nextEmail);
+      setEmailCurrentPassword('');
+      setStatusText('Email updated. Other sessions were signed out.');
+      await fetchUser();
+      await loadSessions();
+    } catch (err) {
+      setStatusText(`Failed to change email: ${extractApiError(err)}`);
+    } finally {
+      setAccountActionLoading(false);
+    }
+  };
+
+  const downloadAccountData = async () => {
+    if (accountDataExporting) return;
+    setAccountDataExporting(true);
+    try {
+      const { data } = await authApi.exportMyData();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `paracord-account-data-${user?.username ?? 'export'}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setStatusText('Account data export downloaded.');
+    } catch (err) {
+      setStatusText(`Account export failed: ${extractApiError(err)}`);
+    } finally {
+      setAccountDataExporting(false);
+    }
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     setStatusText(null);
@@ -323,6 +466,91 @@ export function UserSettings({ onClose }: UserSettingsProps) {
     }
   };
 
+  // Identity portability handlers
+  const handleExportIdentity = useCallback(async () => {
+    setExporting(true);
+    setIdentityStatus(null);
+    try {
+      const params = new URLSearchParams();
+      if (exportIncludeMessages) params.set('include_messages', 'true');
+      const res = await apiClient.post<Record<string, unknown>>(
+        `/users/@me/export?${params.toString()}`
+      );
+      const bundle = res.data;
+      // If not including relationships, strip them from the download
+      if (!exportIncludeRelationships && bundle.relationships) {
+        bundle.relationships = [];
+      }
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `paracord-identity-${user?.username ?? 'export'}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setIdentityStatus('Identity exported successfully.');
+    } catch (err) {
+      setIdentityStatus(`Export failed: ${extractApiError(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [exportIncludeMessages, exportIncludeRelationships, user?.username]);
+
+  const handleImportFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportFile(file);
+    setImportPreview(null);
+    setIdentityStatus(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result as string) as Record<string, unknown>;
+        setImportPreview(parsed);
+      } catch {
+        setIdentityStatus('Failed to parse identity file. Ensure it is valid JSON.');
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const handleImportIdentity = useCallback(async () => {
+    if (!importPreview) return;
+    setImporting(true);
+    setIdentityStatus(null);
+    try {
+      const res = await apiClient.post<Record<string, unknown>>(
+        '/users/@me/import',
+        importPreview,
+      );
+      const result = res.data;
+      const warnings = (result.warnings as string[]) || [];
+      const parts: string[] = [];
+      if (result.profile_updated) parts.push('Profile updated');
+      if (typeof result.messages_imported === 'number' && result.messages_imported > 0)
+        parts.push(`${result.messages_imported} messages imported`);
+      if (typeof result.relationships_found === 'number' && result.relationships_found > 0)
+        parts.push(`${result.relationships_found} relationships noted`);
+      if (typeof result.guilds_noted === 'number' && result.guilds_noted > 0)
+        parts.push(`${result.guilds_noted} guild memberships noted`);
+      let msg = parts.length > 0 ? `Import complete: ${parts.join(', ')}.` : 'Import complete.';
+      if (warnings.length > 0) {
+        msg += ` Warnings: ${warnings.join('; ')}`;
+      }
+      setIdentityStatus(msg);
+      setImportPreview(null);
+      setImportFile(null);
+    } catch (err) {
+      setIdentityStatus(`Import failed: ${extractApiError(err)}`);
+    } finally {
+      setImporting(false);
+    }
+  }, [importPreview]);
+
   return (
     <div
       className={cn(
@@ -359,7 +587,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
               </button>
             ))}
             <button
-              onClick={() => { logout(); onClose(); }}
+              onClick={() => { void logout(); onClose(); }}
               className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-accent-danger/45 bg-accent-danger/10 px-3 text-sm font-semibold text-accent-danger"
             >
               Log Out
@@ -383,7 +611,7 @@ export function UserSettings({ onClose }: UserSettingsProps) {
             ))}
             <div className="mx-2 my-2 h-px bg-border-subtle" />
             <button
-              onClick={() => { logout(); onClose(); }}
+              onClick={() => { void logout(); onClose(); }}
               className="settings-nav-item"
               style={{ color: 'var(--accent-danger)', borderColor: 'transparent' }}
             >
@@ -462,6 +690,171 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                       <button className="btn-primary" onClick={() => void saveProfile()} disabled={saving}>
                         {saving ? 'Saving...' : 'Save Profile'}
                       </button>
+                    </div>
+                  </div>
+
+                  <div className="card-surface rounded-2xl border border-border-subtle bg-bg-tertiary/80 p-8">
+                    <div className="card-stack-relaxed">
+                      <div className="text-base font-semibold text-text-primary">Account Security</div>
+                      <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
+                        <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                          Change Email
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">New Email</span>
+                            <input
+                              className="input-field mt-2"
+                              type="email"
+                              value={accountNewEmail}
+                              onChange={(e) => setAccountNewEmail(e.target.value)}
+                              autoComplete="email"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Current Password</span>
+                            <input
+                              className="input-field mt-2"
+                              type="password"
+                              value={emailCurrentPassword}
+                              onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                              autoComplete="current-password"
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-action-row">
+                          <button
+                            className="btn-primary"
+                            onClick={() => void submitEmailChange()}
+                            disabled={accountActionLoading || !emailCurrentPassword.trim() || !accountNewEmail.trim()}
+                          >
+                            {accountActionLoading ? 'Updating...' : 'Update Email'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
+                        <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                          Change Password
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <label className="block">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Current</span>
+                            <input
+                              className="input-field mt-2"
+                              type="password"
+                              value={passwordCurrentPassword}
+                              onChange={(e) => setPasswordCurrentPassword(e.target.value)}
+                              autoComplete="current-password"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">New</span>
+                            <input
+                              className="input-field mt-2"
+                              type="password"
+                              value={accountNewPassword}
+                              onChange={(e) => setAccountNewPassword(e.target.value)}
+                              autoComplete="new-password"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Confirm</span>
+                            <input
+                              className="input-field mt-2"
+                              type="password"
+                              value={accountConfirmPassword}
+                              onChange={(e) => setAccountConfirmPassword(e.target.value)}
+                              autoComplete="new-password"
+                            />
+                          </label>
+                        </div>
+                        <div className="settings-action-row">
+                          <button
+                            className="btn-primary"
+                            onClick={() => void submitPasswordChange()}
+                            disabled={
+                              accountActionLoading ||
+                              !passwordCurrentPassword.trim() ||
+                              !accountNewPassword.trim() ||
+                              !accountConfirmPassword.trim()
+                            }
+                          >
+                            {accountActionLoading ? 'Updating...' : 'Update Password'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                              Data Export
+                            </div>
+                            <div className="mt-1 text-sm text-text-muted">
+                              Download a JSON export of your account data.
+                            </div>
+                          </div>
+                          <button
+                            className="btn-primary"
+                            onClick={() => void downloadAccountData()}
+                            disabled={accountDataExporting}
+                          >
+                            {accountDataExporting ? 'Exporting...' : 'Download Data'}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
+                        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                            Active Sessions
+                          </div>
+                          <button
+                            className="rounded-lg px-3 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                            onClick={() => void loadSessions()}
+                            disabled={sessionsLoading}
+                          >
+                            {sessionsLoading ? 'Refreshing...' : 'Refresh'}
+                          </button>
+                        </div>
+                        <div className="space-y-2.5">
+                          {sessions.map((session) => (
+                            <div
+                              key={session.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/70 px-3 py-2.5"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate text-sm font-medium text-text-primary">
+                                    {session.user_agent || session.device_id || 'Unknown device'}
+                                  </span>
+                                  {session.current && (
+                                    <span className="rounded-full border border-accent-success/35 bg-accent-success/12 px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-accent-success">
+                                      Current
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-0.5 text-xs text-text-muted">
+                                  {session.ip_address || 'No IP'} • Last seen {new Date(session.last_seen_at).toLocaleString()}
+                                </div>
+                              </div>
+                              <button
+                                className="rounded-lg border border-accent-danger/35 bg-accent-danger/10 px-2.5 py-1.5 text-xs font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15 disabled:opacity-60"
+                                onClick={() => void revokeSession(session.id)}
+                                disabled={sessionBusyId === session.id}
+                              >
+                                {sessionBusyId === session.id ? 'Revoking...' : 'Revoke'}
+                              </button>
+                            </div>
+                          ))}
+                          {!sessionsLoading && sessions.length === 0 && (
+                            <div className="rounded-lg border border-border-subtle bg-bg-tertiary/70 px-3 py-2.5 text-sm text-text-muted">
+                              No active sessions found.
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -685,10 +1078,32 @@ export function UserSettings({ onClose }: UserSettingsProps) {
                 <div>
                   <div className="text-sm font-medium text-text-primary">Desktop Notifications</div>
                   <div className="text-xs text-text-muted">Show desktop notifications for new messages</div>
+                  {notifPermission === 'denied' && notifEnabled && (
+                    <div className="mt-1 text-xs text-accent-warning">
+                      Notification permission denied by the system. Click the toggle to request permission again.
+                    </div>
+                  )}
+                  {notifPermission === 'granted' && notifEnabled && (
+                    <div className="mt-1 text-xs text-accent-success">Permission granted</div>
+                  )}
                 </div>
                 <ToggleSwitch
-                  on={Boolean(mergedNotifications.desktop)}
-                  onToggle={() => setNotifications((prev) => ({ ...prev, desktop: !Boolean(prev.desktop) }))}
+                  on={notifEnabled}
+                  onToggle={() => {
+                    const next = !notifEnabled;
+                    if (next) {
+                      void requestNotificationPermission().then((granted) => {
+                        setNotifPermission(granted ? 'granted' : 'denied');
+                        setNotifEnabled(granted);
+                        setNotificationsEnabled(granted);
+                        setNotifications((prev) => ({ ...prev, desktop: granted }));
+                      });
+                    } else {
+                      setNotifEnabled(false);
+                      setNotificationsEnabled(false);
+                      setNotifications((prev) => ({ ...prev, desktop: false }));
+                    }
+                  }}
                 />
               </div>
               <div className="card-surface flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-5">
@@ -810,6 +1225,140 @@ export function UserSettings({ onClose }: UserSettingsProps) {
               <button className="btn-primary" onClick={() => void saveSettings()} disabled={saving}>
                 {saving ? 'Saving...' : 'Save Keybinds'}
               </button>
+            </div>
+          </div>
+        )}
+
+        {activeSection === 'identity' && (
+          <div className="settings-surface-card w-full min-h-[calc(100dvh-13.5rem)]">
+            <h2 className="settings-section-title mb-8">Identity Portability</h2>
+
+            {identityStatus && (
+              <div
+                className="card-surface mb-6 inline-flex max-w-full items-center rounded-xl border border-border-subtle bg-bg-mod-subtle px-4 py-3 text-sm font-medium"
+                style={{ color: identityStatus.includes('failed') || identityStatus.includes('Failed') ? 'var(--accent-danger)' : 'var(--accent-success)' }}
+              >
+                {identityStatus}
+              </div>
+            )}
+
+            <div className="card-stack-roomy">
+              {/* Export Section */}
+              <div className="card-surface rounded-2xl border border-border-subtle bg-bg-tertiary/80 p-8">
+                <div className="mb-6">
+                  <div className="text-base font-semibold text-text-primary">Export Identity</div>
+                  <div className="mt-1 text-sm text-text-muted">
+                    Export your identity as a signed bundle that can be imported to another Paracord server.
+                  </div>
+                </div>
+                <div className="card-stack">
+                  <div className="card-surface flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-5">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">Include Messages</div>
+                      <div className="text-xs text-text-muted">Export your message history (can be large)</div>
+                    </div>
+                    <ToggleSwitch on={exportIncludeMessages} onToggle={() => setExportIncludeMessages(!exportIncludeMessages)} />
+                  </div>
+                  <div className="card-surface flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-5">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">Include Relationships</div>
+                      <div className="text-xs text-text-muted">Export your friend and block list</div>
+                    </div>
+                    <ToggleSwitch on={exportIncludeRelationships} onToggle={() => setExportIncludeRelationships(!exportIncludeRelationships)} />
+                  </div>
+                </div>
+                <div className="settings-action-row">
+                  <button
+                    className="btn-primary"
+                    onClick={() => void handleExportIdentity()}
+                    disabled={exporting}
+                  >
+                    {exporting ? 'Exporting...' : 'Export Identity'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Import Section */}
+              <div className="card-surface rounded-2xl border border-border-subtle bg-bg-tertiary/80 p-8">
+                <div className="mb-6">
+                  <div className="text-base font-semibold text-text-primary">Import Identity</div>
+                  <div className="mt-1 text-sm text-text-muted">
+                    Import an identity bundle from another Paracord server. This will merge the imported data with your current account.
+                  </div>
+                </div>
+                <div className="card-stack">
+                  <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-5">
+                    <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Select Bundle File</div>
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleImportFileSelect}
+                      className="block w-full text-sm text-text-muted file:mr-3 file:rounded-lg file:border file:border-border-subtle file:bg-bg-secondary file:px-3 file:py-2 file:text-sm file:font-medium file:text-text-primary hover:file:bg-bg-mod-subtle"
+                    />
+                    {importFile && (
+                      <div className="mt-2 text-xs text-text-muted">
+                        Selected: {importFile.name}
+                      </div>
+                    )}
+                  </div>
+
+                  {importPreview && (
+                    <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-5">
+                      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Import Preview</div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Origin Server</span>
+                          <span className="font-medium text-text-primary">{String(importPreview.origin_server ?? 'Unknown')}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Username</span>
+                          <span className="font-medium text-text-primary">
+                            {(importPreview.user as Record<string, unknown>)?.username
+                              ? String((importPreview.user as Record<string, unknown>).username)
+                              : 'Unknown'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Messages</span>
+                          <span className="font-medium text-text-primary">
+                            {Array.isArray(importPreview.messages) ? importPreview.messages.length : 0}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Relationships</span>
+                          <span className="font-medium text-text-primary">
+                            {Array.isArray(importPreview.relationships) ? importPreview.relationships.length : 0}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Guild Memberships</span>
+                          <span className="font-medium text-text-primary">
+                            {Array.isArray(importPreview.guilds) ? importPreview.guilds.length : 0}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-text-muted">Exported At</span>
+                          <span className="font-medium text-text-primary">
+                            {importPreview.exported_at ? new Date(String(importPreview.exported_at)).toLocaleString() : 'Unknown'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="mt-4 rounded-lg border border-accent-warning/30 bg-accent-warning/10 px-4 py-3 text-xs text-accent-warning">
+                        This will merge the imported identity with your current account. Profile fields will be overwritten.
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="settings-action-row">
+                  <button
+                    className="btn-primary"
+                    onClick={() => void handleImportIdentity()}
+                    disabled={importing || !importPreview}
+                  >
+                    {importing ? 'Importing...' : 'Import Identity'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

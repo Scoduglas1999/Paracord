@@ -1,21 +1,24 @@
 use axum::{
-    extract::Request,
-    http::{Method, StatusCode},
+    extract::{ConnectInfo, DefaultBodyLimit, Request},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     middleware::{from_fn, Next},
-    response::Response,
     response::IntoResponse,
+    response::Response,
     routing::{any, delete, get, patch, post, put},
     Json, Router,
 };
 use paracord_core::AppState;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 pub mod error;
 pub mod middleware;
 pub mod routes;
+
+const DEFAULT_REQUEST_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
+const ATTACHMENT_REQUEST_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn build_router() -> Router<AppState> {
     let cors = build_cors_layer();
@@ -42,24 +45,87 @@ pub fn build_router() -> Router<AppState> {
             "/_paracord/federation/v1/event/{event_id}",
             get(routes::federation::get_event),
         )
+        .route(
+            "/_paracord/federation/v1/events",
+            get(routes::federation::list_events),
+        )
+        .route(
+            "/_paracord/federation/v1/invite",
+            post(routes::federation::invite),
+        )
+        .route(
+            "/_paracord/federation/v1/join",
+            post(routes::federation::join),
+        )
+        .route(
+            "/_paracord/federation/v1/leave",
+            post(routes::federation::leave),
+        )
+        .route(
+            "/_paracord/federation/v1/media/token",
+            post(routes::federation::media_token),
+        )
+        .route(
+            "/_paracord/federation/v1/media/relay",
+            post(routes::federation::media_relay),
+        )
+        // Federation server management (admin)
+        .route(
+            "/_paracord/federation/v1/servers",
+            get(routes::federation::list_servers).post(routes::federation::add_server),
+        )
+        .route(
+            "/_paracord/federation/v1/servers/{server_name}",
+            get(routes::federation::get_server).delete(routes::federation::delete_server),
+        )
         // Auth
         .route("/api/v1/auth/register", post(routes::auth::register))
         .route("/api/v1/auth/login", post(routes::auth::login))
+        .route("/api/v1/auth/options", get(routes::auth::auth_options))
         .route("/api/v1/auth/refresh", post(routes::auth::refresh))
+        .route("/api/v1/auth/logout", post(routes::auth::logout))
         .route("/api/v1/auth/challenge", post(routes::auth::challenge))
         .route("/api/v1/auth/verify", post(routes::auth::verify))
         .route(
             "/api/v1/auth/attach-public-key",
             post(routes::auth::attach_public_key),
         )
+        .route("/api/v1/auth/sessions", get(routes::auth::list_sessions))
+        .route(
+            "/api/v1/auth/sessions/{session_id}",
+            delete(routes::auth::revoke_session),
+        )
         // Users
         .route(
             "/api/v1/users/@me",
-            get(routes::users::get_me).patch(routes::users::update_me),
+            get(routes::users::get_me)
+                .patch(routes::users::update_me)
+                .delete(routes::users::delete_me),
         )
         .route(
             "/api/v1/users/@me/settings",
             get(routes::users::get_settings).patch(routes::users::update_settings),
+        )
+        .route(
+            "/api/v1/users/@me/password",
+            put(routes::users::change_password),
+        )
+        .route("/api/v1/users/@me/email", put(routes::users::change_email))
+        .route(
+            "/api/v1/users/@me/data-export",
+            get(routes::users::export_my_data),
+        )
+        .route(
+            "/api/v1/users/@me/export",
+            post(routes::users::export_identity),
+        )
+        .route(
+            "/api/v1/users/@me/import",
+            post(routes::users::import_identity),
+        )
+        .route(
+            "/api/v1/users/{user_id}/profile",
+            get(routes::users::get_user_profile),
         )
         .route("/api/v1/users/@me/guilds", get(routes::guilds::list_guilds))
         .route(
@@ -84,7 +150,9 @@ pub fn build_router() -> Router<AppState> {
         )
         .route(
             "/api/v1/guilds/{guild_id}/channels",
-            get(routes::guilds::get_channels).post(routes::channels::create_channel),
+            get(routes::guilds::get_channels)
+                .post(routes::channels::create_channel)
+                .patch(routes::guilds::update_channel_positions),
         )
         .route(
             "/api/v1/guilds/{guild_id}/members",
@@ -119,6 +187,44 @@ pub fn build_router() -> Router<AppState> {
             get(routes::invites::list_guild_invites),
         )
         .route(
+            "/api/v1/guilds/{guild_id}/emojis",
+            get(routes::emojis::list_guild_emojis).post(routes::emojis::create_emoji),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/emojis/{emoji_id}",
+            patch(routes::emojis::update_emoji).delete(routes::emojis::delete_emoji),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/emojis/{emoji_id}/image",
+            get(routes::emojis::get_emoji_image),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/webhooks",
+            get(routes::webhooks::list_guild_webhooks).post(routes::webhooks::create_webhook),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/events",
+            get(routes::events::list_events).post(routes::events::create_event),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/events/{event_id}",
+            get(routes::events::get_event)
+                .patch(routes::events::update_event)
+                .delete(routes::events::delete_event),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/events/{event_id}/rsvp",
+            put(routes::events::add_rsvp).delete(routes::events::remove_rsvp),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/bots",
+            get(routes::bots::list_guild_bots),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/bots/{bot_app_id}",
+            delete(routes::bots::remove_guild_bot),
+        )
+        .route(
             "/api/v1/guilds/{guild_id}/audit-logs",
             get(routes::audit_logs::get_audit_logs),
         )
@@ -144,6 +250,18 @@ pub fn build_router() -> Router<AppState> {
         .route(
             "/api/v1/channels/{channel_id}/messages/{message_id}",
             patch(routes::channels::edit_message).delete(routes::channels::delete_message),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/polls",
+            post(routes::channels::create_poll),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/polls/{poll_id}",
+            get(routes::channels::get_poll),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/polls/{poll_id}/votes/{option_id}",
+            put(routes::channels::add_poll_vote).delete(routes::channels::remove_poll_vote),
         )
         .route(
             "/api/v1/channels/{channel_id}/pins",
@@ -174,6 +292,39 @@ pub fn build_router() -> Router<AppState> {
             "/api/v1/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me",
             put(routes::channels::add_reaction).delete(routes::channels::remove_reaction),
         )
+        .route(
+            "/api/v1/channels/{channel_id}/webhooks",
+            get(routes::webhooks::list_channel_webhooks),
+        )
+        // Threads
+        .route(
+            "/api/v1/channels/{channel_id}/threads",
+            post(routes::channels::create_thread).get(routes::channels::get_threads),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/threads/archived",
+            get(routes::channels::get_archived_threads),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/threads/{thread_id}",
+            patch(routes::channels::update_thread).delete(routes::channels::delete_thread),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/forum/posts",
+            get(routes::channels::get_forum_posts).post(routes::channels::create_forum_post),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/forum/tags",
+            get(routes::channels::list_forum_tags).post(routes::channels::create_forum_tag),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/forum/tags/{tag_id}",
+            delete(routes::channels::delete_forum_tag),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/forum/sort",
+            patch(routes::channels::update_forum_sort_order),
+        )
         // Invites
         .route(
             "/api/v1/channels/{channel_id}/invites",
@@ -184,6 +335,46 @@ pub fn build_router() -> Router<AppState> {
             get(routes::invites::get_invite)
                 .post(routes::invites::accept_invite)
                 .delete(routes::invites::delete_invite),
+        )
+        .route(
+            "/api/v1/webhooks/{webhook_id}",
+            get(routes::webhooks::get_webhook)
+                .patch(routes::webhooks::update_webhook)
+                .delete(routes::webhooks::delete_webhook),
+        )
+        .route(
+            "/api/v1/webhooks/{webhook_id}/{token}",
+            post(routes::webhooks::execute_webhook),
+        )
+        .route(
+            "/api/v1/discovery/guilds",
+            get(routes::discovery::list_discoverable_guilds),
+        )
+        .route(
+            "/api/v1/bots/applications",
+            get(routes::bots::list_bot_applications).post(routes::bots::create_bot_application),
+        )
+        .route(
+            "/api/v1/bots/applications/{bot_app_id}",
+            get(routes::bots::get_bot_application)
+                .patch(routes::bots::update_bot_application)
+                .delete(routes::bots::delete_bot_application),
+        )
+        .route(
+            "/api/v1/bots/applications/{bot_app_id}/public",
+            get(routes::bots::get_public_bot_application),
+        )
+        .route(
+            "/api/v1/bots/applications/{bot_app_id}/token",
+            post(routes::bots::regenerate_bot_token),
+        )
+        .route(
+            "/api/v1/bots/applications/{bot_app_id}/installs",
+            get(routes::bots::list_bot_application_installs),
+        )
+        .route(
+            "/api/v1/oauth2/authorize",
+            post(routes::bots::oauth2_authorize),
         )
         // Voice
         .route(
@@ -209,7 +400,8 @@ pub fn build_router() -> Router<AppState> {
         // Files
         .route(
             "/api/v1/channels/{channel_id}/attachments",
-            post(routes::files::upload_file),
+            post(routes::files::upload_file)
+                .layer(DefaultBodyLimit::max(ATTACHMENT_REQUEST_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/v1/attachments/{id}",
@@ -218,8 +410,7 @@ pub fn build_router() -> Router<AppState> {
         // Relationships
         .route(
             "/api/v1/users/@me/relationships",
-            get(routes::relationships::list_relationships)
-                .post(routes::relationships::add_friend),
+            get(routes::relationships::list_relationships).post(routes::relationships::add_friend),
         )
         .route(
             "/api/v1/users/@me/relationships/{user_id}",
@@ -227,26 +418,21 @@ pub fn build_router() -> Router<AppState> {
                 .delete(routes::relationships::remove_relationship),
         )
         // Admin
+        .route("/api/v1/admin/stats", get(routes::admin::get_stats))
         .route(
-            "/api/v1/admin/stats",
-            get(routes::admin::get_stats),
+            "/api/v1/admin/security-events",
+            get(routes::admin::list_security_events),
         )
         .route(
             "/api/v1/admin/settings",
             get(routes::admin::get_settings).patch(routes::admin::update_settings),
         )
-        .route(
-            "/api/v1/admin/users",
-            get(routes::admin::list_users),
-        )
+        .route("/api/v1/admin/users", get(routes::admin::list_users))
         .route(
             "/api/v1/admin/users/{user_id}",
             patch(routes::admin::update_user).delete(routes::admin::delete_user),
         )
-        .route(
-            "/api/v1/admin/guilds",
-            get(routes::admin::list_guilds),
-        )
+        .route("/api/v1/admin/guilds", get(routes::admin::list_guilds))
         .route(
             "/api/v1/admin/guilds/{guild_id}",
             patch(routes::admin::update_guild).delete(routes::admin::delete_guild),
@@ -255,23 +441,87 @@ pub fn build_router() -> Router<AppState> {
             "/api/v1/admin/restart-update",
             post(routes::admin::restart_update),
         )
+        // Admin backups
+        .route("/api/v1/admin/backup", post(routes::admin::create_backup))
+        .route("/api/v1/admin/backups", get(routes::admin::list_backups))
+        .route("/api/v1/admin/restore", post(routes::admin::restore_backup))
+        .route(
+            "/api/v1/admin/backups/{name}",
+            get(routes::admin::download_backup).delete(routes::admin::delete_backup),
+        )
         // LiveKit reverse proxy (voice signaling + Twirp API on the same port)
-        .route("/livekit/{*path}", any(routes::livekit_proxy::livekit_proxy))
+        .route(
+            "/livekit/{*path}",
+            any(routes::livekit_proxy::livekit_proxy),
+        )
         // Middleware layers
+        .layer(DefaultBodyLimit::max(DEFAULT_REQUEST_BODY_LIMIT_BYTES))
         .layer(cors)
+        .layer(from_fn(metrics_middleware))
         .layer(from_fn(rate_limit_middleware))
+        .layer(from_fn(security_headers_middleware))
         .layer(tower_http::trace::TraceLayer::new_for_http())
 }
 
 fn build_cors_layer() -> tower_http::cors::CorsLayer {
-    // Always allow any origin. Paracord is a self-hosted server designed for
-    // desktop clients (Tauri) which send origins like `tauri://localhost` or
-    // `http://tauri.localhost`. Restricting origins would break remote desktop
-    // clients while providing no real security benefit for this use case.
-    tower_http::cors::CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE])
-        .allow_headers(tower_http::cors::Any)
+    let mut allowed_origins: std::collections::BTreeSet<String> = [
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+
+    if let Ok(public_url) = std::env::var("PARACORD_PUBLIC_URL") {
+        let trimmed = public_url.trim();
+        if !trimmed.is_empty() {
+            allowed_origins.insert(trimmed.to_string());
+        }
+    }
+    if let Ok(raw) = std::env::var("PARACORD_CORS_ALLOWED_ORIGINS") {
+        for origin in raw.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+            allowed_origins.insert(origin.to_string());
+        }
+    }
+
+    let allow_any = allowed_origins.contains("*");
+    let mut cors = tower_http::cors::CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::ORIGIN,
+        ])
+        .max_age(Duration::from_secs(600));
+
+    if allow_any {
+        tracing::warn!(
+            "PARACORD_CORS_ALLOWED_ORIGINS contains '*'; disabling credentialed CORS for safety"
+        );
+        cors = cors
+            .allow_origin(tower_http::cors::Any)
+            .allow_credentials(false);
+    } else {
+        let values: Vec<HeaderValue> = allowed_origins
+            .into_iter()
+            .filter_map(|origin| HeaderValue::from_str(&origin).ok())
+            .collect();
+        cors = cors.allow_origin(values).allow_credentials(true);
+    }
+
+    cors
 }
 
 async fn health() -> impl IntoResponse {
@@ -281,61 +531,429 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-async fn metrics() -> impl IntoResponse {
+async fn metrics(headers: HeaderMap) -> impl IntoResponse {
+    let public_metrics = std::env::var("PARACORD_ENABLE_PUBLIC_METRICS")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    if !public_metrics {
+        let expected = std::env::var("PARACORD_METRICS_TOKEN")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let Some(expected) = expected else {
+            return (
+                StatusCode::FORBIDDEN,
+                [("content-type", "text/plain; charset=utf-8")],
+                "metrics disabled".to_string(),
+            );
+        };
+
+        let presented = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| raw.strip_prefix("Bearer "))
+            .map(str::trim);
+        if presented != Some(expected.as_str()) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [("content-type", "text/plain; charset=utf-8")],
+                "unauthorized".to_string(),
+            );
+        }
+    }
+
     let requests = REQUEST_COUNT.load(Ordering::Relaxed);
     let limited = RATE_LIMITED_COUNT.load(Ordering::Relaxed);
+
+    let s2xx = STATUS_2XX.load(Ordering::Relaxed);
+    let s4xx = STATUS_4XX.load(Ordering::Relaxed);
+    let s5xx = STATUS_5XX.load(Ordering::Relaxed);
+
+    let ws_snapshot = paracord_core::observability::ws_metrics_snapshot();
+    let ws_active = ws_snapshot.active_connections;
+    let ws_events = ws_snapshot.total_events;
+
+    let dur_sum_us = DURATION_SUM_US.load(Ordering::Relaxed);
+    let dur_count = DURATION_COUNT.load(Ordering::Relaxed);
+    let dur_sum_s = dur_sum_us as f64 / 1_000_000.0;
+
+    let mut body = format!(
+        "# HELP paracord_up Whether the server is up.\n\
+         # TYPE paracord_up gauge\n\
+         paracord_up 1\n\
+         # HELP paracord_http_requests_total Total HTTP requests.\n\
+         # TYPE paracord_http_requests_total counter\n\
+         paracord_http_requests_total {requests}\n\
+         # HELP paracord_http_rate_limited_total Requests rejected by rate limiter.\n\
+         # TYPE paracord_http_rate_limited_total counter\n\
+         paracord_http_rate_limited_total {limited}\n\
+         # HELP paracord_http_responses_total HTTP responses by status class.\n\
+         # TYPE paracord_http_responses_total counter\n\
+         paracord_http_responses_total{{status_class=\"2xx\"}} {s2xx}\n\
+         paracord_http_responses_total{{status_class=\"4xx\"}} {s4xx}\n\
+         paracord_http_responses_total{{status_class=\"5xx\"}} {s5xx}\n\
+         # HELP paracord_http_request_duration_seconds HTTP request duration histogram.\n\
+         # TYPE paracord_http_request_duration_seconds histogram\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.005\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.01\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.025\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.05\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.1\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.25\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"0.5\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"1.0\"}} {}\n\
+         paracord_http_request_duration_seconds_bucket{{le=\"+Inf\"}} {}\n\
+         paracord_http_request_duration_seconds_sum {dur_sum_s}\n\
+         paracord_http_request_duration_seconds_count {dur_count}\n\
+         # HELP paracord_ws_connections_active Active WebSocket gateway connections.\n\
+         # TYPE paracord_ws_connections_active gauge\n\
+         paracord_ws_connections_active {ws_active}\n\
+         # HELP paracord_ws_events_total Total WebSocket events dispatched.\n\
+         # TYPE paracord_ws_events_total counter\n\
+         paracord_ws_events_total {ws_events}\n\
+         # HELP paracord_ws_events_by_type_total Total WebSocket events dispatched by event type.\n\
+         # TYPE paracord_ws_events_by_type_total counter\n",
+        DURATION_LE_5.load(Ordering::Relaxed),
+        DURATION_LE_10.load(Ordering::Relaxed),
+        DURATION_LE_25.load(Ordering::Relaxed),
+        DURATION_LE_50.load(Ordering::Relaxed),
+        DURATION_LE_100.load(Ordering::Relaxed),
+        DURATION_LE_250.load(Ordering::Relaxed),
+        DURATION_LE_500.load(Ordering::Relaxed),
+        DURATION_LE_1000.load(Ordering::Relaxed),
+        DURATION_LE_INF.load(Ordering::Relaxed),
+    );
+    for (event_type, count) in ws_snapshot.events_by_type {
+        body.push_str(&format!(
+            "paracord_ws_events_by_type_total{{event_type=\"{}\"}} {}\n",
+            prometheus_escape_label_value(&event_type),
+            count
+        ));
+    }
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
-        format!(
-            "paracord_up 1\nparacord_http_requests_total {}\nparacord_http_rate_limited_total {}\n",
-            requests, limited
-        ),
+        body,
     )
 }
 
-static RATE_LIMIT_STATE: OnceLock<Mutex<HashMap<String, (i64, u32)>>> = OnceLock::new();
+static RATE_LIMIT_DB_POOL: OnceLock<paracord_db::DbPool> = OnceLock::new();
 static REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
 static RATE_LIMITED_COUNT: AtomicU64 = AtomicU64::new(0);
+static RATE_LIMIT_DB_ERRORS: AtomicU64 = AtomicU64::new(0);
 
-fn rate_limit_state() -> &'static Mutex<HashMap<String, (i64, u32)>> {
-    RATE_LIMIT_STATE.get_or_init(|| Mutex::new(HashMap::new()))
+// ── Observability: request duration histogram buckets ──────────────────────
+// We track durations in discrete buckets (in milliseconds) using atomics.
+static DURATION_LE_5: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_10: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_25: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_50: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_100: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_250: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_500: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_1000: AtomicU64 = AtomicU64::new(0);
+static DURATION_LE_INF: AtomicU64 = AtomicU64::new(0);
+static DURATION_SUM_US: AtomicU64 = AtomicU64::new(0);
+static DURATION_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// ── Observability: HTTP status code counters ───────────────────────────────
+static STATUS_2XX: AtomicU64 = AtomicU64::new(0);
+static STATUS_4XX: AtomicU64 = AtomicU64::new(0);
+static STATUS_5XX: AtomicU64 = AtomicU64::new(0);
+
+fn prometheus_escape_label_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn record_request_duration(elapsed_ms: u64) {
+    if elapsed_ms <= 5 {
+        DURATION_LE_5.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 10 {
+        DURATION_LE_10.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 25 {
+        DURATION_LE_25.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 50 {
+        DURATION_LE_50.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 100 {
+        DURATION_LE_100.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 250 {
+        DURATION_LE_250.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 500 {
+        DURATION_LE_500.fetch_add(1, Ordering::Relaxed);
+    }
+    if elapsed_ms <= 1000 {
+        DURATION_LE_1000.fetch_add(1, Ordering::Relaxed);
+    }
+    DURATION_LE_INF.fetch_add(1, Ordering::Relaxed);
+    DURATION_SUM_US.fetch_add(elapsed_ms.saturating_mul(1000), Ordering::Relaxed);
+    DURATION_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+fn record_status_code(status: u16) {
+    match status {
+        200..=299 => {
+            STATUS_2XX.fetch_add(1, Ordering::Relaxed);
+        }
+        400..=499 => {
+            STATUS_4XX.fetch_add(1, Ordering::Relaxed);
+        }
+        500..=599 => {
+            STATUS_5XX.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+}
+
+pub fn install_rate_limit_backend(pool: paracord_db::DbPool) {
+    let _ = RATE_LIMIT_DB_POOL.set(pool);
+}
+
+fn rate_limit_fail_open_enabled() -> bool {
+    std::env::var("PARACORD_RATE_LIMIT_FAIL_OPEN")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false)
 }
 
 async fn rate_limit_middleware(req: Request, next: Next) -> Response {
-    REQUEST_COUNT.fetch_add(1, Ordering::Relaxed);
-    let now = chrono::Utc::now().timestamp();
-    let key = req
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("local")
-        .to_string();
+    const GLOBAL_LIMIT_PER_SECOND: u32 = 120;
+    const AUTH_LIMIT_PER_MINUTE: u32 = 20;
+    const BOT_LIMIT_PER_MINUTE: u32 = 300;
+    const COUNTER_TTL_SECONDS: i64 = 600;
+    const COUNTER_CLEANUP_LIMIT: i64 = 1024;
 
-    let allowed = {
-        let mut map = match rate_limit_state().lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let entry = map.entry(key).or_insert((now, 0));
-        if entry.0 != now {
-            *entry = (now, 0);
-        }
-        if entry.1 >= 300 {
-            false
-        } else {
-            entry.1 += 1;
-            true
-        }
+    let request_index = REQUEST_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    let now = chrono::Utc::now().timestamp();
+    let path = req.uri().path().to_string();
+    let is_auth_path = path.starts_with("/api/v1/auth/");
+    let trust_proxy = std::env::var("PARACORD_TRUST_PROXY")
+        .ok()
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    let peer_ip = req
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip().to_string());
+    let trusted_proxy_ips = if trust_proxy {
+        std::env::var("PARACORD_TRUSTED_PROXY_IPS")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let can_trust_forwarded = trust_proxy
+        && peer_ip
+            .as_deref()
+            .is_some_and(|ip| trusted_proxy_ips.iter().any(|trusted| trusted == ip));
+
+    let key = if can_trust_forwarded {
+        req.headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| peer_ip.clone())
+            .unwrap_or_else(|| "unknown".to_string())
+    } else {
+        peer_ip.unwrap_or_else(|| "unknown".to_string())
     };
 
-    if !allowed {
-        RATE_LIMITED_COUNT.fetch_add(1, Ordering::Relaxed);
-        return crate::error::ApiError::RateLimited.into_response();
+    if let Some(pool) = RATE_LIMIT_DB_POOL.get() {
+        let global_key = format!("http:global:{key}");
+        let global_count =
+            paracord_db::rate_limits::increment_window_counter(pool, &global_key, now, 1).await;
+        let global_count = match global_count {
+            Ok(count) => count,
+            Err(err) => {
+                RATE_LIMIT_DB_ERRORS.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("rate-limit backend failure (global counter): {}", err);
+                if rate_limit_fail_open_enabled() || !is_auth_path {
+                    return next.run(req).await;
+                }
+                return crate::error::ApiError::ServiceUnavailable(
+                    "Rate limit backend unavailable".to_string(),
+                )
+                .into_response();
+            }
+        };
+
+        if global_count > GLOBAL_LIMIT_PER_SECOND as i64 {
+            RATE_LIMITED_COUNT.fetch_add(1, Ordering::Relaxed);
+            return crate::error::ApiError::RateLimited.into_response();
+        }
+
+        if let Some(bot_token) = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| raw.strip_prefix("Bot "))
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            let minute = now / 60;
+            let token_hash = paracord_db::bot_applications::hash_token(bot_token);
+            let bot_key = format!("http:bot:{}", &token_hash[..24]);
+            let bot_count =
+                paracord_db::rate_limits::increment_window_counter(pool, &bot_key, minute, 60)
+                    .await;
+            let bot_count = match bot_count {
+                Ok(count) => count,
+                Err(err) => {
+                    RATE_LIMIT_DB_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!("rate-limit backend failure (bot counter): {}", err);
+                    if rate_limit_fail_open_enabled() || !is_auth_path {
+                        return next.run(req).await;
+                    }
+                    return crate::error::ApiError::ServiceUnavailable(
+                        "Rate limit backend unavailable".to_string(),
+                    )
+                    .into_response();
+                }
+            };
+            if bot_count > BOT_LIMIT_PER_MINUTE as i64 {
+                RATE_LIMITED_COUNT.fetch_add(1, Ordering::Relaxed);
+                return crate::error::ApiError::RateLimited.into_response();
+            }
+        }
+
+        if is_auth_path {
+            let minute = now / 60;
+            let auth_key = format!("http:auth:{key}");
+            let auth_count =
+                paracord_db::rate_limits::increment_window_counter(pool, &auth_key, minute, 60)
+                    .await;
+            let auth_count = match auth_count {
+                Ok(count) => count,
+                Err(err) => {
+                    RATE_LIMIT_DB_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!("rate-limit backend failure (auth counter): {}", err);
+                    if rate_limit_fail_open_enabled() || !is_auth_path {
+                        return next.run(req).await;
+                    }
+                    return crate::error::ApiError::ServiceUnavailable(
+                        "Rate limit backend unavailable".to_string(),
+                    )
+                    .into_response();
+                }
+            };
+            if auth_count > AUTH_LIMIT_PER_MINUTE as i64 {
+                RATE_LIMITED_COUNT.fetch_add(1, Ordering::Relaxed);
+                return crate::error::ApiError::RateLimited.into_response();
+            }
+        }
+
+        if request_index % 128 == 0 {
+            let cutoff = now.saturating_sub(COUNTER_TTL_SECONDS);
+            if let Err(err) = paracord_db::rate_limits::purge_window_counters_older_than(
+                pool,
+                cutoff,
+                COUNTER_CLEANUP_LIMIT,
+            )
+            .await
+            {
+                RATE_LIMIT_DB_ERRORS.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("rate-limit backend cleanup failure: {}", err);
+            }
+        }
     }
 
     next.run(req).await
+}
+
+async fn security_headers_middleware(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_string();
+    let is_https = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    if path == "/health"
+        || path == "/metrics"
+        || path.starts_with("/api/")
+        || path.starts_with("/_paracord/")
+        || path.starts_with("/.well-known/")
+    {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
+        );
+    } else {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss: http: https:; media-src 'self' data: blob:",
+            ),
+        );
+    }
+    if is_https {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+
+    response
+}
+
+/// Middleware that records request duration and response status for the /metrics endpoint.
+async fn metrics_middleware(req: Request, next: Next) -> Response {
+    let start = Instant::now();
+    let response = next.run(req).await;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    record_request_duration(elapsed_ms);
+    record_status_code(response.status().as_u16());
+    response
 }

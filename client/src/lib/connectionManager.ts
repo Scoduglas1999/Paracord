@@ -11,10 +11,16 @@ import { useTypingStore } from '../stores/typingStore';
 import { useRelationshipStore } from '../stores/relationshipStore';
 import { useUIStore } from '../stores/uiStore';
 import { useMessageStore } from '../stores/messageStore';
+import { usePollStore } from '../stores/pollStore';
 import { useAuthStore } from '../stores/authStore';
-import { signChallenge } from './account';
+import {
+  hasUnlockedPrivateKey,
+  signServerChallengeWithUnlockedKey,
+} from './accountSession';
+import { setAccessToken } from './authToken';
 import type { Activity, GatewayPayload } from '../types';
 import { GatewayEvents } from '../gateway/events';
+import { sendNotification, isEnabled as notificationsEnabled } from './notifications';
 
 export interface ServerConnection {
   serverId: string;
@@ -64,7 +70,7 @@ class ConnectionManager {
     if (!server) throw new Error(`Server ${serverId} not found`);
 
     const account = useAccountStore.getState();
-    if (!account.isUnlocked || !account.privateKey || !account.publicKey) {
+    if (!account.isUnlocked || !account.publicKey || !hasUnlockedPrivateKey()) {
       throw new Error('Account not unlocked');
     }
 
@@ -83,7 +89,7 @@ class ConnectionManager {
 
     // If we don't have a valid token, do challenge-response auth
     if (!server.token) {
-      const token = await this.authenticate(client, server, account.publicKey, account.privateKey, account.username!);
+      const token = await this.authenticate(client, server, account.publicKey, account.username!);
       useServerListStore.getState().updateToken(serverId, token);
     }
 
@@ -112,7 +118,6 @@ class ConnectionManager {
     client: AxiosInstance,
     server: ServerEntry,
     publicKey: string,
-    privateKey: Uint8Array,
     username: string,
   ): Promise<string> {
     // Step 1: Get challenge
@@ -122,9 +127,22 @@ class ConnectionManager {
       server_origin: string;
     }>('/auth/challenge');
 
+    const nowMs = Date.now();
+    const challengeMs = challenge.timestamp * 1000;
+    if (!Number.isFinite(challengeMs) || Math.abs(nowMs - challengeMs) > 120_000) {
+      throw new Error('Server challenge timestamp is invalid or stale');
+    }
+    try {
+      const expectedOrigin = new URL(server.url).origin;
+      if (new URL(challenge.server_origin).origin !== expectedOrigin) {
+        throw new Error('Server challenge origin mismatch');
+      }
+    } catch {
+      throw new Error('Server challenge origin mismatch');
+    }
+
     // Step 2: Sign the challenge
-    const signature = await signChallenge(
-      privateKey,
+    const signature = await signServerChallengeWithUnlockedKey(
       challenge.nonce,
       challenge.timestamp,
       challenge.server_origin,
@@ -161,7 +179,7 @@ class ConnectionManager {
         created_at: new Date().toISOString(),
       },
     });
-    localStorage.setItem('token', authResponse.token);
+    setAccessToken(authResponse.token);
 
     return authResponse.token;
   }
@@ -315,7 +333,7 @@ class ConnectionManager {
           useVoiceStore.getState().loadVoiceStates(g.id, g.voice_states ?? []);
           if (g.presences?.length) {
             for (const p of g.presences) {
-              usePresenceStore.getState().updatePresence(p);
+              usePresenceStore.getState().updatePresence(p, conn.serverId);
             }
           }
           void useMemberStore.getState().fetchMembers(g.id);
@@ -329,13 +347,34 @@ class ConnectionManager {
             user_id: data.user.id,
             status: 'online',
             activities: [],
-          });
+          }, conn.serverId);
         }
         break;
 
       case GatewayEvents.MESSAGE_CREATE:
         useMessageStore.getState().addMessage(data.channel_id, data);
         useChannelStore.getState().updateLastMessageId(data.channel_id, data.id);
+        // Desktop notification for messages not from self and not in focused channel
+        if (notificationsEnabled()) {
+          const currentUserId = useAuthStore.getState().user?.id;
+          const authorId = data.author?.id ?? data.user_id;
+          const focusedChannelId = useChannelStore.getState().selectedChannelId;
+          const isDocumentFocused = typeof document !== 'undefined' && document.hasFocus();
+          if (
+            authorId !== currentUserId &&
+            !(isDocumentFocused && focusedChannelId === data.channel_id)
+          ) {
+            const channelName = useChannelStore.getState().channels.find(
+              (c) => c.id === data.channel_id,
+            )?.name;
+            const authorName = data.author?.username ?? 'Someone';
+            const title = channelName ? `#${channelName}` : `DM from ${authorName}`;
+            const body = data.e2ee
+              ? '[Encrypted message]'
+              : (data.content || '').slice(0, 200) || '(attachment)';
+            void sendNotification(title, body);
+          }
+        }
         break;
       case GatewayEvents.MESSAGE_UPDATE:
         useMessageStore.getState().updateMessage(data.channel_id, data);
@@ -369,6 +408,41 @@ class ConnectionManager {
         useChannelStore.getState().removeChannel(data.guild_id, data.id);
         break;
 
+      case GatewayEvents.THREAD_CREATE:
+        useChannelStore.getState().addChannel({
+          ...data,
+          type: data.channel_type ?? data.type ?? 6,
+          channel_type: data.channel_type ?? data.type ?? 6,
+          nsfw: data.nsfw ?? false,
+          position: data.position ?? 0,
+          created_at: data.created_at ?? new Date().toISOString(),
+        });
+        break;
+      case GatewayEvents.THREAD_UPDATE:
+        useChannelStore.getState().updateChannel({
+          ...data,
+          type: data.channel_type ?? data.type ?? 6,
+          channel_type: data.channel_type ?? data.type ?? 6,
+          nsfw: data.nsfw ?? false,
+          position: data.position ?? 0,
+          created_at: data.created_at ?? new Date().toISOString(),
+        });
+        break;
+      case GatewayEvents.THREAD_DELETE: {
+        const channelsByGuild = useChannelStore.getState().channelsByGuild;
+        let fallbackGuildId = '';
+        for (const [gid, list] of Object.entries(channelsByGuild)) {
+          if (list.some((ch) => ch.id === data.id)) {
+            fallbackGuildId = gid;
+            break;
+          }
+        }
+        useChannelStore
+          .getState()
+          .removeChannel(data.guild_id || fallbackGuildId, data.id);
+        break;
+      }
+
       case GatewayEvents.GUILD_MEMBER_ADD:
         void useMemberStore.getState().fetchMembers(data.guild_id);
         break;
@@ -384,7 +458,7 @@ class ConnectionManager {
         break;
 
       case GatewayEvents.PRESENCE_UPDATE:
-        usePresenceStore.getState().updatePresence(data);
+        usePresenceStore.getState().updatePresence(data, conn.serverId);
         break;
 
       case GatewayEvents.VOICE_STATE_UPDATE:
@@ -405,6 +479,12 @@ class ConnectionManager {
         );
         break;
       }
+      case GatewayEvents.POLL_VOTE_ADD:
+      case GatewayEvents.POLL_VOTE_REMOVE:
+        if (data.poll) {
+          usePollStore.getState().upsertPoll(data.poll);
+        }
+        break;
 
       case GatewayEvents.CHANNEL_PINS_UPDATE:
         if (data.channel_id) {
@@ -425,6 +505,22 @@ class ConnectionManager {
       case GatewayEvents.RELATIONSHIP_ADD:
       case GatewayEvents.RELATIONSHIP_REMOVE:
         void useRelationshipStore.getState().fetchRelationships();
+        break;
+
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_CREATE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_UPDATE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_DELETE:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_USER_ADD:
+      case GatewayEvents.GUILD_SCHEDULED_EVENT_USER_REMOVE:
+        window.dispatchEvent(new CustomEvent('paracord:scheduled-events-changed', {
+          detail: { guild_id: data.guild_id },
+        }));
+        break;
+
+      case GatewayEvents.GUILD_EMOJIS_UPDATE:
+        window.dispatchEvent(new CustomEvent('paracord:emojis-changed', {
+          detail: { guild_id: data.guild_id },
+        }));
         break;
 
       case GatewayEvents.SERVER_RESTART:

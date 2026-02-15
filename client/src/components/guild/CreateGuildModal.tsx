@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Upload } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
@@ -7,12 +7,14 @@ import { useChannelStore } from '../../stores/channelStore';
 import { inviteApi } from '../../api/invites';
 import { useNavigate } from 'react-router-dom';
 import { isAllowedImageMimeType } from '../../lib/security';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 interface CreateGuildModalProps {
   onClose: () => void;
 }
 
 export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
   const user = useAuthStore(s => s.user);
   const navigate = useNavigate();
   const [tab, setTab] = useState<'create' | 'join'>('create');
@@ -30,6 +32,8 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
       }
     };
   }, [iconPreview]);
+
+  useFocusTrap(dialogRef, true, onClose);
 
   const handleIconChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -114,15 +118,20 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
       style={{ position: 'fixed', inset: 0, width: '100vw', height: '100dvh' }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-guild-modal-title"
+        tabIndex={-1}
         className="glass-modal modal-content max-h-[min(86dvh,42rem)] w-[min(92vw,32rem)] overflow-auto rounded-2xl border"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="relative px-8 pb-5 pt-8 text-center sm:px-8 sm:pb-5 sm:pt-8">
-          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5">
+          <button onClick={onClose} className="icon-btn absolute right-3 top-3 sm:right-5 sm:top-5" aria-label="Close">
             <X size={20} />
           </button>
-          <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
+          <h2 id="create-guild-modal-title" className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>
             {tab === 'create' ? 'Create a Server' : 'Join a Server'}
           </h2>
           <p className="mt-1 text-sm" style={{ color: 'var(--text-muted)' }}>

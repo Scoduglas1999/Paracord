@@ -16,6 +16,7 @@ paracord-core = { workspace = true }
 paracord-db = { workspace = true }
 paracord-federation = { workspace = true }
 paracord-models = { workspace = true }
+paracord-util = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -30,11 +31,12 @@ igd-next = { workspace = true }
 crab_nat = { workspace = true }
 reqwest = { workspace = true }
 which = { workspace = true }
+tempfile = { workspace = true }
 rand = { workspace = true }
+chrono = { workspace = true }
 rcgen = { workspace = true }
 axum-server = { workspace = true }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 

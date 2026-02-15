@@ -27,7 +27,7 @@ pub async fn add_reaction(
     sqlx::query(
         "INSERT INTO reactions (message_id, user_id, emoji_name, emoji_id)
          VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (message_id, user_id, emoji_name) DO NOTHING"
+         ON CONFLICT (message_id, user_id, emoji_name) DO NOTHING",
     )
     .bind(message_id)
     .bind(user_id)
@@ -44,14 +44,12 @@ pub async fn remove_reaction(
     user_id: i64,
     emoji_name: &str,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "DELETE FROM reactions WHERE message_id = ?1 AND user_id = ?2 AND emoji_name = ?3"
-    )
-    .bind(message_id)
-    .bind(user_id)
-    .bind(emoji_name)
-    .execute(pool)
-    .await?;
+    sqlx::query("DELETE FROM reactions WHERE message_id = ?1 AND user_id = ?2 AND emoji_name = ?3")
+        .bind(message_id)
+        .bind(user_id)
+        .bind(emoji_name)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -63,7 +61,7 @@ pub async fn get_message_reactions(
         "SELECT emoji_name, emoji_id, COUNT(*) as count
          FROM reactions WHERE message_id = ?1
          GROUP BY emoji_name, emoji_id
-         ORDER BY MIN(created_at)"
+         ORDER BY MIN(created_at)",
     )
     .bind(message_id)
     .fetch_all(pool)
@@ -81,7 +79,7 @@ pub async fn get_reaction_users(
         "SELECT user_id FROM reactions
          WHERE message_id = ?1 AND emoji_name = ?2
          ORDER BY created_at
-         LIMIT ?3"
+         LIMIT ?3",
     )
     .bind(message_id)
     .bind(emoji_name)

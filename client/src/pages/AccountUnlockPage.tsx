@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAccountStore } from '../stores/accountStore';
 import { useServerListStore } from '../stores/serverListStore';
+import { useAuthStore } from '../stores/authStore';
 import { hasAccount } from '../lib/account';
 import { getStoredServerUrl, getCurrentOriginServerUrl, setStoredServerUrl } from '../lib/apiBaseUrl';
 import { connectionManager } from '../lib/connectionManager';
@@ -10,10 +11,13 @@ export function AccountUnlockPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
   const navigate = useNavigate();
   const unlock = useAccountStore((s) => s.unlock);
   const publicKey = useAccountStore((s) => s.publicKey);
   const username = useAccountStore((s) => s.username);
+  const token = useAuthStore((s) => s.token);
 
   useEffect(() => {
     if (!hasAccount()) {
@@ -24,16 +28,24 @@ export function AccountUnlockPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const now = Date.now();
+    if (now < cooldownUntil) {
+      const waitSeconds = Math.ceil((cooldownUntil - now) / 1000);
+      setError(`Too many attempts. Try again in ${waitSeconds}s.`);
+      return;
+    }
     setLoading(true);
     try {
       await unlock(password);
+      setFailedAttempts(0);
+      setCooldownUntil(0);
 
       const serverUrl = getStoredServerUrl() || getCurrentOriginServerUrl();
       if (serverUrl) {
         setStoredServerUrl(serverUrl);
         const serverStore = useServerListStore.getState();
         const existingServer = serverStore.getServerByUrl(serverUrl);
-        const token = localStorage.getItem('token') || undefined;
+        const tokenForServer = token || undefined;
 
         let serverName = serverUrl;
         try {
@@ -44,7 +56,7 @@ export function AccountUnlockPage() {
 
         const serverId = existingServer
           ? existingServer.id
-          : serverStore.addServer(serverUrl, serverName, token);
+          : serverStore.addServer(serverUrl, serverName, tokenForServer);
 
         const server = useServerListStore.getState().getServer(serverId);
         if (!server?.token) {
@@ -58,7 +70,13 @@ export function AccountUnlockPage() {
 
       navigate('/app');
     } catch {
-      setError('Incorrect password. Please try again.');
+      const nextFailures = failedAttempts + 1;
+      setFailedAttempts(nextFailures);
+      if (nextFailures >= 3) {
+        const backoffSeconds = Math.min(30, 2 ** Math.min(5, nextFailures - 3));
+        setCooldownUntil(Date.now() + backoffSeconds * 1000);
+      }
+      setError('Unlock failed. Check your password and try again.');
     } finally {
       setLoading(false);
     }
@@ -109,7 +127,11 @@ export function AccountUnlockPage() {
           />
         </label>
 
-        <button type="submit" disabled={loading} className="btn-primary w-full">
+        <button
+          type="submit"
+          disabled={loading || Date.now() < cooldownUntil}
+          className="btn-primary w-full"
+        >
           {loading ? 'Unlocking...' : 'Unlock'}
         </button>
 

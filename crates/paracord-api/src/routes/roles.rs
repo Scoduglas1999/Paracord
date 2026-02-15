@@ -11,6 +11,27 @@ use crate::error::ApiError;
 use crate::middleware::AuthUser;
 use crate::routes::audit;
 
+fn validate_role_permission_assignment(
+    guild_owner_id: i64,
+    actor_user_id: i64,
+    actor_perms: paracord_models::permissions::Permissions,
+    requested_bits: i64,
+) -> Result<(), ApiError> {
+    let requested = paracord_models::permissions::Permissions::from_bits(requested_bits)
+        .ok_or(ApiError::BadRequest("Invalid permissions bitset".into()))?;
+
+    if actor_user_id != guild_owner_id {
+        if requested.contains(paracord_models::permissions::Permissions::ADMINISTRATOR) {
+            return Err(ApiError::Forbidden);
+        }
+        let disallowed = requested.bits() & !actor_perms.bits();
+        if disallowed != 0 {
+            return Err(ApiError::Forbidden);
+        }
+    }
+    Ok(())
+}
+
 fn role_to_json(r: &paracord_db::roles::RoleRow) -> Value {
     json!({
         "id": r.id.to_string(),
@@ -76,17 +97,12 @@ pub async fn create_role(
     if !paracord_core::permissions::is_server_admin(perms) {
         return Err(ApiError::Forbidden);
     }
+    validate_role_permission_assignment(guild.owner_id, auth.user_id, perms, body.permissions)?;
 
     let role_id = paracord_util::snowflake::generate(1);
-    paracord_db::roles::create_role(
-        &state.db,
-        role_id,
-        guild_id,
-        &body.name,
-        body.permissions,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    paracord_db::roles::create_role(&state.db, role_id, guild_id, &body.name, body.permissions)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
     let role = paracord_db::roles::update_role(
         &state.db,
         role_id,
@@ -151,6 +167,14 @@ pub async fn update_role(
     if !paracord_core::permissions::is_server_admin(perms) {
         return Err(ApiError::Forbidden);
     }
+    if let Some(requested_permissions) = body.permissions {
+        validate_role_permission_assignment(
+            guild.owner_id,
+            auth.user_id,
+            perms,
+            requested_permissions,
+        )?;
+    }
 
     let target_role = paracord_db::roles::get_role(&state.db, role_id)
         .await
@@ -177,6 +201,9 @@ pub async fn update_role(
     )
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    // Invalidate permission cache when role permissions change
+    paracord_core::permissions::invalidate_all(&state.permission_cache).await;
 
     let role_json = role_to_json(&updated);
 
@@ -247,6 +274,9 @@ pub async fn delete_role(
     paracord_db::roles::delete_role(&state.db, role_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    // Invalidate permission cache when a role is deleted
+    paracord_core::permissions::invalidate_all(&state.permission_cache).await;
 
     state.event_bus.dispatch(
         "GUILD_ROLE_DELETE",

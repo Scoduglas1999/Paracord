@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-paracord-core = { workspace = true }
 paracord-db = { workspace = true }
 paracord-models = { workspace = true }
 tokio = { workspace = true }
@@ -16,3 +15,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 sqlx = { workspace = true }
 ed25519-dalek = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }

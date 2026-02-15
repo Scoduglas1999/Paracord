@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  paracord:
+    build: .
+    container_name: paracord
+    ports:
+      - "8090:8090"
+    volumes:
+      - paracord-data:/data
+      - paracord-config:/data/config
+    environment:
+      # Server
+      - PARACORD_BIND_ADDRESS=0.0.0.0:8090
+      - PARACORD_SERVER_NAME=localhost
+      # - PARACORD_PUBLIC_URL=https://chat.example.com
+
+      # Database
+      - PARACORD_DATABASE_URL=sqlite:///data/paracord.db?mode=rwc
+      - PARACORD_DATABASE_MAX_CONNECTIONS=20
+
+      # Auth — set a strong random secret in production
+      # - PARACORD_JWT_SECRET=your-64-char-random-secret-here
+      - PARACORD_REGISTRATION_ENABLED=true
+
+      # Storage
+      - PARACORD_STORAGE_PATH=/data/uploads
+      - PARACORD_MEDIA_STORAGE_PATH=/data/files
+
+      # Backup
+      - PARACORD_BACKUP_DIR=/data/backups
+
+      # LiveKit — set if using the optional LiveKit service below
+      - PARACORD_LIVEKIT_URL=ws://livekit:7880
+      - PARACORD_LIVEKIT_HTTP_URL=http://livekit:7880
+      # - PARACORD_LIVEKIT_PUBLIC_URL=wss://chat.example.com/livekit
+      # - PARACORD_LIVEKIT_API_KEY=your-livekit-api-key
+      # - PARACORD_LIVEKIT_API_SECRET=your-livekit-api-secret
+
+      # TLS — disable inside Docker if terminating TLS at a reverse proxy
+      # - PARACORD_TLS_ENABLED=false
+
+      # UPnP — typically disabled inside Docker
+      # - PARACORD_UPNP=false
+    restart: unless-stopped
+    depends_on:
+      - livekit
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: paracord-livekit
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      - LIVEKIT_KEYS=devkey: devsecret
+    command: --dev --bind 0.0.0.0
+    restart: unless-stopped
+
+volumes:
+  paracord-data:
+  paracord-config:

@@ -146,9 +146,38 @@ pub async fn list_all_spaces(pool: &DbPool) -> Result<Vec<SpaceRow>, DbError> {
     Ok(rows)
 }
 
-pub async fn get_user_guilds(pool: &DbPool, _user_id: i64) -> Result<Vec<SpaceRow>, DbError> {
-    // In the spaces model, all server members see all public spaces
-    list_all_spaces(pool).await
+pub async fn get_user_guilds(pool: &DbPool, user_id: i64) -> Result<Vec<SpaceRow>, DbError> {
+    let rows = sqlx::query_as::<_, SpaceRow>(
+        "SELECT s.id, s.name, s.description, s.icon_hash, s.banner_hash, s.owner_id, s.features,
+                s.system_channel_id, s.vanity_url_code, s.visibility, s.allowed_roles, s.created_at
+         FROM spaces s
+         INNER JOIN members m ON m.guild_id = s.id
+         WHERE m.user_id = ?1
+           AND (
+                s.visibility != 'roles'
+                OR json_array_length(COALESCE(s.allowed_roles, '[]')) = 0
+                OR EXISTS (
+                    SELECT 1
+                    FROM member_roles mr
+                    INNER JOIN roles r ON r.id = mr.role_id
+                    WHERE mr.user_id = ?1
+                      AND r.space_id = s.id
+                      AND mr.role_id IN (
+                          SELECT CAST(value AS INTEGER)
+                          FROM json_each(COALESCE(s.allowed_roles, '[]'))
+                      )
+                )
+            )
+         ORDER BY s.created_at ASC",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub fn parse_allowed_role_ids(raw: &str) -> Vec<i64> {
+    serde_json::from_str::<Vec<i64>>(raw).unwrap_or_default()
 }
 
 pub async fn list_all_guilds(pool: &DbPool) -> Result<Vec<SpaceRow>, DbError> {
@@ -181,4 +210,169 @@ pub async fn transfer_ownership(
     .fetch_one(pool)
     .await?;
     Ok(row)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> DbPool {
+        let pool = crate::create_pool("sqlite::memory:", 1).await.unwrap();
+        crate::run_migrations(&pool).await.unwrap();
+        pool
+    }
+
+    async fn create_test_user(pool: &DbPool, id: i64) {
+        crate::users::create_user(
+            pool,
+            id,
+            &format!("user{}", id),
+            1,
+            &format!("user{}@example.com", id),
+            "hash",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_create_guild_with_valid_data() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        let guild = create_guild(&pool, 100, "Test Guild", 1, None)
+            .await
+            .unwrap();
+        assert_eq!(guild.id, 100);
+        assert_eq!(guild.name, "Test Guild");
+        assert_eq!(guild.owner_id, 1);
+        assert!(guild.icon_hash.is_none());
+        assert!(guild.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_create_guild_with_icon() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        let guild = create_guild(&pool, 101, "Icon Guild", 1, Some("abc123"))
+            .await
+            .unwrap();
+        assert_eq!(guild.icon_hash.as_deref(), Some("abc123"));
+    }
+
+    #[tokio::test]
+    async fn test_get_guild() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 200, "My Guild", 1, None).await.unwrap();
+        let guild = get_guild(&pool, 200).await.unwrap().unwrap();
+        assert_eq!(guild.name, "My Guild");
+    }
+
+    #[tokio::test]
+    async fn test_get_guild_not_found() {
+        let pool = test_pool().await;
+        let guild = get_guild(&pool, 999).await.unwrap();
+        assert!(guild.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_guild() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 300, "Old Name", 1, None).await.unwrap();
+        let updated = update_guild(&pool, 300, Some("New Name"), Some("A description"), None)
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "New Name");
+        assert_eq!(updated.description.as_deref(), Some("A description"));
+    }
+
+    #[tokio::test]
+    async fn test_update_guild_partial() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 301, "Original", 1, None).await.unwrap();
+        let updated = update_guild(&pool, 301, None, Some("desc only"), None)
+            .await
+            .unwrap();
+        assert_eq!(updated.name, "Original");
+        assert_eq!(updated.description.as_deref(), Some("desc only"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_guild() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 400, "To Delete", 1, None)
+            .await
+            .unwrap();
+        delete_guild(&pool, 400).await.unwrap();
+        let guild = get_guild(&pool, 400).await.unwrap();
+        assert!(guild.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_user_guilds() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 500, "Guild A", 1, None).await.unwrap();
+        create_guild(&pool, 501, "Guild B", 1, None).await.unwrap();
+        crate::members::add_member(&pool, 1, 500).await.unwrap();
+        crate::members::add_member(&pool, 1, 501).await.unwrap();
+        let guilds = get_user_guilds(&pool, 1).await.unwrap();
+        assert_eq!(guilds.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_count_guilds() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        assert_eq!(count_guilds(&pool).await.unwrap(), 0);
+        create_guild(&pool, 600, "G1", 1, None).await.unwrap();
+        create_guild(&pool, 601, "G2", 1, None).await.unwrap();
+        assert_eq!(count_guilds(&pool).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_all_guilds() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 700, "First", 1, None).await.unwrap();
+        create_guild(&pool, 701, "Second", 1, None).await.unwrap();
+        let all = list_all_guilds(&pool).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_test_user(&pool, 2).await;
+        create_guild(&pool, 800, "Owned Guild", 1, None)
+            .await
+            .unwrap();
+        let transferred = transfer_ownership(&pool, 800, 2).await.unwrap();
+        assert_eq!(transferred.owner_id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_update_space_visibility() {
+        let pool = test_pool().await;
+        create_test_user(&pool, 1).await;
+        create_guild(&pool, 900, "Vis Guild", 1, None)
+            .await
+            .unwrap();
+        let updated = update_space_visibility(&pool, 900, "roles", "[10,20]")
+            .await
+            .unwrap();
+        assert_eq!(updated.visibility, "roles");
+        assert_eq!(updated.allowed_roles, "[10,20]");
+    }
+
+    #[tokio::test]
+    async fn test_parse_allowed_role_ids() {
+        assert_eq!(parse_allowed_role_ids("[1,2,3]"), vec![1, 2, 3]);
+        assert_eq!(parse_allowed_role_ids("[]"), Vec::<i64>::new());
+        assert_eq!(parse_allowed_role_ids("invalid"), Vec::<i64>::new());
+    }
 }

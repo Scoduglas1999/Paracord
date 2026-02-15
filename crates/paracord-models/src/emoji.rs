@@ -7,4 +7,6 @@ pub struct Emoji {
     pub name: String,
     pub animated: bool,
     pub available: bool,
+    pub creator_id: Option<i64>,
+    pub created_at: Option<String>,
 }

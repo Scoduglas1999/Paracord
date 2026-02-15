@@ -13,6 +13,7 @@ interface SplitPaneProps {
   participantNames: Map<string, string>;
   currentUserId: string | null;
   selfStream: boolean;
+  streamIssueMessage: string | null;
   activeStreamerSet: Set<string>;
   onStopStream?: () => void;
 }
@@ -26,6 +27,7 @@ export function SplitPane({
   participantNames,
   currentUserId,
   selfStream,
+  streamIssueMessage,
   activeStreamerSet,
   onStopStream,
 }: SplitPaneProps) {
@@ -54,6 +56,11 @@ export function SplitPane({
         <StreamViewer
           streamerId={source.userId}
           streamerName={resolveStreamerName(source.userId)}
+          issueMessage={
+            currentUserId != null && source.userId === currentUserId
+              ? streamIssueMessage
+              : null
+          }
           expectingStream={Boolean(
             currentUserId != null &&
             source.userId === currentUserId &&

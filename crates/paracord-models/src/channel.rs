@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[repr(i16)]
@@ -10,6 +10,19 @@ pub enum ChannelType {
     GroupDM = 3,
     Category = 4,
     Announcement = 5,
+    Thread = 6,
+    Forum = 7,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMetadata {
+    pub archived: bool,
+    pub auto_archive_duration: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_timestamp: Option<DateTime<Utc>>,
+    pub locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starter_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,5 +41,11 @@ pub struct Channel {
     pub last_message_id: Option<i64>,
     #[serde(default)]
     pub required_role_ids: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_metadata: Option<ThreadMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<i32>,
     pub created_at: DateTime<Utc>,
 }

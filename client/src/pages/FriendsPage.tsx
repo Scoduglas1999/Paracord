@@ -3,6 +3,7 @@ import { Users, MessageSquare, X, Search, Check, UserPlus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useRelationshipStore } from '../stores/relationshipStore';
 import { usePresenceStore } from '../stores/presenceStore';
+import { useServerListStore } from '../stores/serverListStore';
 import { dmApi } from '../api/dms';
 import { useChannelStore } from '../stores/channelStore';
 import { cn } from '../lib/utils';
@@ -19,6 +20,8 @@ export function FriendsPage() {
   const relationships = useRelationshipStore((s) => s.relationships);
   const fetchRelationships = useRelationshipStore((s) => s.fetchRelationships);
   const presences = usePresenceStore((s) => s.presences);
+  const getPresence = usePresenceStore((s) => s.getPresence);
+  const activeServerId = useServerListStore((s) => s.activeServerId);
 
   useEffect(() => {
     void fetchRelationships();
@@ -30,8 +33,12 @@ export function FriendsPage() {
   const pendingOutgoing = useMemo(() => relationships.filter((r) => r.type === 4), [relationships]);
   const pending = useMemo(() => [...pendingIncoming, ...pendingOutgoing], [pendingIncoming, pendingOutgoing]);
   const onlineCount = useMemo(
-    () => friends.filter((r) => (presences.get(r.user.id)?.status || 'offline') !== 'offline').length,
-    [friends, presences]
+    () =>
+      friends.filter(
+        (r) =>
+          (getPresence(r.user.id, activeServerId ?? undefined)?.status || 'offline') !== 'offline'
+      ).length,
+    [friends, presences, getPresence, activeServerId]
   );
 
   const handleAddFriend = async () => {
@@ -101,14 +108,17 @@ export function FriendsPage() {
           ? pending
           : activeTab === 'blocked'
             ? blocked
-            : friends.filter((r) => (presences.get(r.user.id)?.status || 'offline') !== 'offline');
+            : friends.filter(
+                (r) =>
+                  (getPresence(r.user.id, activeServerId ?? undefined)?.status || 'offline') !== 'offline'
+              );
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       base = base.filter((r) => r.user.username.toLowerCase().includes(q));
     }
     return base;
-  }, [activeTab, blocked, friends, pending, presences, searchQuery]);
+  }, [activeTab, blocked, friends, pending, presences, getPresence, searchQuery, activeServerId]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

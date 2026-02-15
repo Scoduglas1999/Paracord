@@ -1,77 +1,54 @@
 mod audio_capture;
-#[cfg(windows)]
-use windows_core::Interface;
 mod commands;
+
+use tauri::Manager;
+
+#[cfg(windows)]
+fn enable_windows_self_signed_https_support(app: &tauri::App) {
+    use webview2_com::ServerCertificateErrorDetectedEventHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_14, COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
+    };
+    use windows_core::Interface;
+
+    let Some(main_webview) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if let Err(err) = main_webview.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(core14) = core.cast::<ICoreWebView2_14>() else {
+            return;
+        };
+
+        let handler = ServerCertificateErrorDetectedEventHandler::create(Box::new(|_, args| {
+            if let Some(args) = args {
+                let _ = args.SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);
+            }
+            Ok(())
+        }));
+
+        let mut token = 0_i64;
+        if let Err(reg_err) = core14.add_ServerCertificateErrorDetected(&handler, &mut token) {
+            eprintln!(
+                "failed to register WebView2 certificate override handler: {reg_err}"
+            );
+        }
+    }) {
+        eprintln!("failed to configure WebView2 certificate override: {err}");
+    }
+}
 
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            // Accept self-signed TLS certificates so the desktop app can
-            // connect to Paracord servers that use auto-generated certs.
-
             #[cfg(windows)]
-            {
-                use tauri::Manager;
-                let webview = app.get_webview_window("main")
-                    .expect("main window not found");
-                webview.with_webview(|platform_webview| {
-                    use webview2_com::ServerCertificateErrorDetectedEventHandler;
-                    use webview2_com::Microsoft::Web::WebView2::Win32::*;
-
-                    unsafe {
-                        let core: ICoreWebView2 = platform_webview
-                            .controller()
-                            .CoreWebView2()
-                            .expect("failed to get CoreWebView2");
-                        let core14: ICoreWebView2_14 = core
-                            .cast()
-                            .expect("WebView2 runtime too old for certificate handling");
-
-                        let mut token: i64 = 0;
-                        core14.add_ServerCertificateErrorDetected(
-                            &ServerCertificateErrorDetectedEventHandler::create(Box::new(
-                                |_, args| {
-                                    if let Some(args) = args {
-                                        args.SetAction(
-                                            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
-                                        )?;
-                                    }
-                                    Ok(())
-                                },
-                            )),
-                            &mut token,
-                        ).expect("failed to register certificate handler");
-                    }
-                }).expect("with_webview failed");
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                use tauri::Manager;
-                let webview = app.get_webview_window("main")
-                    .expect("main window not found");
-                webview.with_webview(|platform_webview| {
-                    use webkit2gtk::{WebViewExt, WebContextExt, TLSErrorsPolicy};
-                    let wk_webview = platform_webview.inner().clone();
-                    if let Some(context) = wk_webview.web_context() {
-                        context.set_tls_errors_policy(TLSErrorsPolicy::Ignore);
-                    }
-                }).expect("with_webview failed");
-            }
-
-            // macOS (WKWebView) does not expose a simple API to ignore TLS
-            // certificate errors. WKWebView requires implementing a custom
-            // WKNavigationDelegate with
-            // `webView:didReceiveAuthenticationChallenge:completionHandler:`
-            // which would need objc runtime calls to swizzle Tauri's existing
-            // delegate. For now, macOS users must install self-signed CA certs
-            // into the system Keychain and mark them as trusted, or use a
-            // properly signed certificate.
-
+            enable_windows_self_signed_https_support(app);
             Ok(())
         });
 
@@ -79,7 +56,14 @@ pub fn run() {
         commands::greet,
         commands::get_app_version,
         commands::get_update_target,
+        commands::secure_store_set,
+        commands::secure_store_get,
+        commands::secure_store_delete,
+        commands::secure_store_fallback_encrypt,
+        commands::secure_store_fallback_decrypt,
+        commands::set_activity_sharing_enabled,
         commands::get_foreground_application,
+        audio_capture::set_system_audio_capture_enabled,
         audio_capture::start_system_audio_capture,
         audio_capture::stop_system_audio_capture,
     ]);

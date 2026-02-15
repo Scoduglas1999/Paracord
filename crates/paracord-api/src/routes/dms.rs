@@ -1,8 +1,4 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, Json};
 use paracord_core::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -38,6 +34,7 @@ pub async fn list_dms(
                     "username": c.recipient_username,
                     "discriminator": c.recipient_discriminator,
                     "avatar_hash": c.recipient_avatar_hash,
+                    "public_key": c.recipient_public_key,
                 }
             })
         })
@@ -60,6 +57,28 @@ pub async fn create_dm(
         return Err(ApiError::BadRequest(
             "Cannot create a DM channel with yourself".into(),
         ));
+    }
+
+    let blocked = paracord_db::relationships::is_blocked_either_direction(
+        &state.db,
+        auth.user_id,
+        recipient_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    if blocked {
+        return Err(ApiError::Forbidden);
+    }
+
+    let are_friends =
+        paracord_db::relationships::are_friends(&state.db, auth.user_id, recipient_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let share_guild = paracord_db::members::share_any_guild(&state.db, auth.user_id, recipient_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    if !are_friends && !share_guild {
+        return Err(ApiError::Forbidden);
     }
 
     let recipient = paracord_db::users::get_user_by_id(&state.db, recipient_id)
@@ -94,6 +113,7 @@ pub async fn create_dm(
                 "username": recipient.username,
                 "discriminator": recipient.discriminator,
                 "avatar_hash": recipient.avatar_hash,
+                "public_key": recipient.public_key,
             }
         })),
     ))

@@ -25,6 +25,7 @@ import { playVoiceJoinSound, playVoiceLeaveSound } from '../lib/voiceSounds';
 import { startNativeSystemAudio, stopNativeSystemAudio } from '../lib/systemAudioCapture';
 import { isTauri } from '../lib/tauriEnv';
 import { getStoredServerUrl } from '../lib/apiBaseUrl';
+import { NoiseGateProcessor } from '../lib/noiseGate';
 
 const INTERNAL_LIVEKIT_HOSTS = new Set([
   'host.docker.internal',
@@ -33,6 +34,17 @@ const INTERNAL_LIVEKIT_HOSTS = new Set([
   '0.0.0.0',
   '::',
 ]);
+const SYSTEM_AUDIO_PRIVACY_ACK_KEY = 'paracord:system-audio-privacy-ack';
+
+function hasAcknowledgedSystemAudioPrivacyWarning(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(SYSTEM_AUDIO_PRIVACY_ACK_KEY) === '1';
+}
+
+function persistSystemAudioPrivacyWarningAcknowledgement(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(SYSTEM_AUDIO_PRIVACY_ACK_KEY, '1');
+}
 
 function resolveClientRtcHostname(): string {
   if (typeof window === 'undefined') {
@@ -61,7 +73,7 @@ function resolveClientRtcHostname(): string {
  * Instead of relying on the server-returned URL (which may have the wrong
  * ws/wss protocol or hostname), we derive the WebSocket URL from the stored
  * server URL that the client already uses for API calls. This guarantees:
- *   - Correct protocol: https → wss, http → ws
+ *   - Correct protocol: https â†’ wss, http â†’ ws
  *   - Correct host:port (same as what the client is connected to)
  *   - The /livekit proxy path
  */
@@ -116,6 +128,7 @@ let localAudioRecoveryInFlight = false;
 let localSilenceRecoveryCooldownUntil = 0;
 let remoteAudioReconcileInterval: ReturnType<typeof setInterval> | null = null;
 let remoteAudioReconcileRoom: Room | null = null;
+const invalidAudioInputDeviceIds = new Set<string>();
 let forceRedForCompatibility = false;
 let audioCodecSwitchCooldownUntil = 0;
 let activeRoomListenerCleanup: (() => void) | null = null;
@@ -130,9 +143,9 @@ const DISCONNECT_WAIT_ON_JOIN_MS = 5_000;
 const DISCONNECT_WAIT_ON_LEAVE_MS = 600;
 const MIN_DISCONNECT_QUIET_PERIOD_MS = 1_200;
 const LIVEKIT_CONNECT_OPTIONS = {
-  maxRetries: 3,
-  websocketTimeout: 30_000,
-  peerConnectionTimeout: 35_000,
+  maxRetries: 4,
+  websocketTimeout: 45_000,
+  peerConnectionTimeout: 50_000,
 } as const;
 type MicUplinkState = 'idle' | 'sending' | 'stalled' | 'recovering' | 'muted' | 'no_track';
 
@@ -175,6 +188,15 @@ async function waitForPendingDisconnect(maxWaitMs: number): Promise<{ timedOut: 
     timedOut,
     ageMs: Date.now() - startedAt,
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** True only when the room's signaling transport is fully connected. */
+function isRoomConnected(room: Room | null): boolean {
+  return room != null && room.state === ConnectionState.Connected;
 }
 
 function clearActiveRoomListeners(): void {
@@ -407,12 +429,12 @@ function startLocalAudioUplinkMonitor(room: Room): void {
 
       // If we detect local speech but sender bytes are flat for ~8s,
       // recover by republishing the microphone track.
-      // If speaking detection is unavailable/misses, still force recovery
-      // after a longer stall to avoid persistent one-way audio.
+      // Skip recovery when room is not fully connected to avoid cascading errors.
       if (
         localAudioStalledIntervals >= 4 &&
-        (localMicSpeakingFallback || localAudioStalledIntervals >= 6) &&
-        !localAudioRecoveryInFlight
+        localMicSpeakingFallback &&
+        !localAudioRecoveryInFlight &&
+        isRoomConnected(room)
       ) {
         localAudioRecoveryInFlight = true;
         useVoiceStore.setState({
@@ -636,6 +658,79 @@ function getSavedInputDeviceId(): string | undefined {
   return deviceId.length > 0 ? deviceId : undefined;
 }
 
+type MicCaptureProfile = 'default' | 'pro_interface';
+
+const PRO_AUDIO_INPUT_LABEL_PATTERNS = [
+  /focusrite/,
+  /scarlett/,
+  /steinberg/,
+  /pre\s?sonus|presonus/,
+  /audient/,
+  /behringer/,
+  /motu/,
+  /apollo/,
+  /universal audio/,
+  /ssl\s?[0-9]/,
+  /rode\s?caster|rodecaster/,
+  /usb audio codec/,
+  /\baudio interface\b/,
+];
+
+let micCaptureProfileCache:
+  | { key: string; profile: MicCaptureProfile; resolvedAt: number }
+  | null = null;
+const MIC_CAPTURE_PROFILE_CACHE_MS = 30_000;
+
+async function resolveMicCaptureProfile(deviceId?: string): Promise<MicCaptureProfile> {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.mediaDevices ||
+    typeof navigator.mediaDevices.enumerateDevices !== 'function'
+  ) {
+    return 'default';
+  }
+
+  const normalizedDeviceId = deviceId?.trim() || '';
+  const cacheKey = normalizedDeviceId || '__default__';
+  const now = Date.now();
+  if (
+    micCaptureProfileCache &&
+    micCaptureProfileCache.key === cacheKey &&
+    now - micCaptureProfileCache.resolvedAt < MIC_CAPTURE_PROFILE_CACHE_MS
+  ) {
+    return micCaptureProfileCache.profile;
+  }
+
+  let profile: MicCaptureProfile = 'default';
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((d) => d.kind === 'audioinput');
+    let target: MediaDeviceInfo | undefined;
+
+    if (normalizedDeviceId) {
+      target = inputs.find((d) => d.deviceId === normalizedDeviceId);
+    }
+
+    if (!target) {
+      target = inputs.find((d) => d.deviceId === 'default') ?? inputs[0];
+    }
+
+    const label = (target?.label || '').toLowerCase();
+    if (label && PRO_AUDIO_INPUT_LABEL_PATTERNS.some((pattern) => pattern.test(label))) {
+      profile = 'pro_interface';
+    }
+  } catch {
+    profile = 'default';
+  }
+
+  micCaptureProfileCache = {
+    key: cacheKey,
+    profile,
+    resolvedAt: now,
+  };
+  return profile;
+}
+
 function getSavedOutputDeviceId(): string | undefined {
   const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
   const deviceId =
@@ -645,22 +740,60 @@ function getSavedOutputDeviceId(): string | undefined {
   return deviceId.length > 0 ? deviceId : undefined;
 }
 
+function getBooleanSetting(
+  value: unknown,
+  defaultValue: boolean
+): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+      return false;
+    }
+  }
+  return defaultValue;
+}
+
+function getNotificationSettings(): Record<string, unknown> {
+  return (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
+}
+
+function hasSavedVoiceSetting(key: string): boolean {
+  const notif = getNotificationSettings();
+  return Object.prototype.hasOwnProperty.call(notif, key);
+}
+
 /** Whether the user has noise suppression enabled (defaults to true). */
 function getSavedNoiseSuppression(): boolean {
-  const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
-  return Boolean(notif['noiseSuppression'] ?? true);
+  const notif = getNotificationSettings();
+  return getBooleanSetting(notif['noiseSuppression'], true);
 }
 
 /** Whether the user has echo cancellation enabled (defaults to true). */
 function getSavedEchoCancellation(): boolean {
-  const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
-  return Boolean(notif['echoCancellation'] ?? true);
+  const notif = getNotificationSettings();
+  return getBooleanSetting(notif['echoCancellation'], true);
 }
 
 /** Whether automatic gain control is enabled (defaults to false). */
 function getSavedAutoGainControl(): boolean {
-  const notif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
-  return Boolean(notif['autoGainControl'] ?? false);
+  const notif = getNotificationSettings();
+  return getBooleanSetting(notif['autoGainControl'], false);
+}
+
+/**
+ * Optional stronger ML voice isolation mode.
+ *
+ * Disabled by default because some combinations of devices/drivers apply
+ * overly aggressive gating that can clip word beginnings/endings.
+ */
+function getSavedVoiceIsolation(): boolean {
+  const notif = getNotificationSettings();
+  return getBooleanSetting(notif['voiceIsolation'], false);
 }
 
 /**
@@ -670,10 +803,28 @@ function getSavedAutoGainControl(): boolean {
  * Edge.  It suppresses keyboards, breathing, tapping, and other background
  * noise far more effectively than the basic `noiseSuppression` constraint.
  */
-function buildAudioCaptureOptions(deviceId?: string): Record<string, unknown> {
-  const ns = getSavedNoiseSuppression();
-  const ec = getSavedEchoCancellation();
-  const agc = getSavedAutoGainControl();
+function buildAudioCaptureOptions(
+  deviceId?: string,
+  profile: MicCaptureProfile = 'default'
+): Record<string, unknown> {
+  let ns = getSavedNoiseSuppression();
+  let ec = getSavedEchoCancellation();
+  let agc = getSavedAutoGainControl();
+  let voiceIsolation = getSavedVoiceIsolation();
+
+  // Auto-profile for XLR/interface microphones (SM7B + Scarlett class):
+  // - keep AGC off (prevents pumping/hiss)
+  // - disable EC by default (avoids over-processing if user uses headphones)
+  // - keep voiceIsolation off by default to avoid aggressive clipping
+  //   (we apply a conservative denoiser processor below instead)
+  // User-saved settings always take precedence if explicitly set.
+  if (profile === 'pro_interface') {
+    if (!hasSavedVoiceSetting('noiseSuppression')) ns = true;
+    if (!hasSavedVoiceSetting('echoCancellation')) ec = false;
+    if (!hasSavedVoiceSetting('autoGainControl')) agc = false;
+    if (!hasSavedVoiceSetting('voiceIsolation')) voiceIsolation = false;
+  }
+
   const opts: Record<string, unknown> = {
     autoGainControl: agc,
     echoCancellation: ec,
@@ -682,8 +833,18 @@ function buildAudioCaptureOptions(deviceId?: string): Record<string, unknown> {
     // alternative to basic noiseSuppression.  When enabled the browser will
     // isolate the user's voice and suppress environmental noise (keyboards,
     // fans, breathing, etc).  Unsupported browsers silently ignore this.
-    voiceIsolation: ns,
+    voiceIsolation: ns && voiceIsolation,
+    // Keep capture in canonical voice-chat format where possible.
+    sampleRate: 48_000,
+    sampleSize: 16,
     channelCount: 1,
+    // Browser-specific fallbacks (ignored where unsupported).
+    advanced: [{
+      googEchoCancellation: ec,
+      googAutoGainControl: agc,
+      googNoiseSuppression: ns,
+      googHighpassFilter: true,
+    }],
   };
   if (deviceId) {
     opts.deviceId = deviceId;
@@ -691,14 +852,28 @@ function buildAudioCaptureOptions(deviceId?: string): Record<string, unknown> {
   return opts;
 }
 
+const PRO_INTERFACE_DENOISER_CONFIG = {
+  // Conservative gate tuned to reduce idle interface hiss while preserving
+  // natural speech onset/offset.
+  openThreshold: -58,
+  closeThreshold: -64,
+  attackMs: 4,
+  releaseMs: 280,
+  holdMs: 520,
+  // Do not fully mute when closed; only attenuate to avoid hard chattering.
+  floorGain: 0.18,
+} as const;
+
 /**
- * Remove legacy noise-gate processors from existing tracks.
+ * Apply/remove mic processor based on capture profile.
  *
- * The custom WebAudio noise gate caused channel-balance drift and crackle on
- * some systems during high CPU load. We now rely on browser-native capture
- * constraints (`noiseSuppression`, `echoCancellation`, optional AGC) instead.
+ * For pro audio interfaces, attach a conservative denoiser gate to suppress
+ * steady preamp/interface hiss with minimal voice coloration.
  */
-async function applyNoiseGateIfNeeded(room: Room): Promise<void> {
+async function applyMicrophoneProcessor(
+  room: Room,
+  profile: MicCaptureProfile
+): Promise<void> {
   const publication = room.localParticipant.getTrackPublication(Track.Source.Microphone);
   const localTrack = publication?.track;
   if (!localTrack) return;
@@ -709,16 +884,28 @@ async function applyNoiseGateIfNeeded(room: Room): Promise<void> {
     getProcessor?: () => { name?: string } | undefined;
   };
 
+  if (typeof audioTrack.setProcessor !== 'function') return;
   const processor =
     typeof audioTrack.getProcessor === 'function' ? audioTrack.getProcessor() : undefined;
-  if (processor?.name !== 'noise-gate') return;
-  if (typeof audioTrack.setProcessor !== 'function') return;
+
+  if (profile !== 'pro_interface') {
+    if (!processor) return;
+    try {
+      await audioTrack.setProcessor(undefined);
+      console.info('[voice] Removed microphone processor for default profile');
+    } catch (err) {
+      console.warn('[voice] Failed to remove microphone processor:', err);
+    }
+    return;
+  }
+
+  if (processor?.name === 'noise-gate') return;
 
   try {
-    await audioTrack.setProcessor(undefined);
-    console.info('[voice] Removed legacy noise gate processor');
+    await audioTrack.setProcessor(new NoiseGateProcessor(PRO_INTERFACE_DENOISER_CONFIG));
+    console.info('[voice] Applied pro-interface microphone denoiser');
   } catch (err) {
-    console.warn('[voice] Failed to remove legacy noise gate processor:', err);
+    console.warn('[voice] Failed to apply pro-interface microphone denoiser:', err);
   }
 }
 
@@ -726,6 +913,23 @@ function normalizeDeviceId(deviceId?: string | null): string | undefined {
   if (!deviceId) return undefined;
   const trimmed = deviceId.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isDeviceConstraintError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === 'OverconstrainedError' || err.name === 'NotFoundError';
+  }
+  if (typeof err === 'object' && err !== null) {
+    const maybeName = (err as { name?: unknown }).name;
+    const maybeConstraint = (err as { constraint?: unknown }).constraint;
+    if (maybeName === 'OverconstrainedError' || maybeName === 'NotFoundError') {
+      return true;
+    }
+    if (maybeConstraint === 'deviceId') {
+      return true;
+    }
+  }
+  return false;
 }
 
 type ScreenCapturePreset = {
@@ -778,7 +982,7 @@ function detectBestVideoCodec(): 'av1' | 'vp9' | 'h264' {
       if (mimeSet.has('video/vp9')) return 'vp9';
     }
   } catch {
-    // getCapabilities not supported — fall through
+    // getCapabilities not supported â€” fall through
   }
   return 'h264';
 }
@@ -882,7 +1086,7 @@ function attachRemoteAudioTrack(
     attachedRemoteAudioElements.delete(key);
   }
   const audio = document.createElement('audio');
-  // Do NOT autoplay — we start playback only after setSinkId completes to
+  // Do NOT autoplay â€” we start playback only after setSinkId completes to
   // prevent voice audio from briefly playing on the default device (which
   // WASAPI loopback captures, causing echo in outgoing streams).
   audio.autoplay = false;
@@ -896,7 +1100,7 @@ function attachRemoteAudioTrack(
   }
   const streamingDeviceId = selectedAudioOutputDeviceId;
   const sinkReady = setAudioElementOutputDevice(audio, streamingDeviceId);
-  // Attach FIRST — LiveKit's track.attach() internally resets element.muted
+  // Attach FIRST â€” LiveKit's track.attach() internally resets element.muted
   // to false and may override other properties. We set our deafen overrides
   // AFTER attach so they stick.
   track.attach(audio);
@@ -1001,13 +1205,24 @@ async function setMicrophoneEnabledWithFallback(
   enabled: boolean,
   preferredDeviceId?: string
 ): Promise<boolean> {
+  // Guard: don't try to publish tracks if the room isn't connected.
+  // Publishing in a reconnecting/disconnected state causes cascading
+  // "engine not connected within timeout" errors.
+  if (enabled && !isRoomConnected(room)) {
+    console.warn('[voice] Skipping mic enable — room not connected (state:', room.state, ')');
+    return false;
+  }
+  let preferredInputDeviceId = normalizeDeviceId(preferredDeviceId);
+  if (preferredInputDeviceId && invalidAudioInputDeviceIds.has(preferredInputDeviceId)) {
+    preferredInputDeviceId = undefined;
+  }
   const redPreferred = forceRedForCompatibility || shouldForceRedCompatibility(room);
   forceRedForCompatibility = redPreferred;
   const microphonePublishOptions = {
     audioPreset: AudioPresets.speech,
-    // Mirror peer compatibility mode: RED pairs better with DTX, while Opus-only
-    // mode is more reliable with continuous packets.
-    dtx: redPreferred,
+    // Keep DTX off for speech stability. DTX/VAD can clip word starts/ends
+    // on some microphones and noisy environments.
+    dtx: false,
     // Adapt codec for mixed client versions in the same room.
     red: redPreferred,
     forceStereo: false,
@@ -1020,6 +1235,27 @@ async function setMicrophoneEnabledWithFallback(
       await publication.unmute();
     } catch (err) {
       console.warn('[voice] Failed to unmute published microphone track:', err);
+    }
+  };
+
+  const maybeUpgradeProfileAfterPermission = async (
+    initialProfile: MicCaptureProfile
+  ): Promise<void> => {
+    if (initialProfile !== 'default') return;
+    const upgradedProfile = await resolveMicCaptureProfile(preferredInputDeviceId);
+    if (upgradedProfile !== 'pro_interface') return;
+    try {
+      const upgradedCaptureOptions = buildAudioCaptureOptions(preferredInputDeviceId, upgradedProfile);
+      await room.localParticipant.setMicrophoneEnabled(
+        true,
+        upgradedCaptureOptions,
+        microphonePublishOptions
+      );
+      await ensurePublishedTrackUnmuted();
+      await applyMicrophoneProcessor(room, upgradedProfile);
+      console.info('[voice] Applied pro-interface mic profile after permission grant');
+    } catch (err) {
+      console.warn('[voice] Failed to apply upgraded pro-interface mic profile:', err);
     }
   };
 
@@ -1036,7 +1272,8 @@ async function setMicrophoneEnabledWithFallback(
   // Build capture options that include the user's noise suppression,
   // echo cancellation, and voice isolation preferences so every mic
   // enable/republish path applies them consistently.
-  const captureOptions = buildAudioCaptureOptions(preferredDeviceId);
+  const preferredProfile = await resolveMicCaptureProfile(preferredInputDeviceId);
+  const captureOptions = buildAudioCaptureOptions(preferredInputDeviceId, preferredProfile);
 
   // If a mic track is already published, just unmute it instead of tearing
   // down and re-publishing. This avoids a failure window where the disable
@@ -1046,14 +1283,15 @@ async function setMicrophoneEnabledWithFallback(
     try {
       await ensurePublishedTrackUnmuted();
       await room.localParticipant.setMicrophoneEnabled(true, captureOptions, microphonePublishOptions);
-      await applyNoiseGateIfNeeded(room);
+      await applyMicrophoneProcessor(room, preferredProfile);
+      await maybeUpgradeProfileAfterPermission(preferredProfile);
       return true;
     } catch (err) {
       console.warn('[voice] Failed to unmute existing mic track, will try fresh publish:', err);
     }
   }
 
-  if (preferredDeviceId) {
+  if (preferredInputDeviceId) {
     try {
       await room.localParticipant.setMicrophoneEnabled(
         true,
@@ -1061,18 +1299,24 @@ async function setMicrophoneEnabledWithFallback(
         microphonePublishOptions
       );
       await ensurePublishedTrackUnmuted();
-      await applyNoiseGateIfNeeded(room);
+      await applyMicrophoneProcessor(room, preferredProfile);
+      await maybeUpgradeProfileAfterPermission(preferredProfile);
       return true;
     } catch (err) {
+      if (isDeviceConstraintError(err)) {
+        invalidAudioInputDeviceIds.add(preferredInputDeviceId);
+      }
       console.warn('[voice] Saved input device failed, retrying default input:', err);
     }
   }
 
   try {
-    const defaultCaptureOptions = buildAudioCaptureOptions();
+    const defaultProfile = await resolveMicCaptureProfile();
+    const defaultCaptureOptions = buildAudioCaptureOptions(undefined, defaultProfile);
     await room.localParticipant.setMicrophoneEnabled(true, defaultCaptureOptions, microphonePublishOptions);
     await ensurePublishedTrackUnmuted();
-    await applyNoiseGateIfNeeded(room);
+    await applyMicrophoneProcessor(room, defaultProfile);
+    await maybeUpgradeProfileAfterPermission(defaultProfile);
     return true;
   } catch (err) {
     const name = err instanceof DOMException ? err.name : '';
@@ -1199,7 +1443,7 @@ function registerRoomListeners(
     if (publication.source === Track.Source.Camera) {
       const state = useVoiceStore.getState();
       if (state.selfVideo) {
-        console.info('[voice] Local camera track unpublished — clearing selfVideo');
+        console.info('[voice] Local camera track unpublished â€” clearing selfVideo');
         const localUserId = useAuthStore.getState().user?.id;
         const participants = new Map(state.participants);
         if (localUserId) {
@@ -1218,10 +1462,12 @@ function registerRoomListeners(
       void stopNativeSystemAudio();
       const state = useVoiceStore.getState();
       if (state.selfStream) {
-        console.info('[voice] Local screen share track unpublished — clearing selfStream');
+        console.info('[voice] Local screen share track unpublished â€” clearing selfStream');
         // Notify server that stream ended
         if (state.channelId) {
-          voiceApi.stopStream(state.channelId).catch(() => {});
+          voiceApi.stopStream(state.channelId).catch((err) => {
+            console.warn('[voice] Failed to stop stream after local unpublish:', err);
+          });
         }
         // Revert voice audio to normal output device
         const savedOutputId = getSavedOutputDeviceId() || '';
@@ -1237,7 +1483,12 @@ function registerRoomListeners(
             participants.set(localUserId, { ...existing, self_stream: false });
           }
         }
-        useVoiceStore.setState({ selfStream: false, participants });
+        useVoiceStore.setState({
+          selfStream: false,
+          participants,
+          streamAudioWarning: null,
+          systemAudioCaptureActive: false,
+        });
       }
     }
   };
@@ -1358,7 +1609,7 @@ function registerRoomListeners(
 
   const onAudioPlaybackStatusChanged = () => {
     if (!room.canPlaybackAudio) {
-      console.warn('[voice] Audio playback blocked — will retry on next user gesture');
+      console.warn('[voice] Audio playback blocked â€” will retry on next user gesture');
       const resume = () => {
         room.startAudio().catch(() => {});
         document.removeEventListener('click', resume);
@@ -1379,6 +1630,9 @@ function registerRoomListeners(
     localSilenceRecoveryCooldownUntil = now + 15_000;
     const state = useVoiceStore.getState();
     if (!state.connected || state.selfMute || state.selfDeaf) return;
+    // Don't attempt mic recovery when the room is reconnecting or disconnected.
+    // Publishing tracks in this state causes cascading "engine not connected" errors.
+    if (!isRoomConnected(room)) return;
     console.warn('[voice] Local microphone appears silent; restarting microphone track.');
     void setMicrophoneEnabledWithFallback(room, true, getSavedInputDeviceId()).then((ok) => {
       if (ok) {
@@ -1393,6 +1647,10 @@ function registerRoomListeners(
 
   const onReconnected = () => {
     console.info('[voice] LiveKit reconnected successfully');
+    if (!isRoomConnected(room)) {
+      console.warn('[voice] Reconnected event fired but room state is not Connected; skipping mic restore.');
+      return;
+    }
     refreshAudioCodecCompatibility(room, 'reconnected');
     // Re-sync remote audio tracks after reconnection to ensure all
     // subscribed tracks have attached <audio> elements.
@@ -1500,6 +1758,9 @@ interface VoiceStoreState {
   micUplinkState: MicUplinkState;
   micUplinkBytesSent: number | null;
   micUplinkStalledIntervals: number;
+  streamAudioWarning: string | null;
+  systemAudioCaptureActive: boolean;
+  showSystemAudioPrivacyWarning: boolean;
   watchedStreamerId: string | null;
   previewStreamerId: string | null;
 
@@ -1517,6 +1778,7 @@ interface VoiceStoreState {
    *  settings so changes take effect immediately without mute/unmute. */
   reapplyAudioConstraints: () => Promise<void>;
   clearConnectionError: () => void;
+  acknowledgeSystemAudioPrivacyWarning: () => void;
   setWatchedStreamer: (userId: string | null) => void;
   setPreviewStreamer: (userId: string | null) => void;
 
@@ -1553,6 +1815,9 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   micUplinkState: 'idle',
   micUplinkBytesSent: null,
   micUplinkStalledIntervals: 0,
+  streamAudioWarning: null,
+  systemAudioCaptureActive: false,
+  showSystemAudioPrivacyWarning: false,
   watchedStreamerId: null,
   previewStreamerId: null,
 
@@ -1666,9 +1931,17 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         if (get().room !== thisRoom) return;
         activeRoomListenerCleanup = null;
         console.warn('[voice] LiveKit room disconnected, reason:', reason);
+        // If we were streaming, explicitly clear stream state server-side.
+        const wasStreaming = get().selfStream;
+        const streamChannelId = get().channelId;
+        if (wasStreaming && streamChannelId) {
+          voiceApi.stopStream(streamChannelId).catch((err) => {
+            console.warn('[voice] Failed to stop stream during disconnect cleanup:', err);
+          });
+        }
         detachAllAttachedRemoteAudio();
         void stopNativeSystemAudio();
-        // Do NOT call voiceApi.leaveChannel() here — that tells the server
+        // Do NOT call voiceApi.leaveChannel() here â€” that tells the server
         // to delete the room, destroying it for all participants.  Let
         // LiveKit's participant_left webhook handle server-side cleanup
         // when the WebRTC peer connection truly goes away.
@@ -1701,6 +1974,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             room: null,
             joining: false,
             joiningChannelId: null,
+            streamAudioWarning: null,
+            systemAudioCaptureActive: false,
             watchedStreamerId: null,
             previewStreamerId: null,
           };
@@ -1709,7 +1984,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
 
       // Use LiveKit's native connection timeout/retry logic for initial join.
       console.log('[voice] Connecting to LiveKit at:', normalizedUrl);
-      console.log('[voice] Server returned URL:', data.url, '→ normalized:', normalizedUrl);
+      console.log('[voice] Server returned URL:', data.url, 'â†’ normalized:', normalizedUrl);
       await room.connect(normalizedUrl, data.token, LIVEKIT_CONNECT_OPTIONS);
       await room.startAudio().catch((err) => {
         console.warn('[voice] Failed to start audio playback:', err);
@@ -1750,7 +2025,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         stopLocalMicAnalyser();
         stopLocalAudioUplinkMonitor();
         stopRemoteAudioReconcile();
-        room.disconnect();
+        startPendingDisconnect(room.disconnect());
         detachAllAttachedRemoteAudio();
         return;
       }
@@ -1801,7 +2076,9 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         stopLocalMicAnalyser();
         stopLocalAudioUplinkMonitor();
         stopRemoteAudioReconcile();
-        room?.disconnect();
+        if (room) {
+          startPendingDisconnect(room.disconnect());
+        }
         detachAllAttachedRemoteAudio();
         return;
       }
@@ -1809,7 +2086,9 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       stopLocalMicAnalyser();
       stopLocalAudioUplinkMonitor();
       stopRemoteAudioReconcile();
-      room?.disconnect();
+      if (room) {
+        startPendingDisconnect(room.disconnect());
+      }
       detachAllAttachedRemoteAudio();
       if (joinedServer) {
         await voiceApi.leaveChannel(channelId).catch((err) => {
@@ -1824,6 +2103,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         guildId: null,
         room: null,
         selfStream: false,
+        streamAudioWarning: null,
+        systemAudioCaptureActive: false,
         livekitToken: null,
         livekitUrl: null,
         roomName: null,
@@ -1890,6 +2171,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         joiningChannelId: null,
         connectionError: null,
         connectionErrorChannelId: null,
+        streamAudioWarning: null,
+        systemAudioCaptureActive: false,
         watchedStreamerId: null,
         previewStreamerId: null,
       };
@@ -1897,7 +2180,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     // Await the disconnect (with a timeout) so the WebSocket teardown has
     // a better chance of completing before the user triggers a rejoin.
     // The UI has already updated above, so this await doesn't block the user
-    // visually — it just keeps the async leaveChannel() promise open a bit
+    // visually â€” it just keeps the async leaveChannel() promise open a bit
     // longer which helps joinChannel's pendingDisconnect check.
     if (pendingDisconnect) {
       await waitForPendingDisconnect(DISCONNECT_WAIT_ON_LEAVE_MS);
@@ -1922,6 +2205,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     });
     setAttachedRemoteAudioMuted(nextSelfDeaf);
     if (!state.room) return;
+    // Don't attempt mic operations if the room is reconnecting or disconnected.
+    if (!isRoomConnected(state.room)) {
+      console.warn('[voice] toggleMute: room not connected, deferring mic change');
+      return;
+    }
     const targetMicEnabled = !nextSelfMute;
     const ok = await setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId());
     if (ok && targetMicEnabled) {
@@ -1945,6 +2233,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     });
     setAttachedRemoteAudioMuted(nextSelfDeaf);
     if (!state.room) return;
+    // Don't attempt mic operations if the room is reconnecting or disconnected.
+    if (!isRoomConnected(state.room)) {
+      console.warn('[voice] toggleDeaf: room not connected, deferring mic change');
+      return;
+    }
     const targetMicEnabled = !nextSelfMute;
     const ok = await setMicrophoneEnabledWithFallback(state.room, targetMicEnabled, getSavedInputDeviceId());
     if (ok && targetMicEnabled) {
@@ -1962,29 +2255,18 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     if (!channelId || !room) {
       throw new Error('Voice connection is not ready');
     }
+    if (!isRoomConnected(room)) {
+      throw new Error('Voice connection is not stable — try again in a moment');
+    }
+    set({ streamAudioWarning: null, systemAudioCaptureActive: false });
     try {
-      // 1. Register stream on server and get an upgraded token with
-      //    screen-share publish permissions.
+      // 1. Register stream state on the server.
       const { data } = await voiceApi.startStream(channelId, { quality_preset: qualityPreset });
 
-      // 2. Reconnect to the LiveKit room with the upgraded stream token so
-      //    LiveKit grants us permission to publish screen-share tracks.
-      //    Remove listeners before disconnect so the Disconnected event
-      //    from this intentional disconnect doesn't reset the store.
+      // Keep the existing LiveKit session and publish screen share in-place.
+      // Join tokens already allow screen-share sources for speakers.
       const normalizedUrl = normalizeLivekitUrl(data.url);
-      const shouldMuteAfterReconnect = get().selfMute || get().selfDeaf;
-      detachAllAttachedRemoteAudio();
-      stopLocalMicAnalyser();
-      stopLocalAudioUplinkMonitor();
-      stopRemoteAudioReconcile();
-      clearActiveRoomListeners();
-      await room.disconnect();
-      await room.connect(normalizedUrl, data.token);
-      await room.startAudio().catch((err) => {
-        console.warn('[voice] Failed to start audio playback after reconnect:', err);
-      });
 
-      // Restore saved audio devices after reconnect.
       const streamNotif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
       const streamOutputId = normalizeDeviceId(
         typeof streamNotif['audioOutputDeviceId'] === 'string'
@@ -2000,54 +2282,20 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         await room.switchActiveDevice('audiooutput', streamOutputId).catch(() => { });
       }
 
-      // Re-enable microphone after reconnect with saved input device
-      await setMicrophoneEnabledWithFallback(room, !shouldMuteAfterReconnect, streamInputId);
-      if (!shouldMuteAfterReconnect) {
-        startLocalAudioUplinkMonitor(room);
+      // Keep microphone state aligned with current mute/deafen state.
+      const shouldEnableMic = !(get().selfMute || get().selfDeaf);
+      await setMicrophoneEnabledWithFallback(room, shouldEnableMic, streamInputId);
+      if (shouldEnableMic) {
+        startLocalAudioUplinkMonitor(room as Room);
       }
       setAttachedRemoteAudioMuted(get().selfDeaf);
-      const streamRoom = room;
-      activeRoomListenerCleanup = registerRoomListeners(room, (reason?: DisconnectReason) => {
-        if (get().room !== streamRoom) return;
-        activeRoomListenerCleanup = null;
-        console.warn('[voice] LiveKit room disconnected (stream), reason:', reason);
-        // Notify server that stream ended on disconnect
-        const disconnectChannelId = get().channelId;
-        if (disconnectChannelId) {
-          voiceApi.stopStream(disconnectChannelId).catch(() => {});
-        }
-        detachAllAttachedRemoteAudio();
-        void stopNativeSystemAudio();
-        const cId = get().channelId;
-        const auth = useAuthStore.getState().user;
-        set((prev) => {
-          const channelParticipants = new Map(prev.channelParticipants);
-          if (cId && auth) {
-            const members = channelParticipants.get(cId);
-            if (members) {
-              const filtered = members.filter((p) => p.user_id !== auth.id);
-              if (filtered.length === 0) channelParticipants.delete(cId);
-              else channelParticipants.set(cId, filtered);
-            }
-          }
-          return {
-            connected: false, channelId: null, guildId: null,
-            selfMute: false, selfDeaf: false, selfStream: false, selfVideo: false,
-            participants: new Map(), channelParticipants,
-            speakingUsers: new Set<string>(),
-            livekitToken: null, livekitUrl: null, roomName: null,
-            room: null, joining: false, joiningChannelId: null,
-            watchedStreamerId: null, previewStreamerId: null,
-          };
-        });
-      });
       syncRemoteAudioTracks(room, get().selfDeaf);
 
       // Voice audio no longer needs to be rerouted to a different device.
       // The Process Loopback Exclusion API excludes our own process audio
       // at the OS level, so voice plays on the normal default device.
 
-      // 3. Now that we have the right permissions, start screen share
+      // 2. Start screen share
       //    with resolution/framerate constraints matching the preset.
       //    We configure BOTH capture constraints (resolution/fps the browser
       //    captures at) AND encoding parameters (bitrate/fps the WebRTC
@@ -2065,7 +2313,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       const isTauriApp = isTauri();
 
       await room.localParticipant.setScreenShareEnabled(true, {
-        // In Tauri, skip browser audio capture — we use native WASAPI/PulseAudio
+        // In Tauri, skip browser audio capture â€” we use native WASAPI/PulseAudio
         // loopback instead to avoid capturing voice chat audio.
         audio: !isTauriApp,
         // systemAudio: 'include' tells Chrome/Edge to pre-check the "Share
@@ -2106,18 +2354,20 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         console.warn('[voice] Screen share video track not immediately available for constraint tuning');
       }
 
-      // Verify whether screen share audio was captured and published
-      const screenShareAudioPub = room.localParticipant.getTrackPublication(
-        Track.Source.ScreenShareAudio
-      );
+      let streamAudioWarning: string | null = null;
+      let systemAudioCaptureActive = false;
 
-      if (isTauriApp) {
-        // In Tauri, always use native system audio capture. This captures
-        // system audio via WASAPI loopback / PulseAudio monitor while voice
-        // chat audio is routed to the communications device (excluded from capture).
-        try {
+      const publishNativeSystemAudio = async (): Promise<boolean> => {
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
           const nativeAudioTrack = await startNativeSystemAudio();
-          if (nativeAudioTrack) {
+          if (!nativeAudioTrack) {
+            if (attempt < 2) {
+              await delay(250);
+            }
+            continue;
+          }
+
+          try {
             await room.localParticipant.publishTrack(nativeAudioTrack, {
               source: Track.Source.ScreenShareAudio,
               audioPreset: { maxBitrate: 128_000 },
@@ -2126,35 +2376,64 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
               red: false,
             });
             console.info('[voice] Published native system audio as ScreenShareAudio (Tauri)');
+            return true;
+          } catch (err) {
+            console.warn('[voice] Failed to publish native system audio track:', err);
+            void stopNativeSystemAudio();
+            if (attempt < 2) {
+              await delay(250);
+            }
           }
-        } catch (err) {
-          console.warn('[voice] Native system audio capture failed:', err);
         }
-      } else if (screenShareAudioPub) {
-        console.info('[voice] Screen share audio track published — viewers will hear stream audio');
-      } else {
-        console.warn(
-          '[voice] No screen share audio track — audio not captured.',
-          'This happens when sharing a window (audio not supported) or if',
-          '"Share audio" was unchecked. Share an entire screen for automatic audio.'
-        );
 
-        // If no screen share audio was captured (e.g. window sharing), attempt
-        // native system audio capture via Tauri WASAPI loopback.
-        try {
-          const nativeAudioTrack = await startNativeSystemAudio();
-          if (nativeAudioTrack) {
-            await room.localParticipant.publishTrack(nativeAudioTrack, {
-              source: Track.Source.ScreenShareAudio,
-              audioPreset: { maxBitrate: 128_000 },
-              forceStereo: true,
-              dtx: false,
-              red: false,
-            });
-            console.info('[voice] Published native system audio as ScreenShareAudio');
+        return false;
+      };
+
+      const waitForScreenShareAudioPublication = async (
+        timeoutMs = 1600
+      ): Promise<LocalTrackPublication | undefined> => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const publication = room.localParticipant.getTrackPublication(
+            Track.Source.ScreenShareAudio
+          ) as LocalTrackPublication | undefined;
+          if (publication?.track) {
+            return publication;
           }
-        } catch (err) {
-          console.warn('[voice] Native system audio capture failed:', err);
+          await delay(120);
+        }
+
+        return room.localParticipant.getTrackPublication(
+          Track.Source.ScreenShareAudio
+        ) as LocalTrackPublication | undefined;
+      };
+
+      if (isTauriApp) {
+        if (!hasAcknowledgedSystemAudioPrivacyWarning()) {
+          set({ showSystemAudioPrivacyWarning: true });
+        }
+        // In Tauri, publish native loopback audio with a retry path so brief
+        // backend races don't leave the stream silently video-only.
+        const nativePublished = await publishNativeSystemAudio();
+        systemAudioCaptureActive = nativePublished;
+        if (!nativePublished) {
+          streamAudioWarning =
+            'Stream started without PC audio. Native system audio capture failed. ' +
+            'Try stopping the stream and starting it again.';
+          console.warn('[voice] Native system audio capture failed; stream is video-only.');
+        }
+      } else {
+        const screenShareAudioPub = await waitForScreenShareAudioPublication();
+        if (screenShareAudioPub?.track) {
+          console.info('[voice] Screen share audio track published â€” viewers will hear stream audio');
+        } else {
+          streamAudioWarning =
+            'Stream started without audio. Share an entire screen/tab and keep "Share audio" enabled.';
+          console.warn(
+            '[voice] No screen share audio track â€” audio not captured.',
+            'This happens when sharing a window (audio not supported) or if',
+            '"Share audio" was unchecked. Share an entire screen for automatic audio.'
+          );
         }
       }
 
@@ -2191,15 +2470,19 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         livekitToken: data.token,
         livekitUrl: normalizedUrl,
         roomName: data.room_name,
+        streamAudioWarning,
+        systemAudioCaptureActive,
       });
     } catch (error) {
       void stopNativeSystemAudio();
       await room.localParticipant.setScreenShareEnabled(false).catch(() => { });
       // Notify server that stream failed
       if (channelId) {
-        voiceApi.stopStream(channelId).catch(() => {});
+        voiceApi.stopStream(channelId).catch((err) => {
+          console.warn('[voice] Failed to stop stream after start failure rollback:', err);
+        });
       }
-      set({ selfStream: false });
+      set({ selfStream: false, streamAudioWarning: null, systemAudioCaptureActive: false });
       throw error;
     }
   },
@@ -2208,7 +2491,9 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     const { channelId, room } = get();
     // Notify server to clear stream state
     if (channelId) {
-      voiceApi.stopStream(channelId).catch(() => {});
+      voiceApi.stopStream(channelId).catch((err) => {
+        console.warn('[voice] Failed to stop stream on manual stop:', err);
+      });
     }
     room?.localParticipant.setScreenShareEnabled(false).catch(() => {});
     void stopNativeSystemAudio();
@@ -2235,7 +2520,12 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           participants.set(localUserId, { ...existing, self_stream: false });
         }
       }
-      return { selfStream: false, participants };
+      return {
+        selfStream: false,
+        participants,
+        streamAudioWarning: null,
+        systemAudioCaptureActive: false,
+      };
     });
   },
 
@@ -2310,9 +2600,30 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     const state = get();
     const room = state.room;
     if (!room) return;
-    const normalizedDeviceId = normalizeDeviceId(deviceId);
+    let normalizedDeviceId = normalizeDeviceId(deviceId);
+    if (normalizedDeviceId && invalidAudioInputDeviceIds.has(normalizedDeviceId)) {
+      normalizedDeviceId = undefined;
+    }
     try {
-      await room.switchActiveDevice('audioinput', normalizedDeviceId ?? 'default');
+      try {
+        await room.switchActiveDevice('audioinput', normalizedDeviceId ?? 'default');
+      } catch (err) {
+        // Device constraints can fail for stale IDs and occasionally even for
+        // "default" when browser/device state changes. Recover by forcing a
+        // fresh mic publish path with default capture selection.
+        if (isDeviceConstraintError(err)) {
+          console.warn(
+            '[voice] Input device constraints failed; resetting to default microphone:',
+            err
+          );
+          if (normalizedDeviceId) {
+            invalidAudioInputDeviceIds.add(normalizedDeviceId);
+          }
+          normalizedDeviceId = undefined;
+        } else {
+          throw err;
+        }
+      }
       // If the user is currently unmuted, ensure the active mic is enabled
       // on the newly selected device.
       if (!state.selfMute && !state.selfDeaf) {
@@ -2351,6 +2662,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     }
   },
   clearConnectionError: () => set({ connectionError: null, connectionErrorChannelId: null }),
+  acknowledgeSystemAudioPrivacyWarning: () => {
+    persistSystemAudioPrivacyWarningAcknowledgement();
+    set({ showSystemAudioPrivacyWarning: false });
+  },
 
   handleVoiceStateUpdate: (voiceState) => {
     // Determine join/leave sounds BEFORE mutating state so we can compare

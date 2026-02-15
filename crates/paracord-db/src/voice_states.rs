@@ -30,7 +30,7 @@ pub async fn upsert_voice_state(
     sqlx::query(
         "INSERT INTO voice_states (user_id, space_id, channel_id, session_id)
          VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (user_id) DO UPDATE SET space_id = ?2, channel_id = ?3, session_id = ?4"
+         ON CONFLICT (user_id) DO UPDATE SET space_id = ?2, channel_id = ?3, session_id = ?4",
     )
     .bind(user_id)
     .bind(space_id)
@@ -90,11 +90,13 @@ pub async fn remove_voice_state(
     user_id: i64,
     space_id: Option<i64>,
 ) -> Result<(), DbError> {
-    sqlx::query("DELETE FROM voice_states WHERE user_id = ?1 AND COALESCE(space_id, 0) = COALESCE(?2, 0)")
-        .bind(user_id)
-        .bind(space_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "DELETE FROM voice_states WHERE user_id = ?1 AND COALESCE(space_id, 0) = COALESCE(?2, 0)",
+    )
+    .bind(user_id)
+    .bind(space_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -165,7 +167,7 @@ pub async fn update_voice_state(
 ) -> Result<(), DbError> {
     sqlx::query(
         "UPDATE voice_states SET self_mute = ?3, self_deaf = ?4, self_stream = ?5, self_video = ?6
-         WHERE user_id = ?1 AND COALESCE(space_id, 0) = COALESCE(?2, 0)"
+         WHERE user_id = ?1 AND COALESCE(space_id, 0) = COALESCE(?2, 0)",
     )
     .bind(user_id)
     .bind(space_id)

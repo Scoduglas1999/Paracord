@@ -1,10 +1,12 @@
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     Json,
 };
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use paracord_core::AppState;
+use paracord_federation::client::{FederationMediaRelayRequest, FederationMediaTokenRequest};
 use paracord_models::permissions::Permissions;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -58,6 +60,58 @@ fn resolve_livekit_client_url(headers: &HeaderMap, fallback: &str) -> String {
 }
 
 #[derive(Deserialize)]
+struct LiveKitWebhookAuthClaims {
+    _iss: Option<String>,
+    sha256: Option<String>,
+}
+
+fn verify_livekit_webhook_auth(
+    headers: &HeaderMap,
+    body: &[u8],
+    livekit_api_key: &str,
+    livekit_api_secret: &str,
+) -> Result<(), ApiError> {
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or(ApiError::Unauthorized)?;
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    validation.required_spec_claims =
+        std::collections::HashSet::from([String::from("exp"), String::from("iss")]);
+    validation.set_issuer(&[livekit_api_key]);
+
+    let decoded = decode::<LiveKitWebhookAuthClaims>(
+        token,
+        &DecodingKey::from_secret(livekit_api_secret.as_bytes()),
+        &validation,
+    )
+    .map_err(|_| ApiError::Unauthorized)?;
+
+    if let Some(expected_hash) = decoded.claims.sha256.as_deref() {
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let digest = hasher.finalize();
+        let actual_hash = digest
+            .iter()
+            .fold(String::with_capacity(64), |mut out, byte| {
+                use std::fmt::Write;
+                let _ = write!(out, "{:02x}", byte);
+                out
+            });
+        if actual_hash != expected_hash {
+            return Err(ApiError::Unauthorized);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
 pub struct StartStreamRequest {
     pub title: Option<String>,
     pub quality_preset: Option<String>,
@@ -86,7 +140,7 @@ pub async fn join_voice(
     headers: HeaderMap,
     Path(channel_id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available {
+    if !state.config.livekit_available && !paracord_federation::is_enabled() {
         return Err(ApiError::ServiceUnavailable(
             "Voice chat is not available — LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
         ));
@@ -146,6 +200,105 @@ pub async fn join_voice(
         }
     }
 
+    let federation_service = crate::routes::federation::build_federation_service();
+    if federation_service.is_enabled() {
+        let outbound = crate::routes::federation::resolve_outbound_context(
+            &state,
+            &federation_service,
+            guild_id,
+            Some(channel_id),
+        )
+        .await;
+        if outbound.uses_remote_mapping {
+            if let (Some(remote_channel_id), Some(peer), Some(client), Some(local_identity)) = (
+                outbound.payload_channel_id.clone(),
+                crate::routes::federation::resolve_remote_target_for_outbound_context(
+                    &state, &outbound,
+                )
+                .await,
+                crate::routes::federation::build_signed_federation_client(&federation_service),
+                crate::routes::federation::local_federated_user_id(
+                    &state,
+                    &federation_service,
+                    auth.user_id,
+                )
+                .await,
+            ) {
+                let payload = FederationMediaTokenRequest {
+                    origin_server: federation_service.server_name().to_string(),
+                    channel_id: remote_channel_id,
+                    user_id: local_identity,
+                };
+                match client
+                    .request_media_token(&peer.federation_endpoint, &payload)
+                    .await
+                {
+                    Ok(remote) => {
+                        let _ = paracord_db::voice_states::upsert_voice_state(
+                            &state.db,
+                            auth.user_id,
+                            channel.guild_id(),
+                            channel_id,
+                            &remote.session_id,
+                        )
+                        .await;
+                        state.event_bus.dispatch(
+                            "VOICE_STATE_UPDATE",
+                            json!({
+                                "user_id": auth.user_id.to_string(),
+                                "channel_id": channel_id.to_string(),
+                                "guild_id": channel.guild_id().map(|id| id.to_string()),
+                                "session_id": remote.session_id,
+                                "self_mute": false,
+                                "self_deaf": false,
+                                "self_stream": false,
+                                "self_video": false,
+                                "suppress": false,
+                                "mute": false,
+                                "deaf": false,
+                                "username": &user.username,
+                                "avatar_hash": user.avatar_hash,
+                            }),
+                            channel.guild_id(),
+                        );
+                        tracing::info!(
+                            "Federated voice join issued for user={} channel={} via {}",
+                            auth.user_id,
+                            channel_id,
+                            peer.server_name
+                        );
+                        return Ok(Json(json!({
+                            "token": remote.token,
+                            "url": remote.url,
+                            "room_name": remote.room_name,
+                            "session_id": remote.session_id,
+                        })));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "federation: media token rpc failed for channel {} -> {} ({}): {}",
+                            channel_id,
+                            peer.server_name,
+                            peer.domain,
+                            err
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "federation: mirrored voice channel {} missing remote mapping/client/identity; falling back local",
+                    channel_id
+                );
+            }
+        }
+    }
+
+    if !state.config.livekit_available {
+        return Err(ApiError::ServiceUnavailable(
+            "Voice chat is not available - LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
+        ));
+    }
+
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let join_resp = state
@@ -193,11 +346,9 @@ pub async fn join_voice(
 
     let livekit_url = resolve_livekit_client_url(&headers, &state.config.livekit_public_url);
     tracing::info!(
-        "Voice join: user={}, channel={}, livekit_url={}, host_header={:?}",
+        "Voice join issued for user={} channel={}",
         auth.user_id,
-        channel_id,
-        livekit_url,
-        headers.get("host").and_then(|v| v.to_str().ok()),
+        channel_id
     );
 
     Ok(Json(json!({
@@ -215,7 +366,7 @@ pub async fn start_stream(
     Path(channel_id): Path<i64>,
     body: Option<Json<StartStreamRequest>>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available {
+    if !state.config.livekit_available && !paracord_federation::is_enabled() {
         return Err(ApiError::ServiceUnavailable(
             "Streaming is not available — LiveKit server binary not found.".into(),
         ));
@@ -248,7 +399,16 @@ pub async fn start_stream(
     .await?;
     paracord_core::permissions::require_permission(perms, Permissions::VIEW_CHANNEL)?;
     paracord_core::permissions::require_permission(perms, Permissions::CONNECT)?;
-    paracord_core::permissions::require_permission(perms, Permissions::STREAM)?;
+    if !perms.contains(Permissions::STREAM) {
+        tracing::warn!(
+            "start_stream forbidden: missing STREAM permission (user_id={}, guild_id={}, channel_id={}, perms={})",
+            auth.user_id,
+            guild_id,
+            channel_id,
+            perms.bits()
+        );
+        return Err(ApiError::Forbidden);
+    }
 
     let user = paracord_db::users::get_user_by_id(&state.db, auth.user_id)
         .await
@@ -263,6 +423,116 @@ pub async fn start_stream(
         return Err(ApiError::BadRequest("Invalid quality_preset".into()));
     }
     let stream_title = body.as_ref().and_then(|b| b.title.as_deref());
+
+    let federation_service = crate::routes::federation::build_federation_service();
+    if federation_service.is_enabled() {
+        let outbound = crate::routes::federation::resolve_outbound_context(
+            &state,
+            &federation_service,
+            guild_id,
+            Some(channel_id),
+        )
+        .await;
+        if outbound.uses_remote_mapping {
+            if let (Some(remote_channel_id), Some(peer), Some(client), Some(local_identity)) = (
+                outbound.payload_channel_id.clone(),
+                crate::routes::federation::resolve_remote_target_for_outbound_context(
+                    &state, &outbound,
+                )
+                .await,
+                crate::routes::federation::build_signed_federation_client(&federation_service),
+                crate::routes::federation::local_federated_user_id(
+                    &state,
+                    &federation_service,
+                    auth.user_id,
+                )
+                .await,
+            ) {
+                let payload = FederationMediaRelayRequest {
+                    origin_server: federation_service.server_name().to_string(),
+                    channel_id: remote_channel_id,
+                    user_id: local_identity,
+                    action: "start_stream".to_string(),
+                    title: stream_title.map(ToOwned::to_owned),
+                };
+                match client
+                    .relay_media_action(&peer.federation_endpoint, &payload)
+                    .await
+                {
+                    Ok(remote) => {
+                        if let (Some(token), Some(room_name)) = (remote.token, remote.room_name) {
+                            let _ = paracord_db::voice_states::update_voice_state(
+                                &state.db,
+                                auth.user_id,
+                                Some(guild_id),
+                                false,
+                                false,
+                                true,
+                                false,
+                            )
+                            .await;
+                            state.event_bus.dispatch(
+                                "VOICE_STATE_UPDATE",
+                                json!({
+                                    "user_id": auth.user_id.to_string(),
+                                    "channel_id": channel_id.to_string(),
+                                    "guild_id": Some(guild_id.to_string()),
+                                    "self_mute": false,
+                                    "self_deaf": false,
+                                    "self_stream": true,
+                                    "self_video": false,
+                                    "suppress": false,
+                                    "mute": false,
+                                    "deaf": false,
+                                    "username": &user.username,
+                                    "avatar_hash": user.avatar_hash,
+                                }),
+                                Some(guild_id),
+                            );
+
+                            let livekit_url = remote.url.unwrap_or_else(|| {
+                                resolve_livekit_client_url(
+                                    &headers,
+                                    &state.config.livekit_public_url,
+                                )
+                            });
+                            return Ok(Json(json!({
+                                "token": token,
+                                "url": livekit_url,
+                                "room_name": room_name,
+                                "quality_preset": requested_quality,
+                            })));
+                        }
+                        tracing::warn!(
+                            "federation: mirrored start_stream returned incomplete payload for channel {} from {}",
+                            channel_id,
+                            peer.server_name
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "federation: media relay rpc failed for channel {} -> {} ({}): {}",
+                            channel_id,
+                            peer.server_name,
+                            peer.domain,
+                            err
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "federation: mirrored stream channel {} missing remote mapping/client/identity; falling back local",
+                    channel_id
+                );
+            }
+        }
+    }
+
+    if !state.config.livekit_available {
+        return Err(ApiError::ServiceUnavailable(
+            "Streaming is not available - LiveKit server binary not found.".into(),
+        ));
+    }
 
     let stream_resp = state
         .voice
@@ -332,6 +602,55 @@ pub async fn stop_stream(
     }
 
     let guild_id = channel.guild_id();
+
+    if let Some(guild_id) = guild_id {
+        let federation_service = crate::routes::federation::build_federation_service();
+        if federation_service.is_enabled() {
+            let outbound = crate::routes::federation::resolve_outbound_context(
+                &state,
+                &federation_service,
+                guild_id,
+                Some(channel_id),
+            )
+            .await;
+            if outbound.uses_remote_mapping {
+                if let (Some(remote_channel_id), Some(peer), Some(client), Some(local_identity)) = (
+                    outbound.payload_channel_id.clone(),
+                    crate::routes::federation::resolve_remote_target_for_outbound_context(
+                        &state, &outbound,
+                    )
+                    .await,
+                    crate::routes::federation::build_signed_federation_client(&federation_service),
+                    crate::routes::federation::local_federated_user_id(
+                        &state,
+                        &federation_service,
+                        auth.user_id,
+                    )
+                    .await,
+                ) {
+                    let payload = FederationMediaRelayRequest {
+                        origin_server: federation_service.server_name().to_string(),
+                        channel_id: remote_channel_id,
+                        user_id: local_identity,
+                        action: "stop_stream".to_string(),
+                        title: None,
+                    };
+                    if let Err(err) = client
+                        .relay_media_action(&peer.federation_endpoint, &payload)
+                        .await
+                    {
+                        tracing::warn!(
+                            "federation: stop_stream rpc failed for channel {} -> {} ({}): {}",
+                            channel_id,
+                            peer.server_name,
+                            peer.domain,
+                            err
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // Clear stream state in the voice manager.
     state.voice.stop_stream(channel_id, auth.user_id).await;
@@ -426,84 +745,17 @@ pub async fn leave_voice(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Verify a LiveKit webhook JWT token.
-///
-/// LiveKit signs webhooks with an `Authorization: <jwt>` header. The JWT is
-/// HS256-signed using the API secret, the `iss` claim must match the API key,
-/// and the `sha256` claim must match the hex-encoded SHA-256 hash of the
-/// request body.
-fn verify_livekit_webhook(
-    auth_header: &str,
-    body: &[u8],
-    api_key: &str,
-    api_secret: &str,
-) -> Result<(), ApiError> {
-    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-
-    #[derive(Deserialize)]
-    struct WebhookClaims {
-        #[allow(dead_code)]
-        iss: Option<String>,
-        sha256: Option<String>,
-    }
-
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_issuer(&[api_key]);
-    validation.set_required_spec_claims(&["iss"]);
-
-    let token_data = decode::<WebhookClaims>(
-        auth_header,
-        &DecodingKey::from_secret(api_secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|e| {
-        tracing::warn!("LiveKit webhook JWT verification failed: {}", e);
-        ApiError::Unauthorized
-    })?;
-
-    // Verify the body hash
-    if let Some(expected_hash) = &token_data.claims.sha256 {
-        let mut hasher = Sha256::new();
-        hasher.update(body);
-        let digest = hasher.finalize();
-        let actual_hash = digest
-            .iter()
-            .fold(String::with_capacity(64), |mut s, b| {
-                use std::fmt::Write;
-                let _ = write!(s, "{:02x}", b);
-                s
-            });
-        if actual_hash != *expected_hash {
-            tracing::warn!(
-                "LiveKit webhook body hash mismatch: expected={}, actual={}",
-                expected_hash,
-                actual_hash
-            );
-            return Err(ApiError::Unauthorized);
-        }
-    }
-
-    Ok(())
-}
-
 pub async fn livekit_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
-    // Verify the webhook signature
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(ApiError::Unauthorized)?;
-
-    verify_livekit_webhook(
-        auth_header,
+    verify_livekit_webhook_auth(
+        &headers,
         &body,
         &state.config.livekit_api_key,
         &state.config.livekit_api_secret,
     )?;
-
     let payload: LiveKitWebhookPayload =
         serde_json::from_slice(&body).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
@@ -600,4 +852,74 @@ pub async fn livekit_webhook(
     });
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_livekit_webhook_auth;
+    use axum::http::{header, HeaderMap, HeaderValue};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use serde::Serialize;
+    use sha2::{Digest, Sha256};
+
+    #[derive(Serialize)]
+    struct Claims {
+        iss: String,
+        exp: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sha256: Option<String>,
+    }
+
+    fn bearer_header(secret: &str, issuer: &str, sha256: Option<String>) -> HeaderMap {
+        let claims = Claims {
+            iss: issuer.to_string(),
+            exp: (chrono::Utc::now().timestamp() + 300) as usize,
+            sha256,
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .expect("encode token");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+        );
+        headers
+    }
+
+    #[test]
+    fn webhook_auth_accepts_valid_bearer() {
+        let headers = bearer_header("secret-1", "api-key-1", None);
+        let result = verify_livekit_webhook_auth(&headers, b"{}", "api-key-1", "secret-1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn webhook_auth_rejects_wrong_issuer() {
+        let headers = bearer_header("secret-1", "other-key", None);
+        let result = verify_livekit_webhook_auth(&headers, b"{}", "api-key-1", "secret-1");
+        assert!(matches!(result, Err(crate::error::ApiError::Unauthorized)));
+    }
+
+    #[test]
+    fn webhook_auth_rejects_body_hash_mismatch() {
+        let mut hasher = Sha256::new();
+        hasher.update(b"expected-body");
+        let digest = hasher.finalize();
+        let expected_hash = digest
+            .iter()
+            .fold(String::with_capacity(64), |mut out, byte| {
+                use std::fmt::Write;
+                let _ = write!(out, "{:02x}", byte);
+                out
+            });
+        let headers = bearer_header("secret-1", "api-key-1", Some(expected_hash));
+        let result =
+            verify_livekit_webhook_auth(&headers, b"different-body", "api-key-1", "secret-1");
+        assert!(matches!(result, Err(crate::error::ApiError::Unauthorized)));
+    }
 }

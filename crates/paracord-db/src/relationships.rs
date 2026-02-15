@@ -28,7 +28,7 @@ pub async fn create_relationship(
 ) -> Result<(), DbError> {
     sqlx::query(
         "INSERT INTO relationships (user_id, target_id, rel_type) VALUES (?1, ?2, ?3)
-         ON CONFLICT (user_id, target_id) DO UPDATE SET rel_type = ?3"
+         ON CONFLICT (user_id, target_id) DO UPDATE SET rel_type = ?3",
     )
     .bind(user_id)
     .bind(target_id)
@@ -111,4 +111,52 @@ pub async fn delete_relationship(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+pub async fn get_friend_user_ids(pool: &DbPool, user_id: i64) -> Result<Vec<i64>, DbError> {
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT target_id
+         FROM relationships
+         WHERE user_id = ?1
+           AND rel_type = 1",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+pub async fn are_friends(pool: &DbPool, user_a: i64, user_b: i64) -> Result<bool, DbError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1
+         FROM relationships
+         WHERE user_id = ?1
+           AND target_id = ?2
+           AND rel_type = 1
+         LIMIT 1",
+    )
+    .bind(user_a)
+    .bind(user_b)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
+pub async fn is_blocked_either_direction(
+    pool: &DbPool,
+    user_a: i64,
+    user_b: i64,
+) -> Result<bool, DbError> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1
+         FROM relationships
+         WHERE rel_type = 2
+           AND ((user_id = ?1 AND target_id = ?2) OR (user_id = ?2 AND target_id = ?1))
+         LIMIT 1",
+    )
+    .bind(user_a)
+    .bind(user_b)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
 }

@@ -11,6 +11,17 @@ use crate::error::ApiError;
 use crate::middleware::AuthUser;
 use crate::routes::audit;
 
+const MAX_BAN_REASON_LEN: usize = 512;
+
+fn contains_dangerous_markup(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("<script")
+        || lower.contains("javascript:")
+        || lower.contains("onerror=")
+        || lower.contains("onload=")
+        || lower.contains("<iframe")
+}
+
 pub async fn list_bans(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -67,8 +78,24 @@ pub async fn ban_member(
     body: Option<Json<BanRequest>>,
 ) -> Result<StatusCode, ApiError> {
     let reason = body.and_then(|b| b.0.reason);
-    paracord_core::admin::ban_member(&state.db, guild_id, auth.user_id, user_id, reason.as_deref())
-        .await?;
+    if let Some(reason_text) = reason.as_deref() {
+        if reason_text.trim().len() > MAX_BAN_REASON_LEN {
+            return Err(ApiError::BadRequest("Ban reason is too long".into()));
+        }
+        if contains_dangerous_markup(reason_text) {
+            return Err(ApiError::BadRequest(
+                "Ban reason contains unsafe markup".into(),
+            ));
+        }
+    }
+    paracord_core::admin::ban_member(
+        &state.db,
+        guild_id,
+        auth.user_id,
+        user_id,
+        reason.as_deref(),
+    )
+    .await?;
 
     state.event_bus.dispatch(
         "GUILD_BAN_ADD",
@@ -87,6 +114,20 @@ pub async fn ban_member(
         }),
         Some(guild_id),
     );
+
+    if paracord_federation::is_enabled() {
+        let fed_state = state.clone();
+        tokio::spawn(async move {
+            crate::routes::members::federation_forward_member_event(
+                &fed_state,
+                "m.member.leave",
+                guild_id,
+                user_id,
+            )
+            .await;
+        });
+    }
+
     audit::log_action(
         &state,
         guild_id,

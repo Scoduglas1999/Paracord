@@ -12,6 +12,17 @@ use crate::error::ApiError;
 use crate::middleware::AuthUser;
 use crate::routes::audit;
 
+const MAX_GUILD_DESCRIPTION_LEN: usize = 1_024;
+
+fn contains_dangerous_markup(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("<script")
+        || lower.contains("javascript:")
+        || lower.contains("onerror=")
+        || lower.contains("onload=")
+        || lower.contains("<iframe")
+}
+
 #[derive(Deserialize)]
 pub struct CreateGuildRequest {
     pub name: String,
@@ -127,6 +138,17 @@ pub async fn update_guild(
     Path(guild_id): Path<i64>,
     Json(body): Json<UpdateGuildRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some(description) = body.description.as_deref() {
+        if description.trim().len() > MAX_GUILD_DESCRIPTION_LEN {
+            return Err(ApiError::BadRequest("description is too long".into()));
+        }
+        if contains_dangerous_markup(description) {
+            return Err(ApiError::BadRequest(
+                "description contains unsafe markup".into(),
+            ));
+        }
+    }
+
     let updated = paracord_core::guild::update_guild(
         &state.db,
         guild_id,
@@ -241,6 +263,79 @@ pub async fn transfer_ownership(
     Ok(Json(payload))
 }
 
+#[derive(Deserialize)]
+pub struct ChannelPositionEntry {
+    pub id: String,
+    pub position: i32,
+    pub parent_id: Option<String>,
+}
+
+pub async fn update_channel_positions(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<i64>,
+    Json(body): Json<Vec<ChannelPositionEntry>>,
+) -> Result<Json<Value>, ApiError> {
+    if body.is_empty() {
+        return Err(ApiError::BadRequest(
+            "positions array must not be empty".into(),
+        ));
+    }
+    if body.len() > 500 {
+        return Err(ApiError::BadRequest(
+            "too many channel position updates".into(),
+        ));
+    }
+
+    let guild = paracord_db::guilds::get_guild(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    let roles = paracord_db::roles::get_member_roles(&state.db, auth.user_id, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let perms = paracord_core::permissions::compute_permissions_from_roles(
+        &roles,
+        guild.owner_id,
+        auth.user_id,
+    );
+    paracord_core::permissions::require_permission(perms, Permissions::MANAGE_CHANNELS)?;
+
+    let mut updates = Vec::with_capacity(body.len());
+    for entry in &body {
+        let channel_id = entry
+            .id
+            .parse::<i64>()
+            .map_err(|_| ApiError::BadRequest("Invalid channel id".into()))?;
+        let parent_id = match &entry.parent_id {
+            Some(pid) => {
+                if pid.is_empty() || pid == "null" {
+                    Some(None)
+                } else {
+                    Some(Some(pid.parse::<i64>().map_err(|_| {
+                        ApiError::BadRequest("Invalid parent_id".into())
+                    })?))
+                }
+            }
+            None => None,
+        };
+        updates.push((channel_id, entry.position, parent_id));
+    }
+
+    let changed = paracord_db::channels::update_channel_positions(&state.db, guild_id, &updates)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    for channel in &changed {
+        let channel_json = crate::routes::channels::channel_to_json(channel);
+        state
+            .event_bus
+            .dispatch("CHANNEL_UPDATE", channel_json, Some(guild_id));
+    }
+
+    Ok(Json(json!({ "updated": changed.len() })))
+}
+
 pub async fn get_channels(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -269,12 +364,11 @@ pub async fn get_channels(
         if !perms.contains(Permissions::VIEW_CHANNEL) {
             continue;
         }
-        let required_role_ids: Vec<String> = paracord_db::channels::parse_required_role_ids(
-            &c.required_role_ids,
-        )
-        .into_iter()
-        .map(|id| id.to_string())
-        .collect();
+        let required_role_ids: Vec<String> =
+            paracord_db::channels::parse_required_role_ids(&c.required_role_ids)
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect();
         result.push(json!({
             "id": c.id.to_string(),
             "guild_id": c.guild_id().map(|id| id.to_string()),

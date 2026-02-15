@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
-import { X, Upload, GripVertical, Shield, Users, Hash, Link, Gavel, ScrollText, RefreshCw, Trash2 } from 'lucide-react';
+import { X, Upload, GripVertical, Shield, Users, Hash, Link, Gavel, ScrollText, RefreshCw, Trash2, Smile, Calendar, Bot } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { guildApi } from '../../api/guilds';
 import { inviteApi } from '../../api/invites';
 import { channelApi } from '../../api/channels';
+import { webhookApi } from '../../api/webhooks';
+import { botApi, type BotApplication, type GuildBotEntry } from '../../api/bots';
+import { emojiApi } from '../../api/emojis';
 import { useGuildStore } from '../../stores/guildStore';
 import { useAuthStore } from '../../stores/authStore';
 import { invalidateGuildPermissionCache, usePermissions } from '../../hooks/usePermissions';
 import { Permissions, hasPermission } from '../../types';
-import type { AuditLogEntry, Ban, Channel, Guild, Invite, Member, Role } from '../../types';
+import type { AuditLogEntry, Ban, Channel, Guild, GuildEmoji, Invite, Member, Role } from '../../types';
+import type { Webhook } from '../../types';
 import { isAllowedImageMimeType, isSafeImageDataUrl } from '../../lib/security';
+import { API_BASE_URL } from '../../lib/apiBaseUrl';
 import { cn } from '../../lib/utils';
+import { buildGuildEmojiImageUrl } from '../../lib/customEmoji';
+import { EventList } from './EventList';
 
 interface GuildSettingsProps {
   guildId: string;
@@ -19,7 +26,7 @@ interface GuildSettingsProps {
   onClose: () => void;
 }
 
-type SettingsSection = 'overview' | 'roles' | 'members' | 'channels' | 'invites' | 'bans' | 'audit-log';
+type SettingsSection = 'overview' | 'roles' | 'members' | 'channels' | 'invites' | 'emojis' | 'webhooks' | 'bots' | 'events' | 'bans' | 'audit-log';
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <Hash size={16} /> },
@@ -27,6 +34,10 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'members', label: 'Members', icon: <Users size={16} /> },
   { id: 'channels', label: 'Channels', icon: <Hash size={16} /> },
   { id: 'invites', label: 'Invites', icon: <Link size={16} /> },
+  { id: 'emojis', label: 'Emojis', icon: <Smile size={16} /> },
+  { id: 'webhooks', label: 'Webhooks', icon: <Link size={16} /> },
+  { id: 'bots', label: 'Bots', icon: <Bot size={16} /> },
+  { id: 'events', label: 'Events', icon: <Calendar size={16} /> },
   { id: 'bans', label: 'Bans', icon: <Gavel size={16} /> },
   { id: 'audit-log', label: 'Audit Log', icon: <ScrollText size={16} /> },
 ];
@@ -38,6 +49,8 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
   const authUser = useAuthStore((s) => s.user);
   const { permissions, isAdmin } = usePermissions(guildId);
   const canManageRoleSettings = isAdmin || hasPermission(permissions, Permissions.MANAGE_GUILD);
+  const canManageEmojis = isAdmin || hasPermission(permissions, Permissions.MANAGE_EMOJIS);
+  const canManageWebhooks = isAdmin || hasPermission(permissions, Permissions.MANAGE_WEBHOOKS);
   const memberRoleId = guildId;
   const [activeSection, setActiveSection] = useState<SettingsSection>('overview');
   const [guild, setGuild] = useState<Guild | null>(null);
@@ -45,6 +58,12 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
   const [members, setMembers] = useState<Member[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [emojis, setEmojis] = useState<GuildEmoji[]>([]);
+  const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [guildBots, setGuildBots] = useState<GuildBotEntry[]>([]);
+  const [userBotApps, setUserBotApps] = useState<BotApplication[]>([]);
+  const [selectedOwnBotId, setSelectedOwnBotId] = useState('');
+  const [addBotId, setAddBotId] = useState('');
   const [bans, setBans] = useState<Ban[]>([]);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,16 +78,32 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
   const [editingRoleHoist, setEditingRoleHoist] = useState(false);
   const [editingRoleMentionable, setEditingRoleMentionable] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
-  const [newChannelType, setNewChannelType] = useState<'text' | 'voice'>('text');
+  const [newChannelType, setNewChannelType] = useState<'text' | 'voice' | 'forum'>('text');
   const [newChannelRequiredRoleIds, setNewChannelRequiredRoleIds] = useState<string[]>([]);
   const [editingChannelRoleIds, setEditingChannelRoleIds] = useState<Record<string, string[]>>({});
   const [editingChannelAccessId, setEditingChannelAccessId] = useState<string | null>(null);
+  const [newWebhookName, setNewWebhookName] = useState('');
+  const [newWebhookChannelId, setNewWebhookChannelId] = useState('');
+  const [webhookFilterChannelId, setWebhookFilterChannelId] = useState<'all' | string>('all');
+  const [editingWebhookId, setEditingWebhookId] = useState<string | null>(null);
+  const [editingWebhookName, setEditingWebhookName] = useState('');
+  const [issuedWebhookTokens, setIssuedWebhookTokens] = useState<Record<string, string>>({});
+  const [copiedWebhookId, setCopiedWebhookId] = useState<string | null>(null);
+  const [webhookInspectingId, setWebhookInspectingId] = useState<string | null>(null);
+  const [webhookExecutingId, setWebhookExecutingId] = useState<string | null>(null);
+  const [webhookTestMessages, setWebhookTestMessages] = useState<Record<string, string>>({});
+  const [newEmojiName, setNewEmojiName] = useState('');
+  const [newEmojiFile, setNewEmojiFile] = useState<File | null>(null);
+  const [editingEmojiId, setEditingEmojiId] = useState<string | null>(null);
+  const [editingEmojiName, setEditingEmojiName] = useState('');
   const [memberSearch, setMemberSearch] = useState('');
   const [editingMemberRoleUserId, setEditingMemberRoleUserId] = useState<string | null>(null);
   const [draftMemberRoleIds, setDraftMemberRoleIds] = useState<string[]>([]);
   const [iconDataUrl, setIconDataUrl] = useState<string | null>(null);
   const [banReasonInput, setBanReasonInput] = useState('');
   const [banConfirmUserId, setBanConfirmUserId] = useState<string | null>(null);
+  const [ownershipTargetUserId, setOwnershipTargetUserId] = useState('');
+  const [transferringOwnership, setTransferringOwnership] = useState(false);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 768px)').matches;
@@ -96,13 +131,28 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     setLoading(true);
     setError(null);
     try {
-      const [guildRes, rolesRes, membersRes, channelsRes, invitesRes, bansRes, auditRes] =
+      const webhookPromise = canManageWebhooks
+        ? webhookFilterChannelId === 'all'
+          ? webhookApi.listGuild(guildId)
+          : webhookApi.listChannel(webhookFilterChannelId)
+        : Promise.resolve({ data: [] as Webhook[] });
+      const botsPromise = canManageRoleSettings
+        ? botApi.listGuildBots(guildId).catch(() => ({ data: [] as GuildBotEntry[] }))
+        : Promise.resolve({ data: [] as GuildBotEntry[] });
+      const ownAppsPromise = canManageRoleSettings
+        ? botApi.list().catch(() => ({ data: [] as BotApplication[] }))
+        : Promise.resolve({ data: [] as BotApplication[] });
+      const [guildRes, rolesRes, membersRes, channelsRes, invitesRes, emojiRes, webhookRes, botsRes, ownAppsRes, bansRes, auditRes] =
         await Promise.all([
           guildApi.get(guildId),
           guildApi.getRoles(guildId),
           guildApi.getMembers(guildId),
           guildApi.getChannels(guildId),
           guildApi.getInvites(guildId),
+          emojiApi.listGuild(guildId),
+          webhookPromise,
+          botsPromise,
+          ownAppsPromise,
           guildApi.getBans(guildId),
           guildApi.getAuditLog(guildId),
         ]);
@@ -130,8 +180,23 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
         )
       );
       setInvites(invitesRes.data);
+      setEmojis(emojiRes.data);
+      setWebhooks(webhookRes.data);
+      setGuildBots(botsRes.data);
+      setUserBotApps(ownAppsRes.data);
+      setSelectedOwnBotId((current) => {
+        if (!ownAppsRes.data.length) return '';
+        if (current && ownAppsRes.data.some((app) => app.id === current)) return current;
+        return ownAppsRes.data[0].id;
+      });
       setBans(bansRes.data);
       setAuditEntries(auditRes.data.audit_log_entries || []);
+      if (!newWebhookChannelId) {
+        const firstTextChannel = normalizedChannels.find((c) => c.type === 0 || c.channel_type === 0);
+        if (firstTextChannel) {
+          setNewWebhookChannelId(firstTextChannel.id);
+        }
+      }
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, 'Failed to load guild settings'));
     } finally {
@@ -141,7 +206,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
 
   useEffect(() => {
     void refreshAll();
-  }, [guildId]);
+  }, [guildId, canManageWebhooks, webhookFilterChannelId]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -152,6 +217,10 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       requested === 'members' ||
       requested === 'channels' ||
       requested === 'invites' ||
+      requested === 'emojis' ||
+      requested === 'webhooks' ||
+      requested === 'bots' ||
+      requested === 'events' ||
       requested === 'bans' ||
       requested === 'audit-log'
     ) {
@@ -177,6 +246,39 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     () => roles.filter((role) => role.id !== memberRoleId),
     [roles, memberRoleId]
   );
+  const channelNameById = useMemo(
+    () =>
+      new Map(
+        channels.map((channel) => [
+          channel.id,
+          channel.name || `channel-${channel.id.slice(0, 6)}`,
+        ])
+      ),
+    [channels]
+  );
+  const ownershipCandidates = useMemo(
+    () => members.filter((member) => member.user.id !== guild?.owner_id),
+    [members, guild?.owner_id]
+  );
+
+  useEffect(() => {
+    if (webhookFilterChannelId === 'all') return;
+    const channelStillExists = channels.some((channel) => channel.id === webhookFilterChannelId);
+    if (!channelStillExists) {
+      setWebhookFilterChannelId('all');
+    }
+  }, [channels, webhookFilterChannelId]);
+
+  useEffect(() => {
+    if (!ownershipCandidates.length) {
+      setOwnershipTargetUserId('');
+      return;
+    }
+    if (ownershipTargetUserId && ownershipCandidates.some((member) => member.user.id === ownershipTargetUserId)) {
+      return;
+    }
+    setOwnershipTargetUserId(ownershipCandidates[0].user.id);
+  }, [ownershipCandidates, ownershipTargetUserId]);
 
   const roleColorHex = (role: Role) =>
     role.color ? `#${role.color.toString(16).padStart(6, '0')}` : '#99aab5';
@@ -314,7 +416,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     await runAction(async () => {
       await guildApi.createChannel(guildId, {
         name: newChannelName.trim(),
-        channel_type: newChannelType === 'voice' ? 2 : 0,
+        channel_type: newChannelType === 'voice' ? 2 : newChannelType === 'forum' ? 7 : 0,
         parent_id: null,
         ...(canManageRoleSettings ? { required_role_ids: newChannelRequiredRoleIds } : {}),
       });
@@ -361,6 +463,184 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       await guildApi.createInvite(firstTextChannel.id, { max_age: 86400, max_uses: 0 });
       await refreshAll();
     }, 'Failed to create invite');
+  };
+
+  const createEmoji = async () => {
+    if (!canManageEmojis) return;
+    if (!newEmojiName.trim()) return;
+    if (!newEmojiFile) {
+      setError('Select a PNG or GIF file to upload.');
+      return;
+    }
+    await runAction(async () => {
+      await emojiApi.create(guildId, { name: newEmojiName, file: newEmojiFile });
+      setNewEmojiName('');
+      setNewEmojiFile(null);
+      await refreshAll();
+    }, 'Failed to create emoji');
+  };
+
+  const startEditingEmoji = (emoji: GuildEmoji) => {
+    setEditingEmojiId(emoji.id);
+    setEditingEmojiName(emoji.name);
+  };
+
+  const saveEmojiName = async (emojiId: string) => {
+    if (!canManageEmojis) return;
+    const trimmed = editingEmojiName.trim();
+    if (!trimmed) return;
+    await runAction(async () => {
+      await emojiApi.update(guildId, emojiId, trimmed);
+      setEditingEmojiId(null);
+      setEditingEmojiName('');
+      await refreshAll();
+    }, 'Failed to rename emoji');
+  };
+
+  const deleteEmoji = async (emojiId: string) => {
+    if (!canManageEmojis) return;
+    await runAction(async () => {
+      await emojiApi.delete(guildId, emojiId);
+      if (editingEmojiId === emojiId) {
+        setEditingEmojiId(null);
+        setEditingEmojiName('');
+      }
+      await refreshAll();
+    }, 'Failed to delete emoji');
+  };
+
+  const webhookBase = (() => {
+    if (API_BASE_URL.startsWith('http://') || API_BASE_URL.startsWith('https://')) {
+      return API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+    }
+    if (typeof window !== 'undefined') {
+      return window.location.origin;
+    }
+    return '';
+  })();
+
+  const buildWebhookExecuteUrl = (webhookId: string, token: string) =>
+    `${webhookBase}/api/v1/webhooks/${webhookId}/${token}`;
+
+  const createWebhook = async () => {
+    if (!canManageWebhooks) return;
+    const trimmed = newWebhookName.trim();
+    if (!trimmed) return;
+    await runAction(async () => {
+      const payload: { name: string; channel_id?: string } = { name: trimmed };
+      if (newWebhookChannelId) payload.channel_id = newWebhookChannelId;
+      const { data } = await webhookApi.create(guildId, payload);
+      if (data.token) {
+        setIssuedWebhookTokens((prev) => ({ ...prev, [data.id]: data.token! }));
+      }
+      setWebhookTestMessages((prev) => ({ ...prev, [data.id]: '' }));
+      setNewWebhookName('');
+      await refreshAll();
+    }, 'Failed to create webhook');
+  };
+
+  const startEditingWebhook = (webhook: Webhook) => {
+    setEditingWebhookId(webhook.id);
+    setEditingWebhookName(webhook.name);
+  };
+
+  const saveWebhookName = async (webhookId: string) => {
+    if (!canManageWebhooks) return;
+    const trimmed = editingWebhookName.trim();
+    if (!trimmed) return;
+    await runAction(async () => {
+      await webhookApi.update(webhookId, { name: trimmed });
+      setEditingWebhookId(null);
+      setEditingWebhookName('');
+      await refreshAll();
+    }, 'Failed to update webhook');
+  };
+
+  const deleteWebhook = async (webhookId: string) => {
+    if (!canManageWebhooks) return;
+    await runAction(async () => {
+      await webhookApi.delete(webhookId);
+      setIssuedWebhookTokens((prev) => {
+        const next = { ...prev };
+        delete next[webhookId];
+        return next;
+      });
+      setWebhookTestMessages((prev) => {
+        const next = { ...prev };
+        delete next[webhookId];
+        return next;
+      });
+      await refreshAll();
+    }, 'Failed to delete webhook');
+  };
+
+  const copyWebhookUrl = async (webhookId: string) => {
+    const token = issuedWebhookTokens[webhookId];
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(buildWebhookExecuteUrl(webhookId, token));
+      setCopiedWebhookId(webhookId);
+      window.setTimeout(() => {
+        setCopiedWebhookId((current) => (current === webhookId ? null : current));
+      }, 1800);
+    } catch {
+      setError('Could not copy webhook URL');
+    }
+  };
+
+  const inspectWebhook = async (webhookId: string) => {
+    if (!canManageWebhooks || webhookInspectingId) return;
+    setWebhookInspectingId(webhookId);
+    try {
+      const { data } = await webhookApi.get(webhookId);
+      setWebhooks((prev) => prev.map((webhook) => (webhook.id === webhookId ? { ...webhook, ...data } : webhook)));
+    } catch {
+      setError('Failed to refresh webhook details');
+    } finally {
+      setWebhookInspectingId(null);
+    }
+  };
+
+  const executeWebhookTest = async (webhookId: string) => {
+    if (!canManageWebhooks || webhookExecutingId) return;
+    const token = issuedWebhookTokens[webhookId];
+    if (!token) {
+      setError('Webhook token unavailable. Recreate this webhook to test execution from the UI.');
+      return;
+    }
+    const content = (webhookTestMessages[webhookId] || '').trim();
+    if (!content) {
+      setError('Enter a test message before executing the webhook.');
+      return;
+    }
+    setWebhookExecutingId(webhookId);
+    try {
+      await webhookApi.execute(webhookId, token, { content });
+      setWebhookTestMessages((prev) => ({ ...prev, [webhookId]: '' }));
+      setError(null);
+    } catch {
+      setError('Failed to execute webhook test message');
+    } finally {
+      setWebhookExecutingId(null);
+    }
+  };
+
+  const transferOwnership = async () => {
+    if (!guild || !authUser) return;
+    if (guild.owner_id !== authUser.id) return;
+    if (!ownershipTargetUserId) return;
+    const targetMember = members.find((member) => member.user.id === ownershipTargetUserId);
+    const targetName = targetMember?.nick || targetMember?.user.username || ownershipTargetUserId;
+    if (!window.confirm(`Transfer server ownership to ${targetName}?`)) return;
+    setTransferringOwnership(true);
+    try {
+      await runAction(async () => {
+        await guildApi.transferOwnership(guildId, ownershipTargetUserId);
+        await refreshAll();
+      }, 'Failed to transfer ownership');
+    } finally {
+      setTransferringOwnership(false);
+    }
   };
 
   const unban = async (userId: string) => {
@@ -533,6 +813,36 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 <div className="mt-1 text-xl font-semibold text-text-primary">{invites.length}</div>
               </div>
             </div>
+            {guild && authUser && guild.owner_id === authUser.id && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 px-4 py-4">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                  Transfer Ownership
+                </div>
+                <div className="text-sm text-text-muted">
+                  Transfer this server to another member. You will lose owner privileges.
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2.5">
+                  <select
+                    className="select-field min-w-[16rem] flex-1"
+                    value={ownershipTargetUserId}
+                    onChange={(e) => setOwnershipTargetUserId(e.target.value)}
+                  >
+                    {ownershipCandidates.map((member) => (
+                      <option key={member.user.id} value={member.user.id}>
+                        {(member.nick || member.user.username) + ' (' + member.user.id + ')'}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="rounded-lg border border-accent-danger/30 bg-accent-danger/10 px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15 disabled:opacity-60"
+                    onClick={() => void transferOwnership()}
+                    disabled={transferringOwnership || !ownershipTargetUserId}
+                  >
+                    {transferringOwnership ? 'Transferring...' : 'Transfer'}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm leading-6 text-text-secondary">
               Keep this server profile complete so new members instantly recognize your community and can orient themselves faster.
             </div>
@@ -943,9 +1253,10 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
               })}
               <div className="settings-action-row">
                 <input className="input-field flex-1" placeholder="New channel name" value={newChannelName} onChange={(e) => setNewChannelName(e.target.value)} />
-                <select className="select-field min-w-[8.75rem]" value={newChannelType} onChange={(e) => setNewChannelType(e.target.value as 'text' | 'voice')}>
+                <select className="select-field min-w-[8.75rem]" value={newChannelType} onChange={(e) => setNewChannelType(e.target.value as 'text' | 'voice' | 'forum')}>
                   <option value="text">Text</option>
                   <option value="voice">Voice</option>
+                  <option value="forum">Forum</option>
                 </select>
                 <button className="btn-primary" onClick={() => void createChannel()}>Create</button>
               </div>
@@ -1026,6 +1337,480 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
           </div>
         )}
 
+        {activeSection === 'emojis' && (
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+            <h2 className="settings-section-title !mb-0">Emojis</h2>
+            {!canManageEmojis && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                You can view server emojis, but Manage Emojis permission is required to add, rename, or delete.
+              </div>
+            )}
+
+            {canManageEmojis && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <input
+                    className="input-field"
+                    placeholder="emoji_name"
+                    value={newEmojiName}
+                    maxLength={32}
+                    onChange={(e) => setNewEmojiName(e.target.value)}
+                  />
+                  <label className="inline-flex h-[2.9rem] cursor-pointer items-center justify-center rounded-lg border border-border-subtle bg-bg-primary/50 px-3.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary">
+                    <input
+                      type="file"
+                      accept="image/png,image/gif"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] ?? null;
+                        if (!file) {
+                          setNewEmojiFile(null);
+                          return;
+                        }
+                        if (file.type !== 'image/png' && file.type !== 'image/gif') {
+                          setError('Only PNG and GIF emoji files are supported.');
+                          e.currentTarget.value = '';
+                          return;
+                        }
+                        if (file.size > 256 * 1024) {
+                          setError('Emoji image must be 256 KB or less.');
+                          e.currentTarget.value = '';
+                          return;
+                        }
+                        setError(null);
+                        setNewEmojiFile(file);
+                      }}
+                    />
+                    <span className="truncate">
+                      {newEmojiFile ? newEmojiFile.name : 'Select PNG/GIF (256 KB max)'}
+                    </span>
+                  </label>
+                  <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createEmoji()}>
+                    Upload
+                  </button>
+                </div>
+                <p className="mt-3 text-xs text-text-muted">
+                  Emoji names support letters, numbers, and underscores. Uploaded files are validated client and server side.
+                </p>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {emojis
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((emoji) => {
+                  const editing = editingEmojiId === emoji.id;
+                  return (
+                    <div
+                      key={emoji.id}
+                      className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
+                    >
+                      <div className="flex items-start gap-3">
+                        <img
+                          src={buildGuildEmojiImageUrl(guildId, emoji.id)}
+                          alt={emoji.name}
+                          className="h-11 w-11 shrink-0 rounded-lg border border-border-subtle bg-bg-primary/50 object-contain p-1"
+                          loading="lazy"
+                        />
+                        <div className="min-w-0 flex-1">
+                          {editing ? (
+                            <input
+                              className="input-field"
+                              value={editingEmojiName}
+                              maxLength={32}
+                              onChange={(e) => setEditingEmojiName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void saveEmojiName(emoji.id);
+                                if (e.key === 'Escape') {
+                                  setEditingEmojiId(null);
+                                  setEditingEmojiName('');
+                                }
+                              }}
+                              autoFocus
+                            />
+                          ) : (
+                            <p className="truncate text-sm font-semibold text-text-primary">{emoji.name}</p>
+                          )}
+                          <p className="mt-1 truncate text-xs text-text-muted">
+                            &lt;{emoji.animated ? 'a' : ''}:{emoji.name}:{emoji.id}&gt;
+                          </p>
+                        </div>
+                      </div>
+                      {canManageEmojis && (
+                        <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
+                          {editing ? (
+                            <>
+                              <button className="btn-primary" onClick={() => void saveEmojiName(emoji.id)}>
+                                Save
+                              </button>
+                              <button
+                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                onClick={() => {
+                                  setEditingEmojiId(null);
+                                  setEditingEmojiName('');
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                              onClick={() => startEditingEmoji(emoji)}
+                            >
+                              Rename
+                            </button>
+                          )}
+                          <button
+                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
+                            onClick={() => void deleteEmoji(emoji.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+
+            {emojis.length === 0 && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                <p className="text-sm text-text-muted">No custom emojis uploaded yet.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeSection === 'webhooks' && (
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+            <h2 className="settings-section-title !mb-0">Webhooks</h2>
+            {!canManageWebhooks && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                You need the Manage Webhooks permission to create, edit, or delete webhooks.
+              </div>
+            )}
+            {canManageWebhooks && (
+              <>
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Filter</div>
+                  <select
+                    className="select-field"
+                    value={webhookFilterChannelId}
+                    onChange={(e) => setWebhookFilterChannelId(e.target.value)}
+                  >
+                    <option value="all">All channels</option>
+                    {channels
+                      .filter((channel) => channel.type === 0 || channel.channel_type === 0)
+                      .sort((a, b) => a.position - b.position)
+                      .map((channel) => (
+                        <option key={channel.id} value={channel.id}>
+                          #{channel.name || 'unnamed'}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem_auto]">
+                    <input
+                      className="input-field"
+                      placeholder="Webhook name"
+                      value={newWebhookName}
+                      maxLength={80}
+                      onChange={(e) => setNewWebhookName(e.target.value)}
+                    />
+                    <select
+                      className="select-field"
+                      value={newWebhookChannelId}
+                      onChange={(e) => setNewWebhookChannelId(e.target.value)}
+                    >
+                      {channels
+                        .filter((channel) => channel.type === 0 || channel.channel_type === 0)
+                        .sort((a, b) => a.position - b.position)
+                        .map((channel) => (
+                          <option key={channel.id} value={channel.id}>
+                            #{channel.name || 'unnamed'}
+                          </option>
+                        ))}
+                    </select>
+                    <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createWebhook()}>
+                      Create
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs text-text-muted">
+                    Webhook execute URLs are shown only when the webhook is created in this session.
+                  </p>
+                </div>
+              </>
+            )}
+
+            <div className="card-stack">
+              {webhooks
+                .slice()
+                .sort((a, b) => a.created_at.localeCompare(b.created_at))
+                .map((webhook) => {
+                  const editing = editingWebhookId === webhook.id;
+                  const issuedToken = issuedWebhookTokens[webhook.id];
+                  const testMessage = webhookTestMessages[webhook.id] ?? '';
+                  const createdLabel = new Date(webhook.created_at).toLocaleString();
+                  return (
+                    <div
+                      key={webhook.id}
+                      className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3 sm:px-5 sm:py-4"
+                    >
+                      <div className="flex flex-col gap-3">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          {editing ? (
+                            <input
+                              className="input-field min-w-[14rem] flex-1"
+                              value={editingWebhookName}
+                              maxLength={80}
+                              onChange={(e) => setEditingWebhookName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void saveWebhookName(webhook.id);
+                                if (e.key === 'Escape') {
+                                  setEditingWebhookId(null);
+                                  setEditingWebhookName('');
+                                }
+                              }}
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="text-sm font-semibold text-text-primary">{webhook.name}</span>
+                          )}
+                          <span className="rounded-lg border border-border-subtle px-2 py-1 text-[11px] font-semibold text-text-secondary">
+                            #{channelNameById.get(webhook.channel_id) || 'unknown'}
+                          </span>
+                          <span className="text-xs text-text-muted">Created {createdLabel}</span>
+                        </div>
+
+                        <div className="rounded-lg border border-border-subtle bg-bg-primary/55 px-3 py-2 text-xs">
+                          {issuedToken ? (
+                            <div className="flex flex-wrap items-center gap-2.5">
+                              <span className="font-mono text-text-secondary">
+                                {buildWebhookExecuteUrl(webhook.id, issuedToken)}
+                              </span>
+                              <button
+                                className="rounded-lg border border-border-subtle px-2.5 py-1 font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                onClick={() => void copyWebhookUrl(webhook.id)}
+                              >
+                                {copiedWebhookId === webhook.id ? 'Copied' : 'Copy URL'}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-text-muted">
+                              Token not displayed. Create a new webhook to capture its execute URL.
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          {editing ? (
+                            <>
+                              <button className="btn-primary" onClick={() => void saveWebhookName(webhook.id)}>
+                                Save
+                              </button>
+                              <button
+                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                onClick={() => {
+                                  setEditingWebhookId(null);
+                                  setEditingWebhookName('');
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                              onClick={() => startEditingWebhook(webhook)}
+                            >
+                              Rename
+                            </button>
+                          )}
+                          <button
+                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary disabled:opacity-60"
+                            onClick={() => void inspectWebhook(webhook.id)}
+                            disabled={webhookInspectingId === webhook.id}
+                          >
+                            {webhookInspectingId === webhook.id ? 'Refreshing...' : 'Refresh'}
+                          </button>
+                          <button
+                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
+                            onClick={() => void deleteWebhook(webhook.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+
+                        {issuedToken && (
+                          <div className="rounded-lg border border-border-subtle bg-bg-primary/45 px-3 py-2.5">
+                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                              Test Execute
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                className="input-field min-w-[14rem] flex-1"
+                                placeholder="Send a test webhook message"
+                                value={testMessage}
+                                maxLength={2000}
+                                onChange={(e) =>
+                                  setWebhookTestMessages((prev) => ({ ...prev, [webhook.id]: e.target.value }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    void executeWebhookTest(webhook.id);
+                                  }
+                                }}
+                              />
+                              <button
+                                className="btn-primary"
+                                onClick={() => void executeWebhookTest(webhook.id)}
+                                disabled={webhookExecutingId === webhook.id || !testMessage.trim()}
+                              >
+                                {webhookExecutingId === webhook.id ? 'Sending...' : 'Send Test'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+              {webhooks.length === 0 && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                  <p className="text-sm text-text-muted">No webhooks configured.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeSection === 'bots' && (
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+            <h2 className="settings-section-title !mb-0">Bots</h2>
+            {!canManageRoleSettings && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                You need Manage Server permission to add or remove bots.
+              </div>
+            )}
+            {canManageRoleSettings && (
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                <div className="space-y-3.5">
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <select
+                      className="select-field"
+                      value={selectedOwnBotId}
+                      onChange={(e) => setSelectedOwnBotId(e.target.value)}
+                    >
+                      {userBotApps.length === 0 && (
+                        <option value="">No developer apps found</option>
+                      )}
+                      {userBotApps.map((app) => (
+                        <option key={app.id} value={app.id}>
+                          {app.name} ({app.id})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn-primary h-[2.9rem] min-w-[8rem]"
+                      onClick={() => {
+                        if (!selectedOwnBotId) return;
+                        void runAction(async () => {
+                          await botApi.addBotToGuild(guildId, { application_id: selectedOwnBotId });
+                          await refreshAll();
+                        }, 'Failed to add bot');
+                      }}
+                      disabled={!selectedOwnBotId}
+                    >
+                      Add Owned Bot
+                    </button>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                    <input
+                      className="input-field"
+                      placeholder="Third-party Bot Application ID"
+                      value={addBotId}
+                      onChange={(e) => setAddBotId(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && addBotId.trim()) {
+                          void runAction(async () => {
+                            await botApi.addBotToGuild(guildId, { application_id: addBotId.trim() });
+                            setAddBotId('');
+                            await refreshAll();
+                          }, 'Failed to add bot');
+                        }
+                      }}
+                    />
+                    <button
+                      className="btn-primary h-[2.9rem] min-w-[8rem]"
+                      onClick={() => {
+                        if (!addBotId.trim()) return;
+                        void runAction(async () => {
+                          await botApi.addBotToGuild(guildId, { application_id: addBotId.trim() });
+                          setAddBotId('');
+                          await refreshAll();
+                        }, 'Failed to add bot');
+                      }}
+                    >
+                      Add by ID
+                    </button>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-text-muted">
+                  Add your own apps quickly from the dropdown, or paste a third-party application ID.
+                </p>
+              </div>
+            )}
+
+            <div className="card-stack">
+              {guildBots.map((entry) => (
+                <div
+                  key={entry.application.id}
+                  className="card-surface flex flex-wrap items-center gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
+                >
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-primary/15 text-accent-primary">
+                    <Bot size={18} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-text-primary">{entry.application.name}</p>
+                    {entry.application.description && (
+                      <p className="text-xs text-text-muted">{entry.application.description}</p>
+                    )}
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      Added {new Date(entry.install.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  {canManageRoleSettings && (
+                    <button
+                      className="rounded-lg px-3 py-1.5 text-sm font-semibold text-accent-danger hover:bg-accent-danger/12"
+                      onClick={() => {
+                        void runAction(async () => {
+                          await botApi.removeBotFromGuild(guildId, entry.application.id);
+                          await refreshAll();
+                        }, 'Failed to remove bot');
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              {guildBots.length === 0 && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                  <Bot size={36} className="mx-auto mb-2 text-text-muted" />
+                  <p className="text-sm text-text-muted">No bots installed in this server.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeSection === 'bans' && (
           <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
             <h2 className="settings-section-title !mb-0">Bans</h2>
@@ -1051,6 +1836,12 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {activeSection === 'events' && (
+          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-0 max-sm:!p-0">
+            <EventList guildId={guildId} />
           </div>
         )}
 
@@ -1081,4 +1872,3 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     </div>
   );
 }
-

@@ -7,7 +7,7 @@ import { isPortableLink, decodePortableLink } from '../lib/portableLinks';
 
 /**
  * Normalise a raw server address into a full URL with protocol.
- * Uses http:// for IP addresses / localhost, https:// for domain names.
+ * Defaults to https:// for all non-localhost addresses.
  */
 function normaliseServerUrl(raw: string): string {
   let serverUrl = raw.trim();
@@ -23,10 +23,9 @@ function normaliseServerUrl(raw: string): string {
       return window.location.origin.replace(/\/+$/, '');
     }
 
-    const isIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostPart) || hostPart === 'localhost';
-    const preferHttps =
-      typeof window !== 'undefined' && window.location.protocol.toLowerCase() === 'https:';
-    serverUrl = ((isIp && !preferHttps) ? 'http://' : 'https://') + serverUrl;
+    const isLocalhost =
+      hostPart === 'localhost' || hostPart === '127.0.0.1' || hostPart === '[::1]';
+    serverUrl = (isLocalhost ? 'http://' : 'https://') + serverUrl;
   }
   return serverUrl.replace(/\/+$/, '');
 }
@@ -62,6 +61,10 @@ function parseInput(input: string): { serverUrl: string; inviteCode?: string } {
 
   // 3. Plain server URL / address
   return { serverUrl: normaliseServerUrl(trimmed) };
+}
+
+function isLocalhostHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
 /** Probe /health and verify this is a Paracord server. Returns the server name if available. */
@@ -101,6 +104,16 @@ export function ServerConnectPage() {
 
     try {
       const { serverUrl, inviteCode } = parseInput(input);
+      const parsedUrl = new URL(serverUrl);
+      if (parsedUrl.protocol === 'http:' && !isLocalhostHost(parsedUrl.hostname)) {
+        const proceed = window.confirm(
+          'This server uses unencrypted HTTP. Credentials and tokens can be intercepted. Continue anyway?'
+        );
+        if (!proceed) {
+          setLoading(false);
+          return;
+        }
+      }
 
       setStatus('Probing server...');
       const serverName = await probeServer(serverUrl);

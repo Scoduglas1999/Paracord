@@ -1,17 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowRight, Sparkles, Users } from 'lucide-react';
 import { useAuthStore } from '../stores/authStore';
 import { inviteApi } from '../api/invites';
 import { useGuildStore } from '../stores/guildStore';
 import { useChannelStore } from '../stores/channelStore';
+import { extractApiError } from '../api/client';
+import type { Invite } from '../types';
 
 export function InvitePage() {
   const { code } = useParams();
   const navigate = useNavigate();
   const token = useAuthStore(s => s.token);
   const [loading, setLoading] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [invitePreview, setInvitePreview] = useState<Invite | null>(null);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!code) return;
+    setLoadingPreview(true);
+    setError('');
+    inviteApi
+      .get(code)
+      .then(({ data }) => setInvitePreview(data))
+      .catch((err) => setError(`Failed to load invite: ${extractApiError(err)}`))
+      .finally(() => setLoadingPreview(false));
+  }, [code]);
 
   const handleAccept = async () => {
     if (!token) {
@@ -40,7 +55,7 @@ export function InvitePage() {
         navigate(`/app/guilds/${guild.id}/settings`);
       }
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to accept invite');
+      setError(extractApiError(err) || 'Failed to accept invite');
     } finally {
       setLoading(false);
     }
@@ -57,10 +72,28 @@ export function InvitePage() {
           <Users size={30} />
         </div>
         <h1 className="mb-1 text-2xl font-bold text-text-primary">You've been invited</h1>
-        <p className="mb-2 text-sm text-text-secondary">Join this server and chat, stream, and hang out live.</p>
+        {loadingPreview ? (
+          <p className="mb-2 text-sm text-text-secondary">Loading invite details...</p>
+        ) : (
+          <p className="mb-2 text-sm text-text-secondary">
+            {invitePreview?.guild?.name
+              ? `Join ${invitePreview.guild.name} and start chatting.`
+              : 'Join this server and chat, stream, and hang out live.'}
+          </p>
+        )}
         <div className="mb-6 inline-flex items-center rounded-lg border border-border-subtle bg-bg-mod-subtle px-3 py-1.5 text-xs font-semibold tracking-wide text-text-muted">
           Code: <span className="ml-1 font-mono text-text-secondary">{code}</span>
         </div>
+        {invitePreview?.guild && (
+          <div className="mb-4 rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+            <div className="font-semibold text-text-primary">{invitePreview.guild.name}</div>
+            {typeof invitePreview.guild.member_count === 'number' && (
+              <div className="mt-1 text-xs text-text-muted">
+                {invitePreview.guild.member_count.toLocaleString()} members
+              </div>
+            )}
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-3 py-2.5 text-sm font-medium text-accent-danger">
@@ -68,7 +101,7 @@ export function InvitePage() {
           </div>
         )}
 
-        <button onClick={handleAccept} disabled={loading} className="btn-primary w-full">
+        <button onClick={handleAccept} disabled={loading || loadingPreview || !invitePreview} className="btn-primary w-full">
           {loading ? 'Joining...' : 'Accept Invite'}
           {!loading && <ArrowRight size={16} />}
         </button>

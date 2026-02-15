@@ -28,6 +28,13 @@ ed25519-dalek = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
 jsonwebtoken = { workspace = true }
-sha2 = "0.10"
+mime_guess = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
 tokio-util = "0.7"
 futures-util = "0.3"
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }

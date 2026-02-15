@@ -52,6 +52,16 @@ export enum ChannelType {
   GroupDM = 3,
   Category = 4,
   Announcement = 5,
+  Thread = 6,
+  Forum = 7,
+}
+
+export interface ThreadMetadata {
+  archived: boolean;
+  auto_archive_duration: number;
+  archive_timestamp?: string | null;
+  locked: boolean;
+  starter_message_id?: string | null;
 }
 
 export interface Channel {
@@ -69,12 +79,18 @@ export interface Channel {
   parent_id?: string | null;
   last_message_id?: string;
   required_role_ids?: string[];
+  thread_metadata?: ThreadMetadata | null;
+  owner_id?: string | null;
+  message_count?: number | null;
+  applied_tags?: string[] | null;
+  default_sort_order?: number | null;
   created_at: string;
   recipient?: {
     id: string;
     username: string;
     discriminator: string | number;
     avatar_hash?: string | null;
+    public_key?: string | null;
   };
 }
 
@@ -88,6 +104,7 @@ export enum MessageType {
   PinnedMessage = 6,
   GuildMemberJoin = 7,
   Reply = 19,
+  Poll = 20,
 }
 
 export interface Message {
@@ -95,6 +112,7 @@ export interface Message {
   channel_id: string;
   author: MessageAuthor;
   content: string | null;
+  e2ee?: MessageE2eePayload | null;
   timestamp?: string;
   created_at?: string;
   edited_timestamp?: string;
@@ -107,6 +125,7 @@ export interface Message {
   message_type?: number;
   attachments: Attachment[];
   reactions: Reaction[] | unknown[];
+  poll?: Poll;
   referenced_message?: Message;
 }
 
@@ -116,6 +135,31 @@ export interface MessageAuthor {
   discriminator: string;
   avatar?: string;
   avatar_hash?: string | null;
+  public_key?: string | null;
+  bot?: boolean;
+  flags?: number;
+}
+
+export interface MessageE2eePayload {
+  version: number;
+  nonce: string;
+  ciphertext: string;
+}
+
+export interface ForumTag {
+  id: string;
+  channel_id: string;
+  name: string;
+  emoji?: string | null;
+  moderated: boolean;
+  position: number;
+  created_at: string;
+}
+
+export interface ForumPostsResponse {
+  posts: Channel[];
+  tags: ForumTag[];
+  sort_order: number;
 }
 
 export interface Attachment {
@@ -133,6 +177,27 @@ export interface Reaction {
   emoji: string;
   count: number;
   me: boolean;
+}
+
+export interface PollOption {
+  id: string;
+  text: string;
+  emoji?: string | null;
+  position: number;
+  vote_count: number;
+  voted: boolean;
+}
+
+export interface Poll {
+  id: string;
+  message_id: string;
+  channel_id: string;
+  question: string;
+  allow_multiselect: boolean;
+  expires_at?: string | null;
+  created_at: string;
+  options: PollOption[];
+  total_votes: number;
 }
 
 export interface Member {
@@ -171,6 +236,25 @@ export interface Invite {
   guild?: Guild;
   channel?: Channel;
   inviter?: User;
+}
+
+export interface Webhook {
+  id: string;
+  guild_id: string;
+  channel_id: string;
+  name: string;
+  creator_id?: string | null;
+  created_at: string;
+  token?: string;
+}
+
+export interface GuildEmoji {
+  id: string;
+  guild_id: string;
+  name: string;
+  animated: boolean;
+  creator_id?: string | null;
+  created_at: string;
 }
 
 export interface VoiceState {
@@ -311,7 +395,9 @@ export interface ReadyEvent {
 // ============ API Request/Response Types ============
 
 export interface LoginRequest {
-  email: string;
+  email?: string;
+  identifier?: string;
+  username?: string;
   password: string;
 }
 
@@ -348,6 +434,12 @@ export interface SendMessageRequest {
   content: string;
   referenced_message_id?: string;
   attachment_ids?: string[];
+  e2ee?: MessageE2eePayload;
+}
+
+export interface EditMessageRequest {
+  content: string;
+  e2ee?: MessageE2eePayload;
 }
 
 export interface CreateInviteRequest {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import {
@@ -16,11 +16,34 @@ import {
   Headphones,
   HeadphoneOff,
   Command,
+  Compass,
   PanelLeftClose,
   Video,
   Globe,
+  Clipboard,
+  Calendar,
+  ArchiveRestore,
+  GripVertical,
+  MessageSquare,
+  Bot,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+  type DragStartEvent,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useGuildStore } from '../../stores/guildStore';
 import { useChannelStore } from '../../stores/channelStore';
 import { useAuthStore } from '../../stores/authStore';
@@ -38,8 +61,12 @@ import { Permissions, hasPermission, isAdmin, type Channel } from '../../types/i
 import { channelApi } from '../../api/channels';
 import { dmApi } from '../../api/dms';
 import { Tooltip } from '../ui/Tooltip';
+import { ContextMenu, useContextMenu, type ContextMenuItem } from '../ui/ContextMenu';
 import { cn } from '../../lib/utils';
 import { isSafeImageDataUrl } from '../../lib/security';
+import { SkeletonChannel } from '../ui/Skeleton';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { toast } from '../../stores/toastStore';
 
 const GUILD_COLORS = [
   '#5865f2', '#57f287', '#fee75c', '#eb459e', '#ed4245',
@@ -63,6 +90,241 @@ interface CategoryGroup {
   channels: Channel[];
 }
 
+function getChannelType(channel: Channel): number {
+  return channel.channel_type ?? channel.type;
+}
+
+function isThreadChannel(channel: Channel): boolean {
+  return getChannelType(channel) === 6;
+}
+
+interface SortableChannelItemProps {
+  channel: Channel;
+  isSelected: boolean;
+  isVoice: boolean;
+  canDrag: boolean;
+  guildId: string;
+  categoryId: string | null;
+  onChannelClick: (channel: Channel, guildId: string) => void;
+  onContextMenu: (e: React.MouseEvent, channel: Channel, guildId: string) => void;
+  canManageChannels: boolean;
+  voiceMembers: Array<{ user_id: string; username?: string; self_mute?: boolean; self_deaf?: boolean; self_video?: boolean; self_stream?: boolean }>;
+  speakingUsers: Set<string>;
+  userId?: string;
+  selfStream: boolean;
+  watchedStreamerId: string | null;
+  setWatchedStreamer: (id: string | null) => void;
+  setPreviewStreamer: (id: string | null) => void;
+  setHoverPreview: React.Dispatch<React.SetStateAction<{ userId: string; name: string; x: number; y: number } | null>>;
+  connected: boolean;
+  activeVoiceChannelId: string | null;
+  joinChannel: (channelId: string, guildId: string) => void;
+  selectChannel: (id: string) => void;
+  navigate: ReturnType<typeof useNavigate>;
+  children?: React.ReactNode;
+}
+
+function SortableChannelItem({
+  channel,
+  isSelected,
+  isVoice,
+  canDrag,
+  guildId,
+  categoryId,
+  onChannelClick,
+  onContextMenu,
+  canManageChannels,
+  voiceMembers,
+  speakingUsers,
+  userId,
+  selfStream,
+  watchedStreamerId,
+  setWatchedStreamer,
+  setPreviewStreamer,
+  setHoverPreview,
+  connected,
+  activeVoiceChannelId,
+  joinChannel,
+  selectChannel,
+  navigate,
+  children,
+}: SortableChannelItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: channel.id,
+    disabled: !canDrag,
+  });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : undefined,
+    marginTop: '6px',
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} role="treeitem" aria-selected={isSelected}>
+      <div className="flex items-center">
+        {canDrag && (
+          <button
+            {...attributes}
+            {...listeners}
+            className="mr-0.5 flex h-7 w-4 shrink-0 cursor-grab items-center justify-center text-text-muted/50 opacity-0 transition-opacity hover:text-text-muted group-hover/ch:opacity-100"
+            style={{ touchAction: 'none' }}
+            tabIndex={-1}
+          >
+            <GripVertical size={12} />
+          </button>
+        )}
+        <button
+          data-channel-id={channel.id}
+          data-parent-category={categoryId || undefined}
+          onClick={() => onChannelClick(channel, guildId)}
+          onContextMenu={(e) => onContextMenu(e, channel, guildId)}
+          className={cn(
+            'group/ch flex w-full items-center gap-2.5 rounded-lg px-3 py-3 text-[13.5px] transition-all border',
+            isSelected
+              ? 'bg-accent-primary/12 text-white font-medium shadow-sm border-accent-primary/25'
+              : isVoice
+                ? 'bg-bg-mod-subtle/30 border-border-subtle/40 text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary hover:border-border-subtle/60'
+                : 'bg-bg-mod-subtle/20 border-transparent text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary hover:border-border-subtle/40'
+          )}
+        >
+          {isVoice ? (
+            <Volume2 size={15} className={cn('shrink-0', isSelected ? 'text-accent-primary' : 'text-text-muted')} />
+          ) : getChannelType(channel) === 7 ? (
+            <MessageSquare size={15} className={cn('shrink-0', isSelected ? 'text-accent-primary' : 'text-text-muted')} />
+          ) : (
+            <Hash size={15} className={cn('shrink-0', isSelected ? 'text-accent-primary' : 'text-text-muted')} />
+          )}
+          <span className="truncate">{channel.name || 'unknown'}</span>
+          {!isVoice && canManageChannels && (
+            <span
+              role="button"
+              tabIndex={0}
+              className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover/ch:opacity-100 hover:text-text-primary"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/app/guilds/${guildId}/settings?section=channels&channelId=${channel.id}`);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  navigate(`/app/guilds/${guildId}/settings?section=channels&channelId=${channel.id}`);
+                }
+              }}
+            >
+              <Settings size={11} />
+            </span>
+          )}
+        </button>
+      </div>
+      {isVoice && voiceMembers.length > 0 && (
+        <div
+          className={cn(
+            'mt-1 mb-1.5 space-y-0.5 border-l pl-2.5',
+            canDrag ? 'ml-12' : 'ml-10'
+          )}
+          style={{ borderColor: 'var(--border-subtle)' }}
+        >
+          {voiceMembers.map((vs) => {
+            const isSpeaking = speakingUsers.has(vs.user_id);
+            const isSelfUser = userId === vs.user_id;
+            const isStreaming = Boolean(vs.self_stream) || (isSelfUser && selfStream);
+            const isWatched = watchedStreamerId === vs.user_id;
+            const displayName = vs.username || `User ${vs.user_id.slice(0, 6)}`;
+            return (
+              <div
+                key={vs.user_id}
+                className="relative flex items-center gap-2.5 rounded-md px-2 py-1 hover:bg-bg-mod-subtle/60 transition-colors"
+              >
+                <div
+                  className={cn(
+                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white transition-shadow',
+                    isSpeaking && 'ring-2 ring-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]'
+                  )}
+                  style={{ backgroundColor: 'var(--accent-primary)' }}
+                >
+                  {displayName.charAt(0).toUpperCase()}
+                </div>
+                <span
+                  className="truncate text-[12px] text-text-secondary font-medium"
+                  onMouseEnter={(e) => {
+                    if (!isStreaming) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setHoverPreview({
+                      userId: vs.user_id,
+                      name: displayName,
+                      x: rect.right + 10,
+                      y: rect.top + rect.height / 2,
+                    });
+                  }}
+                  onMouseLeave={() => {
+                    if (!isStreaming) return;
+                    setHoverPreview((current) =>
+                      current?.userId === vs.user_id ? null : current
+                    );
+                    if (watchedStreamerId !== vs.user_id) {
+                      setPreviewStreamer(null);
+                    }
+                  }}
+                >
+                  {displayName}
+                </span>
+                <div className="ml-auto flex items-center gap-1">
+                  {vs.self_video && (
+                    <Video size={11} className="text-accent-primary" />
+                  )}
+                  {isStreaming && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const nextWatched = isWatched ? null : vs.user_id;
+                        setWatchedStreamer(nextWatched);
+                        setPreviewStreamer(null);
+                        setHoverPreview(null);
+
+                        if (!connected || activeVoiceChannelId !== channel.id) {
+                          void joinChannel(channel.id, guildId);
+                        }
+                        selectChannel(channel.id);
+                        navigate(`/app/guilds/${guildId}/channels/${channel.id}`);
+                      }}
+                      className={cn(
+                        'inline-flex items-center gap-0.5 rounded-full border py-0 px-1.5 text-[10px] font-semibold leading-[1] transition-all duration-200',
+                        isWatched
+                          ? 'border-accent-danger/70 bg-accent-danger/18 text-accent-danger shadow-[0_0_10px_rgba(237,66,69,0.25)]'
+                          : 'border-accent-danger/45 bg-accent-danger/10 text-accent-danger/95 hover:border-accent-danger/65 hover:bg-accent-danger/16'
+                      )}
+                      title={isWatched ? 'Watching this stream' : 'Watch stream'}
+                    >
+                      <span className="relative flex h-[3px] w-[3px] shrink-0">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
+                        <span className="relative inline-flex h-full w-full rounded-full bg-current" />
+                      </span>
+                      <span className="uppercase tracking-[0.04em]">Live</span>
+                    </button>
+                  )}
+                  {vs.self_mute && <MicOff size={11} className="text-text-muted" />}
+                  {vs.self_deaf && <HeadphoneOff size={11} className="text-text-muted" />}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
 export function UnifiedSidebar() {
   const guilds = useGuildStore((s) => s.guilds);
   const selectedGuildId = useGuildStore((s) => s.selectedGuildId);
@@ -83,11 +345,14 @@ export function UnifiedSidebar() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [expandedGuilds, setExpandedGuilds] = useState<Set<string>>(new Set());
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [expandedArchivedParents, setExpandedArchivedParents] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; guildId: string } | null>(null);
+  const { contextMenu: channelCtxMenu, onContextMenu: onChannelContextMenu, closeContextMenu: closeChannelCtxMenu } = useContextMenu();
   const [inviteForGuild, setInviteForGuild] = useState<{ guildName: string; channelId: string } | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [dmSearch, setDmSearch] = useState('');
   const [showDmPicker, setShowDmPicker] = useState(false);
+  const dmPickerRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 768px)').matches;
@@ -115,6 +380,14 @@ export function UnifiedSidebar() {
       return [];
     }
   });
+  const [mutedChannelIds, setMutedChannelIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('paracord:muted-channels');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const servers = useServerListStore((s) => s.servers);
   const activeServerId = useServerListStore((s) => s.activeServerId);
@@ -129,6 +402,71 @@ export function UnifiedSidebar() {
   const isHome = location.pathname === '/app' || location.pathname === '/app/friends';
   const isSettingsRoute = location.pathname === '/app/settings';
   const isAdminRoute = location.pathname === '/app/admin';
+
+  const [dragActiveId, setDragActiveId] = useState<string | null>(null);
+
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 5 },
+    }),
+  );
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setDragActiveId(event.active.id as string);
+  }, []);
+
+  const handleDragEnd = useCallback(
+    async (event: DragEndEvent) => {
+      setDragActiveId(null);
+      const { active, over } = event;
+      if (!over || active.id === over.id || !effectiveGuildId) return;
+
+      const guildChannels = useChannelStore.getState().channelsByGuild[effectiveGuildId] || [];
+      const nonThreadNonCategory = guildChannels
+        .filter((c) => getChannelType(c) !== 4 && getChannelType(c) !== 6)
+        .sort((a, b) => a.position - b.position);
+
+      const activeChannel = nonThreadNonCategory.find((c) => c.id === active.id);
+      const overChannel = nonThreadNonCategory.find((c) => c.id === over.id);
+      if (!activeChannel || !overChannel) return;
+
+      // Build the new order by removing the active channel and inserting at the over position
+      const ordered = nonThreadNonCategory.filter((c) => c.id !== active.id);
+      const overIndex = ordered.findIndex((c) => c.id === over.id);
+      ordered.splice(overIndex, 0, activeChannel);
+
+      // If dropped onto a channel in a different category, adopt that category
+      const newParentId = overChannel.parent_id;
+
+      const positions = ordered.map((ch, idx) => ({
+        id: ch.id,
+        position: idx,
+        parent_id: ch.id === active.id ? (newParentId ?? null) : undefined,
+      }));
+
+      // Optimistic update via store
+      for (const posEntry of positions) {
+        const ch = guildChannels.find((c) => c.id === posEntry.id);
+        if (!ch) continue;
+        useChannelStore.getState().updateChannel({
+          ...ch,
+          position: posEntry.position,
+          parent_id: posEntry.parent_id !== undefined ? posEntry.parent_id : ch.parent_id,
+        });
+      }
+
+      try {
+        await channelApi.updatePositions(effectiveGuildId, positions);
+      } catch {
+        // Revert on failure
+        toast.error('Failed to reorder channels.');
+        await useChannelStore.getState().fetchChannels(effectiveGuildId);
+      }
+    },
+    [effectiveGuildId],
+  );
+
+  useFocusTrap(dmPickerRef, showDmPicker, () => setShowDmPicker(false));
 
   // Auto-expand the currently selected guild
   useEffect(() => {
@@ -202,7 +540,11 @@ export function UnifiedSidebar() {
     await useChannelStore.getState().selectGuild(guild.id);
     await useChannelStore.getState().fetchChannels(guild.id);
     const guildChannels = useChannelStore.getState().channelsByGuild[guild.id] || [];
-    const firstChannel = guildChannels.find(c => c.type === 0) || guildChannels.find(c => c.type !== 4) || guildChannels[0];
+    const firstChannel =
+      guildChannels.find((c) => getChannelType(c) === 0) ||
+      guildChannels.find((c) => getChannelType(c) === 2) ||
+      guildChannels.find((c) => getChannelType(c) !== 4 && getChannelType(c) !== 6) ||
+      guildChannels.find((c) => !isThreadChannel(c));
     if (firstChannel) {
       useChannelStore.getState().selectChannel(firstChannel.id);
       navigate(`/app/guilds/${guild.id}/channels/${firstChannel.id}`);
@@ -214,7 +556,7 @@ export function UnifiedSidebar() {
 
   const handleChannelClick = (channel: Channel, channelGuildId: string) => {
     selectChannel(channel.id);
-    if ((channel.type === 2 || channel.channel_type === 2) && channelGuildId) {
+    if (getChannelType(channel) === 2 && channelGuildId) {
       // If already connected to this voice channel, just navigate to it
       // (don't toggle leave/join). This lets users return to the voice
       // view after browsing text channels.
@@ -232,6 +574,44 @@ export function UnifiedSidebar() {
   const handleContextMenu = (e: React.MouseEvent, contextGuildId: string) => {
     e.preventDefault();
     setContextMenu({ x: e.clientX, y: e.clientY, guildId: contextGuildId });
+  };
+
+  const toggleChannelMute = (channelIdToToggle: string) => {
+    const next = mutedChannelIds.includes(channelIdToToggle)
+      ? mutedChannelIds.filter((id) => id !== channelIdToToggle)
+      : [...mutedChannelIds, channelIdToToggle];
+    setMutedChannelIds(next);
+    try {
+      localStorage.setItem('paracord:muted-channels', JSON.stringify(next));
+      window.dispatchEvent(new CustomEvent('paracord-muted-channels-updated'));
+    } catch {
+      // ignore storage write errors
+    }
+  };
+
+  const handleChannelContextMenu = (e: React.MouseEvent, ch: Channel, chGuildId: string) => {
+    const items: ContextMenuItem[] = [];
+    if (canManageChannels) {
+      items.push({
+        label: 'Edit Channel',
+        icon: <Settings size={14} />,
+        action: () => navigate(`/app/guilds/${chGuildId}/settings?section=channels&channelId=${ch.id}`),
+      });
+    }
+    const isChannelMuted = mutedChannelIds.includes(ch.id);
+    items.push({
+      label: isChannelMuted ? 'Unmute Channel' : 'Mute Channel',
+      icon: <Volume2 size={14} />,
+      action: () => toggleChannelMute(ch.id),
+    });
+    items.push({
+      label: 'Copy Channel ID',
+      icon: <Clipboard size={14} />,
+      action: () => {
+        navigator.clipboard?.writeText(ch.id);
+      },
+    });
+    onChannelContextMenu(e, items);
   };
 
   const toggleGuildExpand = (guildIdToToggle: string) => {
@@ -252,19 +632,28 @@ export function UnifiedSidebar() {
     });
   };
 
+  const toggleArchivedThreads = (parentChannelId: string) => {
+    setExpandedArchivedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(parentChannelId)) next.delete(parentChannelId);
+      else next.add(parentChannelId);
+      return next;
+    });
+  };
+
   const getChannelGroups = (guildChannels: Channel[]): CategoryGroup[] => {
     const categoryGroups: CategoryGroup[] = [];
     const uncategorized: CategoryGroup = { id: null, name: '', channels: [] };
     const categoryMap = new Map<string, CategoryGroup>();
 
     guildChannels.forEach(ch => {
-      if (ch.type === 4) {
+      if (getChannelType(ch) === 4) {
         categoryMap.set(ch.id, { id: ch.id, name: ch.name ?? 'Unknown', channels: [] });
       }
     });
 
     guildChannels.forEach(ch => {
-      if (ch.type === 4) return;
+      if (getChannelType(ch) === 4 || isThreadChannel(ch)) return;
       if (ch.parent_id != null && categoryMap.has(ch.parent_id)) {
         categoryMap.get(ch.parent_id)!.channels.push(ch);
       } else {
@@ -281,8 +670,8 @@ export function UnifiedSidebar() {
   const canCreateInviteInContext = contextIsAdmin || hasPermission(contextPermissions, Permissions.CREATE_INSTANT_INVITE);
 
   const inviteChannelId =
-    channels.find((c) => c.type === 0)?.id ??
-    channels.find((c) => c.type !== 4)?.id ??
+    channels.find((c) => getChannelType(c) === 0)?.id ??
+    channels.find((c) => getChannelType(c) !== 4 && getChannelType(c) !== 6)?.id ??
     null;
 
   // Filtered DMs
@@ -440,6 +829,32 @@ export function UnifiedSidebar() {
           </button>
         </div>
 
+        {/* Discover button */}
+        <div className="px-3 pt-1 pb-1">
+          <button
+            onClick={() => {
+              navigate('/app/discovery');
+              collapseSidebarOnPhone();
+            }}
+            className={cn(
+              'group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[14.5px] font-medium transition-all',
+              location.pathname === '/app/discovery'
+                ? 'bg-accent-primary text-white shadow-md shadow-accent-primary/20'
+                : 'text-text-secondary hover:bg-bg-mod-subtle hover:text-text-primary'
+            )}
+          >
+            <div className={cn(
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors',
+              location.pathname === '/app/discovery'
+                ? 'text-white'
+                : 'bg-bg-mod-subtle text-text-muted group-hover:text-text-secondary'
+            )}>
+              <Compass size={19} />
+            </div>
+            {!sidebarCollapsed && <span>Discover</span>}
+          </button>
+        </div>
+
         {/* Quick search trigger - subtle, below home */}
         {!sidebarCollapsed && (
           <div className="px-3 pt-1 pb-2">
@@ -459,7 +874,45 @@ export function UnifiedSidebar() {
         )}
 
         {/* Navigation area */}
-        <div className="scrollbar-thin flex-1 overflow-y-auto px-3 py-2">
+        <div
+          className="scrollbar-thin flex-1 overflow-y-auto px-3 py-2"
+          onKeyDown={(e) => {
+            if (!['ArrowUp', 'ArrowDown', 'Enter', 'ArrowRight', 'ArrowLeft'].includes(e.key)) return;
+            const container = e.currentTarget;
+            const buttons = Array.from(
+              container.querySelectorAll<HTMLButtonElement>('[data-channel-id]'),
+            );
+            if (buttons.length === 0) return;
+            const focusedIndex = buttons.findIndex((b) => b === document.activeElement);
+
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              const next = focusedIndex < buttons.length - 1 ? focusedIndex + 1 : 0;
+              buttons[next]?.focus();
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              const prev = focusedIndex > 0 ? focusedIndex - 1 : buttons.length - 1;
+              buttons[prev]?.focus();
+            } else if (e.key === 'Enter' && focusedIndex >= 0) {
+              e.preventDefault();
+              buttons[focusedIndex]?.click();
+            } else if (e.key === 'ArrowRight') {
+              const btn = buttons[focusedIndex];
+              const catId = btn?.getAttribute('data-parent-category');
+              if (catId && collapsedCategories.has(catId)) {
+                e.preventDefault();
+                toggleCategory(catId);
+              }
+            } else if (e.key === 'ArrowLeft') {
+              const btn = buttons[focusedIndex];
+              const catId = btn?.getAttribute('data-parent-category');
+              if (catId && !collapsedCategories.has(catId)) {
+                e.preventDefault();
+                toggleCategory(catId);
+              }
+            }
+          }}
+        >
 
           {/* DM channels when at home */}
           {isHome && !sidebarCollapsed && (
@@ -607,23 +1060,35 @@ export function UnifiedSidebar() {
                       )}
                     </button>
 
-                    {/* Guild actions (settings gear) on hover */}
-                    {!sidebarCollapsed && isActive && canManageGuild && (
-                      <Tooltip content="Space Settings" side="right">
-                        <button
-                          onClick={() => navigate(`/app/guilds/${guild.id}/settings`)}
-                          className="mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-text-primary"
-                        >
-                          <Settings size={13} />
-                        </button>
-                      </Tooltip>
+                    {/* Guild actions */}
+                    {!sidebarCollapsed && isActive && (
+                      <div className="mr-1 flex items-center gap-0.5">
+                        <Tooltip content="Events" side="right">
+                          <button
+                            onClick={() => navigate(`/app/guilds/${guild.id}/settings?section=events`)}
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-text-primary"
+                          >
+                            <Calendar size={13} />
+                          </button>
+                        </Tooltip>
+                        {canManageGuild && (
+                          <Tooltip content="Space Settings" side="right">
+                            <button
+                              onClick={() => navigate(`/app/guilds/${guild.id}/settings`)}
+                              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover:opacity-100 hover:text-text-primary"
+                            >
+                              <Settings size={13} />
+                            </button>
+                          </Tooltip>
+                        )}
+                      </div>
                     )}
                   </div>
 
                   {/* Channel tree (expanded) */}
                   {!sidebarCollapsed && (
                     <AnimatePresence initial={false}>
-                      {isExpanded && guildChannels.length > 0 && (
+                      {isExpanded && (
                         <motion.div
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: 'auto', opacity: 1 }}
@@ -631,162 +1096,221 @@ export function UnifiedSidebar() {
                           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
                           className="overflow-hidden"
                         >
-                          <div className="ml-[18px] border-l border-border-subtle/25 pl-3 pt-2 pb-1 space-y-4">
-                            {categoryGroups.map((cat) => (
-                              <div key={cat.id || '__uncategorized'} className="mb-4">
+                          {guildChannels.length === 0 ? (
+                            <div className="ml-[18px] border-l border-border-subtle/25 pl-3 pt-2 pb-1" aria-label="Loading channels">
+                              {Array.from({ length: 5 }, (_, i) => (
+                                <SkeletonChannel key={i} />
+                              ))}
+                            </div>
+                          ) : (
+                          <DndContext
+                            sensors={dndSensors}
+                            collisionDetection={closestCenter}
+                            onDragStart={handleDragStart}
+                            onDragEnd={handleDragEnd}
+                          >
+                          <div role="tree" aria-label={`Channels for ${guild.name}`} className="ml-[18px] border-l border-border-subtle/25 pl-3 pt-2 pb-1 space-y-4">
+                            {categoryGroups.map((cat) => {
+                              const sortedChannels = [...cat.channels].sort((a, b) => a.position - b.position);
+                              const channelIds = sortedChannels.map((ch) => ch.id);
+                              return (
+                              <div key={cat.id || '__uncategorized'} className="mb-4" role={cat.id ? 'group' : undefined}>
                                 {cat.id && (
                                   <button
                                     className="flex w-full items-center gap-1.5 px-2 py-2 mt-4 text-[10px] font-bold uppercase tracking-wider text-text-muted transition-colors hover:text-text-secondary"
                                     onClick={() => toggleCategory(cat.id!)}
+                                    aria-expanded={!collapsedCategories.has(cat.id)}
+                                    aria-label={`${cat.name} category`}
                                   >
                                     {collapsedCategories.has(cat.id) ? <ChevronRight size={9} /> : <ChevronDown size={9} />}
                                     <span className="truncate">{cat.name}</span>
                                   </button>
                                 )}
-                                {!collapsedCategories.has(cat.id || '') && cat.channels.sort((a, b) => a.position - b.position).map(ch => {
+                                {!collapsedCategories.has(cat.id || '') && (
+                                  <SortableContext items={channelIds} strategy={verticalListSortingStrategy}>
+                                {sortedChannels.map(ch => {
                                   const isSelected = selectedChannelId === ch.id;
-                                  const isVoice = ch.type === 2 || ch.channel_type === 2;
+                                  const isVoice = getChannelType(ch) === 2;
                                   const voiceMembers = isVoice ? (channelParticipants.get(ch.id) || []) : [];
+                                  const activeThreads = [...guildChannels]
+                                    .filter((child) =>
+                                      isThreadChannel(child) &&
+                                      child.parent_id === ch.id &&
+                                      !child.thread_metadata?.archived
+                                    )
+                                    .sort((a, b) => {
+                                      const left = new Date(a.created_at || 0).getTime();
+                                      const right = new Date(b.created_at || 0).getTime();
+                                      return right - left;
+                                    });
+                                  const archivedThreads = [...guildChannels]
+                                    .filter((child) =>
+                                      isThreadChannel(child) &&
+                                      child.parent_id === ch.id &&
+                                      Boolean(child.thread_metadata?.archived)
+                                    )
+                                    .sort((a, b) => {
+                                      const left = new Date(a.created_at || 0).getTime();
+                                      const right = new Date(b.created_at || 0).getTime();
+                                      return right - left;
+                                    });
+                                  const showArchivedThreads = expandedArchivedParents.has(ch.id);
                                   return (
-                                    <div key={ch.id} style={{ marginTop: '6px' }}>
-                                      <button
-                                        onClick={() => handleChannelClick(ch, guild.id)}
-                                        className={cn(
-                                          'group/ch flex w-full items-center gap-2.5 rounded-lg px-3 py-3 text-[13.5px] transition-all border',
-                                          isSelected
-                                            ? 'bg-accent-primary/12 text-white font-medium shadow-sm border-accent-primary/25'
-                                            : isVoice
-                                              ? 'bg-bg-mod-subtle/30 border-border-subtle/40 text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary hover:border-border-subtle/60'
-                                              : 'bg-bg-mod-subtle/20 border-transparent text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary hover:border-border-subtle/40'
-                                        )}
-                                      >
-                                        {isVoice ? (
-                                          <Volume2 size={15} className={cn('shrink-0', isSelected ? 'text-accent-primary' : 'text-text-muted')} />
-                                        ) : (
-                                          <Hash size={15} className={cn('shrink-0', isSelected ? 'text-accent-primary' : 'text-text-muted')} />
-                                        )}
-                                        <span className="truncate">{ch.name || 'unknown'}</span>
-                                        {!isVoice && canManageChannels && (
-                                          <span
-                                            role="button"
-                                            tabIndex={0}
-                                            className="ml-auto shrink-0 rounded p-0.5 text-text-muted opacity-100 transition-all sm:opacity-0 sm:group-hover/ch:opacity-100 hover:text-text-primary"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              navigate(`/app/guilds/${guild.id}/settings?section=channels&channelId=${ch.id}`);
-                                            }}
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter' || e.key === ' ') {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                navigate(`/app/guilds/${guild.id}/settings?section=channels&channelId=${ch.id}`);
-                                              }
-                                            }}
-                                          >
-                                            <Settings size={11} />
-                                          </span>
-                                        )}
-                                      </button>
-                                      {isVoice && voiceMembers.length > 0 && (
-                                        <div className="ml-4 mt-1 mb-1.5 p-1.5 space-y-0.5">
-                                          {voiceMembers.map((vs) => {
-                                            const isSpeaking = speakingUsers.has(vs.user_id);
-                                            const isSelfUser = user?.id === vs.user_id;
-                                            const isStreaming = Boolean(vs.self_stream) || (isSelfUser && selfStream);
-                                            const isWatched = watchedStreamerId === vs.user_id;
-                                            const displayName = vs.username || `User ${vs.user_id.slice(0, 6)}`;
+                                    <SortableChannelItem
+                                      key={ch.id}
+                                      channel={ch}
+                                      isSelected={isSelected}
+                                      isVoice={isVoice}
+                                      canDrag={canManageChannels}
+                                      guildId={guild.id}
+                                      categoryId={cat.id}
+                                      onChannelClick={handleChannelClick}
+                                      onContextMenu={handleChannelContextMenu}
+                                      canManageChannels={canManageChannels}
+                                      voiceMembers={voiceMembers}
+                                      speakingUsers={speakingUsers}
+                                      userId={user?.id}
+                                      selfStream={selfStream}
+                                      watchedStreamerId={watchedStreamerId}
+                                      setWatchedStreamer={setWatchedStreamer}
+                                      setPreviewStreamer={setPreviewStreamer}
+                                      setHoverPreview={setHoverPreview}
+                                      connected={connected}
+                                      activeVoiceChannelId={activeVoiceChannelId}
+                                      joinChannel={joinChannel}
+                                      selectChannel={selectChannel}
+                                      navigate={navigate}
+                                    >
+                                      {!isVoice && activeThreads.length > 0 && (
+                                        <div className="ml-7 mt-1.5 mb-1 flex flex-col gap-1.5 pr-1">
+                                          {activeThreads.map((thread) => {
+                                            const isThreadSelected = selectedChannelId === thread.id;
                                             return (
-                                              <div
-                                                key={vs.user_id}
-                                                className="relative flex items-center gap-2.5 rounded-md px-2 py-1 hover:bg-bg-mod-subtle/60 transition-colors"
+                                              <button
+                                                key={thread.id}
+                                                data-channel-id={thread.id}
+                                                data-parent-category={cat.id || undefined}
+                                                onClick={() => handleChannelClick(thread, guild.id)}
+                                                onContextMenu={(e) => handleChannelContextMenu(e, thread, guild.id)}
+                                                className={cn(
+                                                  'group/thread flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[12px] transition-colors',
+                                                  isThreadSelected
+                                                    ? 'border-accent-primary/30 bg-accent-primary/10 text-text-primary'
+                                                    : 'border-transparent bg-bg-mod-subtle/25 text-text-muted hover:border-border-subtle/50 hover:bg-bg-mod-subtle/45 hover:text-text-secondary'
+                                                )}
                                               >
-                                                <div
-                                                  className={cn(
-                                                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white transition-shadow',
-                                                    isSpeaking && 'ring-2 ring-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]'
-                                                  )}
-                                                  style={{ backgroundColor: 'var(--accent-primary)' }}
-                                                >
-                                                  {displayName.charAt(0).toUpperCase()}
-                                                </div>
-                                                <span
-                                                  className="truncate text-[12px] text-text-secondary font-medium"
-                                                  onMouseEnter={(e) => {
-                                                    if (!isStreaming) return;
-                                                    const rect = e.currentTarget.getBoundingClientRect();
-                                                    setHoverPreview({
-                                                      userId: vs.user_id,
-                                                      name: displayName,
-                                                      x: rect.right + 10,
-                                                      y: rect.top + rect.height / 2,
-                                                    });
-                                                  }}
-                                                  onMouseLeave={() => {
-                                                    if (!isStreaming) return;
-                                                    setHoverPreview((current) =>
-                                                      current?.userId === vs.user_id ? null : current
-                                                    );
-                                                    if (watchedStreamerId !== vs.user_id) {
-                                                      setPreviewStreamer(null);
-                                                    }
-                                                  }}
-                                                >
-                                                  {displayName}
+                                                <Hash size={12} className="shrink-0 opacity-80" />
+                                                <span className="min-w-0 flex-1 truncate">{thread.name || 'thread'}</span>
+                                                <span className="shrink-0 rounded border border-border-subtle px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                                                  Thread
                                                 </span>
-                                                <div className="ml-auto flex items-center gap-1">
-                                                  {vs.self_video && (
-                                                    <Video size={11} className="text-accent-primary" />
-                                                  )}
-                                                  {isStreaming && (
-                                                    <button
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        const nextWatched = isWatched ? null : vs.user_id;
-                                                        setWatchedStreamer(nextWatched);
-                                                        setPreviewStreamer(null);
-                                                        setHoverPreview(null);
-
-                                                        if (!connected || activeVoiceChannelId !== ch.id) {
-                                                          void joinChannel(ch.id, guild.id);
-                                                        }
-                                                        selectChannel(ch.id);
-                                                        navigate(`/app/guilds/${guild.id}/channels/${ch.id}`);
-                                                      }}
-                                                      className={cn(
-                                                        'inline-flex items-center gap-0.5 rounded-full border py-0 px-1.5 text-[10px] font-semibold leading-[1] transition-all duration-200',
-                                                        isWatched
-                                                          ? 'border-accent-danger/70 bg-accent-danger/18 text-accent-danger shadow-[0_0_10px_rgba(237,66,69,0.25)]'
-                                                          : 'border-accent-danger/45 bg-accent-danger/10 text-accent-danger/95 hover:border-accent-danger/65 hover:bg-accent-danger/16'
-                                                      )}
-                                                      title={isWatched ? 'Watching this stream' : 'Watch stream'}
-                                                    >
-                                                      <span className="relative flex h-[3px] w-[3px] shrink-0">
-                                                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
-                                                        <span className="relative inline-flex h-full w-full rounded-full bg-current" />
-                                                      </span>
-                                                      <span className="uppercase tracking-[0.04em]">Live</span>
-                                                    </button>
-                                                  )}
-                                                  {vs.self_mute && <MicOff size={11} className="text-text-muted" />}
-                                                  {vs.self_deaf && <HeadphoneOff size={11} className="text-text-muted" />}
-                                                </div>
-                                              </div>
+                                              </button>
                                             );
                                           })}
                                         </div>
                                       )}
-                                    </div>
+                                      {!isVoice && archivedThreads.length > 0 && (
+                                        <div className="ml-7 mt-1 mb-1 flex flex-col gap-1.5 pr-1">
+                                          <button
+                                            type="button"
+                                            onClick={() => toggleArchivedThreads(ch.id)}
+                                            className="inline-flex w-fit items-center gap-1.5 rounded-md border border-border-subtle/50 bg-bg-mod-subtle/35 px-2 py-1 text-[11px] font-semibold text-text-muted transition-colors hover:border-border-subtle/70 hover:bg-bg-mod-subtle/55 hover:text-text-secondary"
+                                            aria-expanded={showArchivedThreads}
+                                          >
+                                            <ArchiveRestore size={11} />
+                                            Archived ({archivedThreads.length})
+                                          </button>
+                                          {showArchivedThreads && (
+                                            <div className="mt-0.5 flex flex-col gap-1.5">
+                                              {archivedThreads.map((thread) => {
+                                                const isThreadSelected = selectedChannelId === thread.id;
+                                                const canRestore =
+                                                  user?.id === thread.owner_id ||
+                                                  (effectiveGuildId === guild.id && canManageChannels);
+                                                return (
+                                                  <div
+                                                    key={thread.id}
+                                                    className={cn(
+                                                      'flex items-center gap-1.5 rounded-md border px-2 py-1.5',
+                                                      isThreadSelected
+                                                        ? 'border-accent-primary/30 bg-accent-primary/10'
+                                                        : 'border-border-subtle/40 bg-bg-mod-subtle/20'
+                                                    )}
+                                                  >
+                                                    <button
+                                                      type="button"
+                                                      data-channel-id={thread.id}
+                                                      data-parent-category={cat.id || undefined}
+                                                      onClick={() => handleChannelClick(thread, guild.id)}
+                                                      onContextMenu={(e) => handleChannelContextMenu(e, thread, guild.id)}
+                                                      className="group/thread flex min-w-0 flex-1 items-center gap-2 text-left text-[12px] text-text-muted transition-colors hover:text-text-secondary"
+                                                    >
+                                                      <Hash size={12} className="shrink-0 opacity-70" />
+                                                      <span className="min-w-0 flex-1 truncate">{thread.name || 'thread'}</span>
+                                                    </button>
+                                                    {canRestore && (
+                                                      <button
+                                                        type="button"
+                                                        onClick={async (e) => {
+                                                          e.stopPropagation();
+                                                          try {
+                                                            const { data: updated } = await channelApi.updateThread(ch.id, thread.id, { archived: false });
+                                                            useChannelStore.getState().updateChannel(updated);
+                                                          } catch {
+                                                            toast.error('Failed to restore thread.');
+                                                          }
+                                                        }}
+                                                        className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border-subtle/70 px-1.5 py-1 text-[10px] font-semibold text-text-muted transition-colors hover:border-border-subtle hover:text-text-primary"
+                                                        aria-label={`Restore archived thread ${thread.name || thread.id}`}
+                                                        title="Restore thread"
+                                                      >
+                                                        <ArchiveRestore size={10} />
+                                                        Restore
+                                                      </button>
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </SortableChannelItem>
                                   );
                                 })}
+                                  </SortableContext>
+                                )}
                               </div>
-                            ))}
+                              );
+                            })}
 
-                            {guildChannels.filter(c => c.type !== 4).length === 0 && (
+                            {guildChannels.filter((c) => getChannelType(c) !== 4 && getChannelType(c) !== 6).length === 0 && (
                               <div className="px-2 py-3 text-center text-[11px] text-text-muted">
                                 No channels yet
                               </div>
                             )}
                           </div>
+                          <DragOverlay>
+                            {dragActiveId && (() => {
+                              const dragCh = guildChannels.find((c) => c.id === dragActiveId);
+                              if (!dragCh) return null;
+                              const isVoice = getChannelType(dragCh) === 2;
+                              return (
+                                <div className="rounded-lg border border-accent-primary/40 bg-bg-secondary/95 px-3 py-3 text-[13.5px] shadow-lg backdrop-blur-sm">
+                                  <div className="flex items-center gap-2.5">
+                                    {isVoice ? (
+                                      <Volume2 size={15} className="shrink-0 text-accent-primary" />
+                                    ) : (
+                                      <Hash size={15} className="shrink-0 text-accent-primary" />
+                                    )}
+                                    <span className="text-text-primary">{dragCh.name || 'unknown'}</span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </DragOverlay>
+                          </DndContext>
+                          )}
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -875,21 +1399,35 @@ export function UnifiedSidebar() {
           )}
         </div>
 
-        {/* Admin button (bottom) */}
-        {user && isAdmin(user.flags) && !sidebarCollapsed && (
-          <div className="px-2 pb-2">
+        {/* Developer & Admin buttons (bottom) */}
+        {!sidebarCollapsed && (
+          <div className="px-2 pb-2 space-y-0.5">
             <button
-              onClick={() => navigate('/app/admin')}
+              onClick={() => navigate('/app/developers')}
               className={cn(
                 'flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all',
-                isAdminRoute
+                location.pathname === '/app/developers'
                   ? 'bg-accent-primary/15 text-accent-primary'
                   : 'text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary'
               )}
             >
-              <Shield size={13} />
-              Admin
+              <Bot size={13} />
+              Developers
             </button>
+            {user && isAdmin(user.flags) && (
+              <button
+                onClick={() => navigate('/app/admin')}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all',
+                  isAdminRoute
+                    ? 'bg-accent-primary/15 text-accent-primary'
+                    : 'text-text-muted hover:bg-bg-mod-subtle hover:text-text-secondary'
+                )}
+              >
+                <Shield size={13} />
+                Admin
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -957,7 +1495,7 @@ export function UnifiedSidebar() {
                   await useChannelStore.getState().fetchChannels(guild.id);
                 }
                 const guildChs = useChannelStore.getState().channelsByGuild[guild.id] || [];
-                const firstText = guildChs.find((c) => c.type === 0);
+                const firstText = guildChs.find((c) => getChannelType(c) === 0);
                 if (firstText) {
                   setInviteForGuild({ guildName: guild.name, channelId: firstText.id });
                 }
@@ -1012,8 +1550,8 @@ export function UnifiedSidebar() {
             style={{ backgroundColor: 'var(--overlay-backdrop)' }}
             onClick={() => setShowDmPicker(false)}
           />
-          <div className="glass-modal fixed left-1/2 top-1/2 z-50 max-h-[min(80dvh,34rem)] w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl sm:rounded-2xl">
-            <div className="panel-divider border-b px-5 py-4 text-lg font-semibold text-text-primary">Start Direct Message</div>
+          <div ref={dmPickerRef} role="dialog" aria-modal="true" aria-labelledby="dm-picker-title" tabIndex={-1} className="glass-modal fixed left-1/2 top-1/2 z-50 max-h-[min(80dvh,34rem)] w-[min(92vw,30rem)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl sm:rounded-2xl">
+            <div id="dm-picker-title" className="panel-divider border-b px-5 py-4 text-lg font-semibold text-text-primary">Start Direct Message</div>
             <div className="max-h-[min(62dvh,24rem)] overflow-y-auto p-3">
               {relationships.filter((r) => r.type === 1).map((rel) => (
                 <button
@@ -1055,6 +1593,14 @@ export function UnifiedSidebar() {
           </div>,
           document.body
         )}
+
+      {channelCtxMenu.isOpen && (
+        <ContextMenu
+          items={channelCtxMenu.items}
+          position={channelCtxMenu.position}
+          onClose={closeChannelCtxMenu}
+        />
+      )}
     </>
   );
 }

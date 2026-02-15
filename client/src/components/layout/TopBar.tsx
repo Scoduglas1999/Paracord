@@ -1,5 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Hash, Search, Pin, Users, Inbox, HelpCircle, Volume2, X, PanelLeftOpen } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Hash,
+  Search,
+  Pin,
+  Users,
+  Inbox,
+  HelpCircle,
+  Volume2,
+  MessageSquare,
+  X,
+  PanelLeftOpen,
+} from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useNavigate, useParams } from 'react-router-dom';
 import { channelApi } from '../../api/channels';
@@ -7,19 +19,22 @@ import { authApi } from '../../api/auth';
 import { useUIStore } from '../../stores/uiStore';
 import { useChannelStore } from '../../stores/channelStore';
 import { useMessageStore } from '../../stores/messageStore';
+import { useVoiceStore } from '../../stores/voiceStore';
 import type { Message, ReadState } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
 import { cn } from '../../lib/utils';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 interface TopBarProps {
   channelName?: string;
   channelTopic?: string;
   isVoice?: boolean;
+  isForum?: boolean;
   isDM?: boolean;
   recipientName?: string;
 }
 
-export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName }: TopBarProps) {
+export function TopBar({ channelName, channelTopic, isVoice, isForum, isDM, recipientName }: TopBarProps) {
   const { channelId } = useParams();
   const navigate = useNavigate();
   const toggleMemberSidebar = useUIStore((s) => s.toggleMemberSidebar);
@@ -28,8 +43,11 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   const memberSidebarOpen = useUIStore((s) => s.memberSidebarOpen);
   const memberPanelOpen = useUIStore((s) => s.memberPanelOpen);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
+  const toggleSearchPanel = useUIStore((s) => s.toggleSearchPanel);
+  const searchPanelOpen = useUIStore((s) => s.searchPanelOpen);
   const unpinMessage = useMessageStore((s) => s.unpinMessage);
   const channelsByGuild = useChannelStore((s) => s.channelsByGuild);
+  const systemAudioCaptureActive = useVoiceStore((s) => s.systemAudioCaptureActive);
 
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -40,11 +58,20 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
   const [showInbox, setShowInbox] = useState(false);
   const [readStates, setReadStates] = useState<ReadState[]>([]);
   const [showHelp, setShowHelp] = useState(false);
+  const searchDialogRef = useRef<HTMLDivElement>(null);
+  const pinsDialogRef = useRef<HTMLDivElement>(null);
+  const inboxDialogRef = useRef<HTMLDivElement>(null);
+  const helpDialogRef = useRef<HTMLDivElement>(null);
   const [mutedGuildIds, setMutedGuildIds] = useState<string[]>([]);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(max-width: 768px)').matches;
   });
+
+  useFocusTrap(searchDialogRef, showSearch, () => setShowSearch(false));
+  useFocusTrap(pinsDialogRef, showPins, () => setShowPins(false));
+  useFocusTrap(inboxDialogRef, showInbox, () => setShowInbox(false));
+  useFocusTrap(helpDialogRef, showHelp, () => setShowHelp(false));
 
   const allChannels = useMemo(() => Object.values(channelsByGuild).flat(), [channelsByGuild]);
 
@@ -272,6 +299,8 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
           <div className="flex min-w-0 items-center gap-2">
             {isVoice ? (
               <Volume2 size={16} className="shrink-0 text-accent-primary/70" />
+            ) : isForum ? (
+              <MessageSquare size={16} className="shrink-0 text-text-muted" />
             ) : (
               <Hash size={16} className="shrink-0 text-text-muted" />
             )}
@@ -290,9 +319,20 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
 
       {/* Right: action buttons */}
       <div className="flex shrink-0 items-center gap-2">
+        {systemAudioCaptureActive && (
+          <TopBarIcon
+            icon={AlertTriangle}
+            onClick={() => {}}
+            active
+            tooltip="System audio capture is active"
+            disabled
+            className="text-amber-400"
+          />
+        )}
         <TopBarIcon
           icon={Search}
-          onClick={() => setShowSearch(true)}
+          onClick={() => toggleSearchPanel()}
+          active={searchPanelOpen}
           tooltip={channelId ? 'Search Messages' : 'Select a channel to search'}
           disabled={!channelId}
         />
@@ -323,6 +363,11 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
             onClick={() => setShowSearch(false)}
           >
             <motion.div
+              ref={searchDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topbar-search-title"
+              tabIndex={-1}
               initial={{ opacity: 0, scale: 0.95, y: -20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
@@ -331,6 +376,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center gap-3 border-b px-5 py-4.5">
+                <span id="topbar-search-title" className="sr-only">Search Messages</span>
                 <Search size={20} className="text-text-muted" />
                 <input
                   autoFocus
@@ -339,7 +385,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
-                <button className="command-icon-btn" onClick={() => setShowSearch(false)}><X size={16} /></button>
+                <button className="command-icon-btn" onClick={() => setShowSearch(false)} aria-label="Close search"><X size={16} /></button>
               </div>
               <div className="max-h-[min(67dvh,34rem)] overflow-y-auto p-3.5 scrollbar-thin">
                 {searchResults.length > 0 ? (
@@ -391,6 +437,11 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
             onClick={() => setShowPins(false)}
           >
             <motion.div
+              ref={pinsDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topbar-pins-title"
+              tabIndex={-1}
               initial={{ opacity: 0, scale: 0.95, y: -20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
@@ -399,8 +450,8 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">
-                <div className="font-bold text-text-primary">Pinned Messages</div>
-                <button className="command-icon-btn" onClick={() => setShowPins(false)}><X size={16} /></button>
+                <div id="topbar-pins-title" className="font-bold text-text-primary">Pinned Messages</div>
+                <button className="command-icon-btn" onClick={() => setShowPins(false)} aria-label="Close pinned messages"><X size={16} /></button>
               </div>
               <div className="max-h-[min(67dvh,31rem)] space-y-4 overflow-y-auto bg-bg-primary p-4 sm:p-5 scrollbar-thin">
                 {pins.map((msg) => (
@@ -448,6 +499,11 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
             onClick={() => setShowInbox(false)}
           >
             <motion.div
+              ref={inboxDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topbar-inbox-title"
+              tabIndex={-1}
               initial={{ opacity: 0, scale: 0.95, y: -20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
@@ -456,8 +512,8 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">
-                <div className="font-bold text-text-primary">Inbox</div>
-                <button className="command-icon-btn" onClick={() => setShowInbox(false)}><X size={16} /></button>
+                <div id="topbar-inbox-title" className="font-bold text-text-primary">Inbox</div>
+                <button className="command-icon-btn" onClick={() => setShowInbox(false)} aria-label="Close inbox"><X size={16} /></button>
               </div>
               <div className="max-h-[min(67dvh,31rem)] overflow-y-auto bg-bg-primary p-0 scrollbar-thin">
                 {unreadItems.length > 0 ? (
@@ -505,6 +561,11 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
             onClick={() => setShowHelp(false)}
           >
             <motion.div
+              ref={helpDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="topbar-help-title"
+              tabIndex={-1}
               initial={{ opacity: 0, scale: 0.95, y: -20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: -20 }}
@@ -513,8 +574,8 @@ export function TopBar({ channelName, channelTopic, isVoice, isDM, recipientName
               onClick={(e) => e.stopPropagation()}
             >
               <div className="panel-divider flex items-center justify-between border-b px-5 py-4.5">
-                <div className="font-bold text-text-primary">Keyboard Shortcuts</div>
-                <button className="command-icon-btn" onClick={() => setShowHelp(false)}><X size={16} /></button>
+                <div id="topbar-help-title" className="font-bold text-text-primary">Keyboard Shortcuts</div>
+                <button className="command-icon-btn" onClick={() => setShowHelp(false)} aria-label="Close keyboard shortcuts"><X size={16} /></button>
               </div>
               <div className="space-y-4 p-5">
                 {[

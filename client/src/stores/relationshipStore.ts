@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { relationshipApi, type Relationship } from '../api/relationships';
+import { extractApiError } from '../api/client';
+import { toast } from './toastStore';
 
 interface RelationshipState {
   relationships: Relationship[];
@@ -26,8 +28,9 @@ export const useRelationshipStore = create<RelationshipState>()((set, get) => ({
     try {
       const { data } = await relationshipApi.list();
       set({ relationships: data, isLoading: false });
-    } catch {
+    } catch (err) {
       set({ isLoading: false });
+      toast.error(`Failed to load relationships: ${extractApiError(err)}`);
     }
   },
 

@@ -26,7 +26,8 @@ pub async fn create_guild_full(
     owner_id: i64,
     icon_hash: Option<&str>,
 ) -> Result<paracord_db::guilds::GuildRow, CoreError> {
-    let guild = paracord_db::guilds::create_guild(pool, guild_id, name, owner_id, icon_hash).await?;
+    let guild =
+        paracord_db::guilds::create_guild(pool, guild_id, name, owner_id, icon_hash).await?;
 
     // Add owner as member
     paracord_db::members::add_member(pool, owner_id, guild_id).await?;
@@ -40,41 +41,19 @@ pub async fn create_guild_full(
 
     // Create #general text channel
     let general_id = paracord_util::snowflake::generate(1);
-    paracord_db::channels::create_channel(
-        pool,
-        general_id,
-        guild_id,
-        "general",
-        0,
-        0,
-        None,
-        None,
-    )
+    paracord_db::channels::create_channel(pool, general_id, guild_id, "general", 0, 0, None, None)
         .await?;
 
     // Create General voice channel
     let voice_id = paracord_util::snowflake::generate(1);
-    paracord_db::channels::create_channel(
-        pool,
-        voice_id,
-        guild_id,
-        "General",
-        2,
-        1,
-        None,
-        None,
-    )
+    paracord_db::channels::create_channel(pool, voice_id, guild_id, "General", 2, 1, None, None)
         .await?;
 
     Ok(guild)
 }
 
 /// Delete a guild, only allowed by the owner.
-pub async fn delete_guild(
-    pool: &DbPool,
-    guild_id: i64,
-    user_id: i64,
-) -> Result<(), CoreError> {
+pub async fn delete_guild(pool: &DbPool, guild_id: i64, user_id: i64) -> Result<(), CoreError> {
     let guild = paracord_db::guilds::get_guild(pool, guild_id)
         .await?
         .ok_or(CoreError::NotFound)?;
@@ -104,6 +83,7 @@ pub async fn update_guild(
     let perms = permissions::compute_permissions_from_roles(&roles, guild.owner_id, user_id);
     permissions::require_permission(perms, Permissions::MANAGE_GUILD)?;
 
-    let updated = paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash).await?;
+    let updated =
+        paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash).await?;
     Ok(updated)
 }

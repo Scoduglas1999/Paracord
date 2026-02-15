@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
@@ -14,6 +14,30 @@ pub struct User {
     pub system: bool,
     pub flags: i64,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user: User,
+    pub roles: Vec<crate::role::Role>,
+    pub mutual_guilds: Vec<MutualGuild>,
+    pub mutual_friends: Vec<MutualFriend>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutualGuild {
+    pub id: i64,
+    pub name: String,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutualFriend {
+    pub id: i64,
+    pub username: String,
+    pub discriminator: i16,
+    pub avatar_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

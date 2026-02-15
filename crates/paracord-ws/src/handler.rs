@@ -1,10 +1,12 @@
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use paracord_core::AppState;
+use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
+use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Mutex, OnceLock};
 use tokio::time::{Duration, Instant};
 
 use crate::session::Session;
@@ -12,6 +14,13 @@ use crate::session::Session;
 const HEARTBEAT_INTERVAL_MS: u64 = 41250;
 const HEARTBEAT_TIMEOUT_MS: u64 = 90000;
 const SESSION_TTL_SECONDS: i64 = 3600;
+const SESSION_CACHE_MAX_ENTRIES_DEFAULT: usize = 20_000;
+const WS_MAX_GLOBAL_CONNECTIONS_DEFAULT: usize = 2_000;
+const WS_MAX_CONNECTIONS_PER_USER_DEFAULT: usize = 5;
+const WS_MAX_MESSAGES_PER_MINUTE_DEFAULT: u32 = 240;
+const WS_MAX_PRESENCE_UPDATES_PER_MINUTE_DEFAULT: u32 = 60;
+const WS_MAX_TYPING_EVENTS_PER_MINUTE_DEFAULT: u32 = 120;
+const WS_MAX_VOICE_UPDATES_PER_MINUTE_DEFAULT: u32 = 60;
 
 #[derive(Clone)]
 struct CachedSession {
@@ -23,13 +32,203 @@ struct CachedSession {
 
 static SESSION_CACHE: OnceLock<tokio::sync::RwLock<HashMap<String, CachedSession>>> =
     OnceLock::new();
+static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+static USER_CONNECTIONS: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
 
 fn session_cache() -> &'static tokio::sync::RwLock<HashMap<String, CachedSession>> {
     SESSION_CACHE.get_or_init(|| tokio::sync::RwLock::new(HashMap::new()))
 }
 
+fn user_connections() -> &'static Mutex<HashMap<i64, usize>> {
+    USER_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 const MAX_ACTIVITY_ITEMS: usize = 8;
 const MAX_ACTIVITY_TEXT_LEN: usize = 256;
+
+#[derive(Clone, Copy)]
+struct WsLimits {
+    max_global_connections: usize,
+    max_connections_per_user: usize,
+    max_messages_per_minute: u32,
+    max_presence_updates_per_minute: u32,
+    max_typing_events_per_minute: u32,
+    max_voice_updates_per_minute: u32,
+    session_cache_max_entries: usize,
+}
+
+static WS_LIMITS: OnceLock<WsLimits> = OnceLock::new();
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+fn ws_limits() -> WsLimits {
+    *WS_LIMITS.get_or_init(|| WsLimits {
+        max_global_connections: env_usize(
+            "PARACORD_WS_MAX_CONNECTIONS",
+            WS_MAX_GLOBAL_CONNECTIONS_DEFAULT,
+        ),
+        max_connections_per_user: env_usize(
+            "PARACORD_WS_MAX_CONNECTIONS_PER_USER",
+            WS_MAX_CONNECTIONS_PER_USER_DEFAULT,
+        ),
+        max_messages_per_minute: env_u32(
+            "PARACORD_WS_MAX_MESSAGES_PER_MINUTE",
+            WS_MAX_MESSAGES_PER_MINUTE_DEFAULT,
+        ),
+        max_presence_updates_per_minute: env_u32(
+            "PARACORD_WS_MAX_PRESENCE_UPDATES_PER_MINUTE",
+            WS_MAX_PRESENCE_UPDATES_PER_MINUTE_DEFAULT,
+        ),
+        max_typing_events_per_minute: env_u32(
+            "PARACORD_WS_MAX_TYPING_EVENTS_PER_MINUTE",
+            WS_MAX_TYPING_EVENTS_PER_MINUTE_DEFAULT,
+        ),
+        max_voice_updates_per_minute: env_u32(
+            "PARACORD_WS_MAX_VOICE_UPDATES_PER_MINUTE",
+            WS_MAX_VOICE_UPDATES_PER_MINUTE_DEFAULT,
+        ),
+        session_cache_max_entries: env_usize(
+            "PARACORD_WS_SESSION_CACHE_MAX_ENTRIES",
+            SESSION_CACHE_MAX_ENTRIES_DEFAULT,
+        ),
+    })
+}
+
+struct ConnectionGuard {
+    user_id: Option<i64>,
+    global_acquired: bool,
+}
+
+impl ConnectionGuard {
+    fn new() -> Self {
+        Self {
+            user_id: None,
+            global_acquired: false,
+        }
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        if let Some(user_id) = self.user_id.take() {
+            let mut map = match user_connections().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(count) = map.get_mut(&user_id) {
+                if *count <= 1 {
+                    map.remove(&user_id);
+                } else {
+                    *count -= 1;
+                }
+            }
+        }
+        if self.global_acquired {
+            observability::ws_connection_close();
+            ACTIVE_CONNECTIONS.fetch_sub(1, AtomicOrdering::SeqCst);
+        }
+    }
+}
+
+fn try_acquire_global_connection_slot() -> bool {
+    let limits = ws_limits();
+    let mut current = ACTIVE_CONNECTIONS.load(AtomicOrdering::SeqCst);
+    loop {
+        if current >= limits.max_global_connections {
+            return false;
+        }
+        match ACTIVE_CONNECTIONS.compare_exchange(
+            current,
+            current + 1,
+            AtomicOrdering::SeqCst,
+            AtomicOrdering::SeqCst,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn try_acquire_user_connection_slot(user_id: i64) -> bool {
+    let limits = ws_limits();
+    let mut map = match user_connections().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let count = map.entry(user_id).or_insert(0);
+    if *count >= limits.max_connections_per_user {
+        return false;
+    }
+    *count += 1;
+    true
+}
+
+struct WsMessageRateLimiter {
+    window_started_at: i64,
+    total_messages: u32,
+    presence_updates: u32,
+    typing_events: u32,
+    voice_updates: u32,
+}
+
+impl WsMessageRateLimiter {
+    fn new() -> Self {
+        Self {
+            window_started_at: chrono::Utc::now().timestamp(),
+            total_messages: 0,
+            presence_updates: 0,
+            typing_events: 0,
+            voice_updates: 0,
+        }
+    }
+
+    fn allow(&mut self, opcode: u8) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        if now - self.window_started_at >= 60 {
+            self.window_started_at = now;
+            self.total_messages = 0;
+            self.presence_updates = 0;
+            self.typing_events = 0;
+            self.voice_updates = 0;
+        }
+
+        self.total_messages += 1;
+        let limits = ws_limits();
+        if self.total_messages > limits.max_messages_per_minute {
+            return false;
+        }
+
+        match opcode {
+            OP_PRESENCE_UPDATE => {
+                self.presence_updates += 1;
+                self.presence_updates <= limits.max_presence_updates_per_minute
+            }
+            OP_TYPING_START => {
+                self.typing_events += 1;
+                self.typing_events <= limits.max_typing_events_per_minute
+            }
+            OP_VOICE_STATE_UPDATE => {
+                self.voice_updates += 1;
+                self.voice_updates <= limits.max_voice_updates_per_minute
+            }
+            _ => true,
+        }
+    }
+}
 
 fn truncate_for_presence(value: &str, max: usize) -> String {
     let mut out = String::new();
@@ -123,7 +322,114 @@ fn default_presence_payload(user_id: i64, status: &str) -> Value {
     })
 }
 
+async fn collect_presence_recipient_ids(
+    state: &AppState,
+    user_id: i64,
+    guild_ids: &[i64],
+) -> Vec<i64> {
+    let mut recipients: HashSet<i64> = HashSet::new();
+    recipients.insert(user_id);
+
+    for &guild_id in guild_ids {
+        if let Ok(member_ids) =
+            paracord_db::members::get_guild_member_user_ids(&state.db, guild_id).await
+        {
+            recipients.extend(member_ids);
+        }
+    }
+
+    if let Ok(friend_ids) =
+        paracord_db::relationships::get_friend_user_ids(&state.db, user_id).await
+    {
+        recipients.extend(friend_ids);
+    }
+
+    recipients.into_iter().collect()
+}
+
+fn extract_channel_id_from_event(event_type: &str, payload: &Value) -> Option<i64> {
+    if let Some(raw) = payload.get("channel_id").and_then(|v| v.as_str()) {
+        if let Ok(channel_id) = raw.parse::<i64>() {
+            return Some(channel_id);
+        }
+    }
+
+    if matches!(
+        event_type,
+        "CHANNEL_CREATE"
+            | "CHANNEL_UPDATE"
+            | "CHANNEL_DELETE"
+            | "THREAD_CREATE"
+            | "THREAD_UPDATE"
+            | "THREAD_DELETE"
+    ) {
+        return payload
+            .get("id")
+            .and_then(|v| v.as_str())
+            .and_then(|raw| raw.parse::<i64>().ok());
+    }
+
+    None
+}
+
+async fn can_receive_guild_event(state: &AppState, session: &mut Session, guild_id: i64) -> bool {
+    if !session.guild_ids.contains(&guild_id) {
+        return false;
+    }
+    match paracord_db::members::get_member(&state.db, session.user_id, guild_id).await {
+        Ok(Some(_)) => true,
+        _ => {
+            session.remove_guild(guild_id);
+            false
+        }
+    }
+}
+
+async fn can_receive_channel_event(
+    state: &AppState,
+    session: &Session,
+    guild_id: i64,
+    channel_id: i64,
+) -> bool {
+    let Some(guild) = paracord_db::guilds::get_guild(&state.db, guild_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+
+    let Ok(perms) = paracord_core::permissions::compute_channel_permissions_cached(
+        &state.permission_cache,
+        &state.db,
+        guild_id,
+        channel_id,
+        guild.owner_id,
+        session.user_id,
+    )
+    .await
+    else {
+        return false;
+    };
+
+    perms.contains(Permissions::VIEW_CHANNEL)
+}
+
 pub async fn handle_connection(socket: WebSocket, state: AppState) {
+    let mut connection_guard = ConnectionGuard::new();
+    if !try_acquire_global_connection_slot() {
+        let (mut sender, _) = socket.split();
+        let _ = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: 1013,
+                reason: "Gateway is at connection capacity".into(),
+            })))
+            .await;
+        return;
+    }
+    connection_guard.global_acquired = true;
+    observability::ws_connection_open();
+
     let (mut sender, mut receiver) = socket.split();
 
     // Send HELLO
@@ -159,6 +465,17 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
             return;
         }
     };
+
+    if !try_acquire_user_connection_slot(session.user_id) {
+        let _ = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: 1008,
+                reason: "Too many concurrent sessions for this user".into(),
+            })))
+            .await;
+        return;
+    }
+    connection_guard.user_id = Some(session.user_id);
 
     if resumed {
         let resumed_payload = json!({
@@ -256,9 +573,10 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
                 .collect();
 
             // Build initial presences: guild members who are currently online
-            let guild_members = paracord_db::members::get_guild_members(&state.db, gid, 10000, None)
-                .await
-                .unwrap_or_default();
+            let guild_members =
+                paracord_db::members::get_guild_members(&state.db, gid, 10000, None)
+                    .await
+                    .unwrap_or_default();
             let presences_json: Vec<Value> = guild_members
                 .iter()
                 .filter(|m| online_snapshot.contains(&m.user_id))
@@ -288,12 +606,11 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
                     if !perms.contains(paracord_models::permissions::Permissions::VIEW_CHANNEL) {
                         continue;
                     }
-                    let required_role_ids: Vec<String> = paracord_db::channels::parse_required_role_ids(
-                        &c.required_role_ids,
-                    )
-                    .into_iter()
-                    .map(|id| id.to_string())
-                    .collect();
+                    let required_role_ids: Vec<String> =
+                        paracord_db::channels::parse_required_role_ids(&c.required_role_ids)
+                            .into_iter()
+                            .map(|id| id.to_string())
+                            .collect();
                     channels_json.push(json!({
                         "id": c.id.to_string(),
                         "name": c.name,
@@ -366,14 +683,16 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         .await
         .insert(session_user_id, online_presence.clone());
 
-    // Publish presence update for this user coming online
-    state.event_bus.dispatch(
+    // Publish presence only to users who share a guild or friendship edge.
+    let presence_recipient_ids =
+        collect_presence_recipient_ids(&state, session_user_id, &session.guild_ids).await;
+    state.event_bus.dispatch_to_users(
         EVENT_PRESENCE_UPDATE,
         online_presence,
-        None,
+        presence_recipient_ids,
     );
 
-    run_session(sender, receiver, session, state.clone()).await;
+    let session = run_session(sender, receiver, session, state.clone()).await;
 
     // Voice cleanup: when the gateway WebSocket drops, don't remove voice
     // state immediately — the user may still be connected to LiveKit (their
@@ -463,21 +782,35 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         }
     }
 
-    // Remove user from online tracking
-    state.online_users.write().await.remove(&session_user_id);
-    let offline_presence = default_presence_payload(session_user_id, "offline");
-    state
-        .user_presences
-        .write()
-        .await
-        .insert(session_user_id, offline_presence.clone());
+    // Only mark offline when this was the user's last active gateway connection.
+    // `USER_CONNECTIONS` still includes this connection until `connection_guard` drops,
+    // so `<= 1` means no other live session remains.
+    let should_mark_offline = {
+        let map = match user_connections().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        map.get(&session_user_id).copied().unwrap_or(0) <= 1
+    };
 
-    // Publish presence offline on disconnect
-    state.event_bus.dispatch(
-        EVENT_PRESENCE_UPDATE,
-        offline_presence,
-        None,
-    );
+    if should_mark_offline {
+        state.online_users.write().await.remove(&session_user_id);
+        let offline_presence = default_presence_payload(session_user_id, "offline");
+        state
+            .user_presences
+            .write()
+            .await
+            .insert(session_user_id, offline_presence.clone());
+
+        // Publish offline presence to scoped recipients only.
+        let offline_presence_recipient_ids =
+            collect_presence_recipient_ids(&state, session_user_id, &session.guild_ids).await;
+        state.event_bus.dispatch_to_users(
+            EVENT_PRESENCE_UPDATE,
+            offline_presence,
+            offline_presence_recipient_ids,
+        );
+    }
 }
 
 async fn wait_for_identify_or_resume(
@@ -492,6 +825,23 @@ async fn wait_for_identify_or_resume(
                         let claims =
                             paracord_core::auth::validate_token(token, &state.config.jwt_secret)
                                 .ok()?;
+                        let (session_id, jti) = match (claims.sid.as_deref(), claims.jti.as_deref())
+                        {
+                            (Some(session_id), Some(jti)) => (session_id, jti),
+                            _ => return None,
+                        };
+                        let active = paracord_db::sessions::is_access_token_active(
+                            &state.db,
+                            claims.sub,
+                            session_id,
+                            jti,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        .ok()?;
+                        if !active {
+                            return None;
+                        }
                         let op = payload.get("op").and_then(|v| v.as_u64())?;
                         if op == OP_IDENTIFY as u64 {
                             let guild_ids =
@@ -545,19 +895,37 @@ async fn run_session(
     mut receiver: impl StreamExt<Item = Result<Message, axum::Error>> + Unpin,
     mut session: Session,
     state: AppState,
-) {
-    let mut event_rx = state.event_bus.subscribe();
+) -> Session {
+    let mut event_rx = state.event_bus.register_session(
+        session.session_id.clone(),
+        session.user_id,
+        &session.guild_ids,
+    );
     let mut last_heartbeat = Instant::now();
     let heartbeat_timeout = Duration::from_millis(HEARTBEAT_TIMEOUT_MS);
+    let mut rate_limiter = WsMessageRateLimiter::new();
 
     let (disconnect_reason, heartbeat_timed_out) = loop {
         tokio::select! {
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        if let Ok(payload) = serde_json::from_str::<Value>(&text) {
+                        let parsed_payload = serde_json::from_str::<Value>(&text);
+                        let opcode = parsed_payload
+                            .as_ref()
+                            .ok()
+                            .and_then(|payload| payload.get("op").and_then(|v| v.as_u64()))
+                            .unwrap_or(255) as u8;
+                        if !rate_limiter.allow(opcode) {
+                            let _ = sender.send(Message::Close(Some(CloseFrame {
+                                code: 1008,
+                                reason: "Gateway rate limit exceeded".into(),
+                            }))).await;
+                            break ("client exceeded websocket rate limits".to_string(), false);
+                        }
+                        if let Ok(payload) = parsed_payload {
                             handle_client_message(&payload, &mut sender, &mut session, &state).await;
-                            if payload.get("op").and_then(|v| v.as_u64()) == Some(OP_HEARTBEAT as u64) {
+                            if opcode == OP_HEARTBEAT {
                                 last_heartbeat = Instant::now();
                             }
                         }
@@ -586,9 +954,26 @@ async fn run_session(
                 }
             }
             event = event_rx.recv() => {
-                if let Ok(event) = event {
-                    if session.should_receive_event(event.guild_id, event.target_user_ids.as_deref()) {
-                        // Dynamically add guild when this user joins a new guild
+                match event {
+                    Ok(event) => {
+                        if !session.should_receive_event(event.guild_id, event.target_user_ids.as_deref()) {
+                            continue;
+                        }
+
+                        if let Some(guild_id) = event.guild_id {
+                            if !can_receive_guild_event(&state, &mut session, guild_id).await {
+                                continue;
+                            }
+                            if let Some(channel_id) =
+                                extract_channel_id_from_event(&event.event_type, &event.payload)
+                            {
+                                if !can_receive_channel_event(&state, &session, guild_id, channel_id).await {
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Dynamically update guild scope for this active session.
                         if event.event_type == "GUILD_MEMBER_ADD" {
                             if let Some(uid) = event.payload.get("user_id").and_then(|v| v.as_str()) {
                                 if uid == session.user_id.to_string() {
@@ -597,10 +982,37 @@ async fn run_session(
                                         .and_then(|s| s.parse::<i64>().ok())
                                     {
                                         session.add_guild(gid);
+                                        state.event_bus.add_session_guild(&session.session_id, gid);
                                     }
                                 }
                             }
+                        } else if event.event_type == "GUILD_MEMBER_REMOVE" || event.event_type == "GUILD_BAN_ADD" {
+                            if let Some(uid) = event.payload.get("user_id").and_then(|v| v.as_str()) {
+                                if uid == session.user_id.to_string() {
+                                    if let Some(gid) = event.payload.get("guild_id")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse::<i64>().ok())
+                                    {
+                                        session.remove_guild(gid);
+                                        state
+                                            .event_bus
+                                            .remove_session_guild(&session.session_id, gid);
+                                    }
+                                }
+                            }
+                        } else if event.event_type == "GUILD_DELETE" {
+                            if let Some(gid) = event.payload.get("id")
+                                .or_else(|| event.payload.get("guild_id"))
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| s.parse::<i64>().ok())
+                            {
+                                session.remove_guild(gid);
+                                state
+                                    .event_bus
+                                    .remove_session_guild(&session.session_id, gid);
+                            }
                         }
+
                         let seq = session.next_sequence();
                         let dispatch = json!({
                             "op": OP_DISPATCH,
@@ -611,6 +1023,24 @@ async fn run_session(
                         if sender.send(Message::Text(dispatch.to_string().into())).await.is_err() {
                             break ("websocket send error".to_string(), false);
                         }
+                        observability::ws_event_dispatched(&event.event_type);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "Gateway event stream lagged for user {} (missed {} events); forcing reconnect",
+                            session.user_id,
+                            skipped
+                        );
+                        let _ = sender
+                            .send(Message::Close(Some(CloseFrame {
+                                code: 1013,
+                                reason: "Gateway fell behind; reconnect required".into(),
+                            })))
+                            .await;
+                        break (format!("event stream lagged by {skipped} events"), false);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break ("event stream closed".to_string(), false);
                     }
                 }
             }
@@ -625,12 +1055,34 @@ async fn run_session(
         }
     };
     if heartbeat_timed_out {
-        tracing::warn!("Client {} disconnected: {}", session.user_id, disconnect_reason);
+        tracing::warn!(
+            "Client {} disconnected: {}",
+            session.user_id,
+            disconnect_reason
+        );
     } else {
-        tracing::info!("Client {} disconnected: {}", session.user_id, disconnect_reason);
+        tracing::info!(
+            "Client {} disconnected: {}",
+            session.user_id,
+            disconnect_reason
+        );
     }
+    state.event_bus.unregister_session(&session.session_id);
     let now = chrono::Utc::now().timestamp();
     let mut cache = session_cache().write().await;
+    cache.retain(|_, cached| now - cached.updated_at <= SESSION_TTL_SECONDS);
+    let max_entries = ws_limits().session_cache_max_entries;
+    if cache.len() >= max_entries {
+        let mut entries: Vec<(String, i64)> = cache
+            .iter()
+            .map(|(key, value)| (key.clone(), value.updated_at))
+            .collect();
+        entries.sort_by_key(|(_, updated_at)| *updated_at);
+        let remove_count = cache.len() - max_entries + 1;
+        for (session_id, _) in entries.into_iter().take(remove_count) {
+            cache.remove(&session_id);
+        }
+    }
     cache.insert(
         session.session_id.clone(),
         CachedSession {
@@ -640,6 +1092,7 @@ async fn run_session(
             updated_at: now,
         },
     );
+    session
 }
 
 async fn handle_client_message(
@@ -664,20 +1117,15 @@ async fn handle_client_message(
                     .get(&session.user_id)
                     .cloned();
                 let status = d.get("status").and_then(|v| v.as_str());
-                let custom_status = d
-                    .get("custom_status")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| {
-                        existing_presence
-                            .as_ref()
-                            .and_then(|v| v.get("custom_status"))
-                            .and_then(|v| v.as_str())
-                    });
-                let activities = d.get("activities").or_else(|| {
+                let custom_status = d.get("custom_status").and_then(|v| v.as_str()).or_else(|| {
                     existing_presence
                         .as_ref()
-                        .and_then(|v| v.get("activities"))
+                        .and_then(|v| v.get("custom_status"))
+                        .and_then(|v| v.as_str())
                 });
+                let activities = d
+                    .get("activities")
+                    .or_else(|| existing_presence.as_ref().and_then(|v| v.get("activities")));
                 let effective_status = status.or_else(|| {
                     existing_presence
                         .as_ref()
@@ -696,25 +1144,75 @@ async fn handle_client_message(
                     .await
                     .insert(session.user_id, presence_payload.clone());
 
-                state.event_bus.dispatch(
+                let presence_recipient_ids =
+                    collect_presence_recipient_ids(state, session.user_id, &session.guild_ids)
+                        .await;
+                state.event_bus.dispatch_to_users(
                     EVENT_PRESENCE_UPDATE,
                     presence_payload,
-                    None,
+                    presence_recipient_ids,
                 );
             }
         }
         OP_TYPING_START => {
             if let Some(d) = payload.get("d") {
                 if let Some(channel_id_str) = d.get("channel_id").and_then(|v| v.as_str()) {
-                    let channel = if let Ok(cid) = channel_id_str.parse::<i64>() {
-                        paracord_db::channels::get_channel(&state.db, cid)
-                            .await
-                            .ok()
-                            .flatten()
-                    } else {
-                        None
+                    let Some(cid) = channel_id_str.parse::<i64>().ok() else {
+                        return;
                     };
-                    let guild_id = channel.as_ref().and_then(|c| c.guild_id());
+                    let Some(channel) = paracord_db::channels::get_channel(&state.db, cid)
+                        .await
+                        .ok()
+                        .flatten()
+                    else {
+                        return;
+                    };
+                    let guild_id = channel.guild_id();
+
+                    let allowed = if let Some(gid) = guild_id {
+                        let member_ok = paracord_core::permissions::ensure_guild_member(
+                            &state.db,
+                            gid,
+                            session.user_id,
+                        )
+                        .await
+                        .is_ok();
+                        if !member_ok {
+                            false
+                        } else {
+                            let guild = paracord_db::guilds::get_guild(&state.db, gid)
+                                .await
+                                .ok()
+                                .flatten();
+                            if let Some(guild) = guild {
+                                let perms =
+                                    paracord_core::permissions::compute_channel_permissions(
+                                        &state.db,
+                                        gid,
+                                        cid,
+                                        guild.owner_id,
+                                        session.user_id,
+                                    )
+                                    .await
+                                    .ok();
+                                if let Some(perms) = perms {
+                                    perms.contains(Permissions::VIEW_CHANNEL)
+                                        && perms.contains(Permissions::SEND_MESSAGES)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                    } else {
+                        paracord_db::dms::is_dm_recipient(&state.db, cid, session.user_id)
+                            .await
+                            .unwrap_or(false)
+                    };
+                    if !allowed {
+                        return;
+                    }
 
                     let typing_payload = json!({
                         "channel_id": channel_id_str,
@@ -723,17 +1221,14 @@ async fn handle_client_message(
                     });
 
                     if guild_id.is_none() {
-                        if let Ok(cid) = channel_id_str.parse::<i64>() {
-                            let recipient_ids =
-                                paracord_db::dms::get_dm_recipient_ids(&state.db, cid)
-                                    .await
-                                    .unwrap_or_default();
-                            state.event_bus.dispatch_to_users(
-                                EVENT_TYPING_START,
-                                typing_payload,
-                                recipient_ids,
-                            );
-                        }
+                        let recipient_ids = paracord_db::dms::get_dm_recipient_ids(&state.db, cid)
+                            .await
+                            .unwrap_or_default();
+                        state.event_bus.dispatch_to_users(
+                            EVENT_TYPING_START,
+                            typing_payload,
+                            recipient_ids,
+                        );
                     } else {
                         state
                             .event_bus
@@ -814,11 +1309,58 @@ async fn handle_client_message(
                             .await
                             .ok()
                             .flatten();
-                        let guild_id = channel.and_then(|c| c.guild_id());
+                        let Some(channel) = channel else {
+                            return;
+                        };
+                        if channel.channel_type != 2 {
+                            return;
+                        }
+                        let guild_id = channel.guild_id();
+                        let Some(guild_id) = guild_id else {
+                            return;
+                        };
+                        if requested_guild_id.is_some() && requested_guild_id != Some(guild_id) {
+                            return;
+                        }
+
+                        if paracord_core::permissions::ensure_guild_member(
+                            &state.db,
+                            guild_id,
+                            session.user_id,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return;
+                        }
+                        let Some(guild) = paracord_db::guilds::get_guild(&state.db, guild_id)
+                            .await
+                            .ok()
+                            .flatten()
+                        else {
+                            return;
+                        };
+                        let Ok(perms) = paracord_core::permissions::compute_channel_permissions(
+                            &state.db,
+                            guild_id,
+                            channel_id,
+                            guild.owner_id,
+                            session.user_id,
+                        )
+                        .await
+                        else {
+                            return;
+                        };
+                        if !perms.contains(Permissions::VIEW_CHANNEL)
+                            || !perms.contains(Permissions::CONNECT)
+                        {
+                            return;
+                        }
+
                         let _ = paracord_db::voice_states::upsert_voice_state(
                             &state.db,
                             session.user_id,
-                            guild_id,
+                            Some(guild_id),
                             channel_id,
                             &session.session_id,
                         )
@@ -843,7 +1385,7 @@ async fn handle_client_message(
                             json!({
                                 "user_id": session.user_id.to_string(),
                                 "channel_id": channel_id_str,
-                                "guild_id": guild_id.map(|id| id.to_string()),
+                                "guild_id": Some(guild_id.to_string()),
                                 "self_mute": self_mute,
                                 "self_deaf": self_deaf,
                                 "self_stream": current_self_stream,
@@ -854,7 +1396,7 @@ async fn handle_client_message(
                                 "username": vs_user.as_ref().map(|u| u.username.as_str()),
                                 "avatar_hash": vs_user.as_ref().and_then(|u| u.avatar_hash.as_deref()),
                             }),
-                            guild_id,
+                            Some(guild_id),
                         );
                     }
                 }

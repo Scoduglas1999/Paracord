@@ -13,6 +13,7 @@ interface UIState {
   commandPaletteOpen: boolean;
   memberPanelOpen: boolean;
   sidebarCollapsed: boolean;
+  searchPanelOpen: boolean;
 
   toggleSidebar: () => void;
   toggleMemberSidebar: () => void;
@@ -26,6 +27,8 @@ interface UIState {
   setMemberPanelOpen: (open: boolean) => void;
   toggleSidebarCollapsed: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSearchPanel: () => void;
+  setSearchPanelOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -40,6 +43,7 @@ export const useUIStore = create<UIState>()(
       commandPaletteOpen: false,
       memberPanelOpen: true,
       sidebarCollapsed: false,
+      searchPanelOpen: false,
 
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       toggleMemberSidebar: () => set((s) => ({ memberSidebarOpen: !s.memberSidebarOpen })),
@@ -53,6 +57,8 @@ export const useUIStore = create<UIState>()(
       setMemberPanelOpen: (memberPanelOpen) => set({ memberPanelOpen }),
       toggleSidebarCollapsed: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+      toggleSearchPanel: () => set((s) => ({ searchPanelOpen: !s.searchPanelOpen })),
+      setSearchPanelOpen: (searchPanelOpen) => set({ searchPanelOpen }),
     }),
     {
       name: 'ui-storage',
