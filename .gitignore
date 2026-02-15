@@ -7,6 +7,8 @@ Cargo.lock
 client/node_modules/
 client/dist/
 client/.vite/
+client/test-results/
+client/playwright-report/
 
 # Tauri
 client/src-tauri/target/
@@ -52,12 +54,18 @@ Dockerfile.*
 /dist/
 livekit*.zip
 livekit*.tar.gz
+livekit-extracted*/
 livekit-extracted/
 livekit-extracted-win/
 livekit-extracted-linux/
 linux-deb-out/
+linux-build-output/
 target-rebuild/
 target-release-*/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
 
 # Release archives
 paracord-server-*.zip
@@ -76,3 +84,7 @@ installer/*.exe
 client/ui_dump.html
 client/ui_mock_dump.html
 client/ui_mock_screenshot.png
+
+# Local security docs (private working notes)
+SECURITY_AUDIT*.md
+SECURITY_REMEDIATION_TRACKER.md
