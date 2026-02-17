@@ -951,6 +951,11 @@ impl Config {
                 config.network.windows_firewall_auto_allow = parsed;
             }
         }
+        if let Ok(value) = std::env::var("PARACORD_TLS_ENABLED") {
+            if let Ok(parsed) = value.parse::<bool>() {
+                config.tls.enabled = parsed;
+            }
+        }
         if let Ok(value) = std::env::var("PARACORD_TLS_ACME_ENABLED") {
             if let Ok(parsed) = value.parse::<bool>() {
                 config.tls.acme.enabled = parsed;
