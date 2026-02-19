@@ -4,7 +4,7 @@ use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
 use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 use tokio::time::{Duration, Instant};
@@ -30,6 +30,7 @@ const WS_MAX_VOICE_UPDATES_PER_MINUTE_DEFAULT: u32 = 60;
 struct CachedSession {
     user_id: i64,
     guild_ids: Vec<i64>,
+    guild_owner_ids: HashMap<i64, i64>,
     sequence: u64,
     updated_at: i64,
 }
@@ -383,12 +384,9 @@ async fn can_receive_channel_event(
     guild_id: i64,
     channel_id: i64,
 ) -> bool {
-    let Some(guild) = paracord_db::guilds::get_guild(&state.db, guild_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return false;
+    let owner_id = match session.guild_owner_ids.get(&guild_id) {
+        Some(&id) => id,
+        None => return false,
     };
 
     let Ok(perms) = paracord_core::permissions::compute_channel_permissions_cached(
@@ -396,7 +394,7 @@ async fn can_receive_channel_event(
         &state.db,
         guild_id,
         channel_id,
-        guild.owner_id,
+        owner_id,
         session.user_id,
     )
     .await
@@ -855,14 +853,13 @@ async fn wait_for_identify_or_resume(
                         }
                         let op = payload.get("op").and_then(|v| v.as_u64())?;
                         if op == OP_IDENTIFY as u64 {
-                            let guild_ids =
+                            let guilds =
                                 paracord_db::guilds::get_user_guilds(&state.db, claims.sub)
                                     .await
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|g| g.id)
-                                    .collect();
-                            return Some((Session::new(claims.sub, guild_ids), false));
+                                    .unwrap_or_default();
+                            let guild_ids = guilds.iter().map(|g| g.id).collect();
+                            let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
+                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false));
                         }
                         if op == OP_RESUME as u64 {
                             let requested_session_id =
@@ -871,7 +868,7 @@ async fn wait_for_identify_or_resume(
                             if let Some(cached) = session_cache().get(&requested_session_id).await {
                                 if cached.user_id == claims.sub {
                                     let mut resumed =
-                                        Session::new(cached.user_id, cached.guild_ids.clone());
+                                        Session::new(cached.user_id, cached.guild_ids.clone(), cached.guild_owner_ids.clone());
                                     resumed.session_id = requested_session_id;
                                     resumed.sequence = cached.sequence.max(requested_seq);
                                     return Some((resumed, true));
@@ -880,14 +877,13 @@ async fn wait_for_identify_or_resume(
                             // If resume can't be honored (cache miss/mismatch), fall back to a
                             // fresh session immediately so clients recover without an extra
                             // invalid-session reconnect cycle.
-                            let guild_ids =
+                            let guilds =
                                 paracord_db::guilds::get_user_guilds(&state.db, claims.sub)
                                     .await
-                                    .unwrap_or_default()
-                                    .iter()
-                                    .map(|g| g.id)
-                                    .collect();
-                            return Some((Session::new(claims.sub, guild_ids), false));
+                                    .unwrap_or_default();
+                            let guild_ids = guilds.iter().map(|g| g.id).collect();
+                            let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
+                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false));
                         }
                     }
                 }
@@ -989,7 +985,13 @@ async fn run_session(
                                         .and_then(|v| v.as_str())
                                         .and_then(|s| s.parse::<i64>().ok())
                                     {
-                                        session.add_guild(gid);
+                                        let owner_id = paracord_db::guilds::get_guild(&state.db, gid)
+                                            .await
+                                            .ok()
+                                            .flatten()
+                                            .map(|g| g.owner_id)
+                                            .unwrap_or(0);
+                                        session.add_guild(gid, owner_id);
                                         state.event_bus.add_session_guild(&session.session_id, gid);
                                     }
                                 }
@@ -1018,6 +1020,15 @@ async fn run_session(
                                 state
                                     .event_bus
                                     .remove_session_guild(&session.session_id, gid);
+                            }
+                        } else if event.event_type == "GUILD_UPDATE" {
+                            if let Some(gid) = event.guild_id {
+                                if let Some(new_owner) = event.payload.get("owner_id")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<i64>().ok())
+                                {
+                                    session.guild_owner_ids.insert(gid, new_owner);
+                                }
                             }
                         }
 
@@ -1085,6 +1096,7 @@ async fn run_session(
             CachedSession {
                 user_id: session.user_id,
                 guild_ids: session.guild_ids.clone(),
+                guild_owner_ids: session.guild_owner_ids.clone(),
                 sequence: session.sequence,
                 updated_at: chrono::Utc::now().timestamp(),
             },
@@ -1176,31 +1188,25 @@ async fn handle_client_message(
                         .is_ok();
                         if !member_ok {
                             false
-                        } else {
-                            let guild = paracord_db::guilds::get_guild(&state.db, gid)
+                        } else if let Some(&owner_id) = session.guild_owner_ids.get(&gid) {
+                            let perms =
+                                paracord_core::permissions::compute_channel_permissions(
+                                    &state.db,
+                                    gid,
+                                    cid,
+                                    owner_id,
+                                    session.user_id,
+                                )
                                 .await
-                                .ok()
-                                .flatten();
-                            if let Some(guild) = guild {
-                                let perms =
-                                    paracord_core::permissions::compute_channel_permissions(
-                                        &state.db,
-                                        gid,
-                                        cid,
-                                        guild.owner_id,
-                                        session.user_id,
-                                    )
-                                    .await
-                                    .ok();
-                                if let Some(perms) = perms {
-                                    perms.contains(Permissions::VIEW_CHANNEL)
-                                        && perms.contains(Permissions::SEND_MESSAGES)
-                                } else {
-                                    false
-                                }
+                                .ok();
+                            if let Some(perms) = perms {
+                                perms.contains(Permissions::VIEW_CHANNEL)
+                                    && perms.contains(Permissions::SEND_MESSAGES)
                             } else {
                                 false
                             }
+                        } else {
+                            false
                         }
                     } else {
                         paracord_db::dms::is_dm_recipient(&state.db, cid, session.user_id)
@@ -1330,18 +1336,14 @@ async fn handle_client_message(
                         {
                             return;
                         }
-                        let Some(guild) = paracord_db::guilds::get_guild(&state.db, guild_id)
-                            .await
-                            .ok()
-                            .flatten()
-                        else {
+                        let Some(&owner_id) = session.guild_owner_ids.get(&guild_id) else {
                             return;
                         };
                         let Ok(perms) = paracord_core::permissions::compute_channel_permissions(
                             &state.db,
                             guild_id,
                             channel_id,
-                            guild.owner_id,
+                            owner_id,
                             session.user_id,
                         )
                         .await
