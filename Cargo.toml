@@ -70,6 +70,9 @@ hkdf = "0.12"
 # Concurrent collections
 dashmap = "6"
 
+# Rate limiting
+governor = "0.10"
+
 # Caching
 moka = { version = "0.12", features = ["future"] }
 

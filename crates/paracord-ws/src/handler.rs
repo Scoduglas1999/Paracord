@@ -1,10 +1,12 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
 use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
@@ -300,55 +302,62 @@ fn try_acquire_user_connection_slot(user_id: i64) -> bool {
     true
 }
 
-struct WsMessageRateLimiter {
-    window_started_at: i64,
-    total_messages: u32,
-    presence_updates: u32,
-    typing_events: u32,
-    voice_updates: u32,
+/// User-level rate limiters shared across all connections for the same user.
+/// This prevents users from bypassing rate limits by opening multiple tabs/connections.
+struct UserRateLimits {
+    /// General messages (any opcode except heartbeat): 240/min per user
+    messages: DefaultKeyedRateLimiter<i64>,
+    /// Presence updates: 60/min per user
+    presence: DefaultKeyedRateLimiter<i64>,
+    /// Typing events: 120/min per user
+    typing: DefaultKeyedRateLimiter<i64>,
+    /// Voice state updates: 60/min per user
+    voice: DefaultKeyedRateLimiter<i64>,
 }
 
-impl WsMessageRateLimiter {
-    fn new() -> Self {
-        Self {
-            window_started_at: chrono::Utc::now().timestamp(),
-            total_messages: 0,
-            presence_updates: 0,
-            typing_events: 0,
-            voice_updates: 0,
-        }
-    }
+static USER_RATE_LIMITS: OnceLock<UserRateLimits> = OnceLock::new();
 
-    fn allow(&mut self, opcode: u8) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        if now - self.window_started_at >= 60 {
-            self.window_started_at = now;
-            self.total_messages = 0;
-            self.presence_updates = 0;
-            self.typing_events = 0;
-            self.voice_updates = 0;
-        }
-
-        self.total_messages += 1;
+fn user_rate_limits() -> &'static UserRateLimits {
+    USER_RATE_LIMITS.get_or_init(|| {
         let limits = ws_limits();
-        if self.total_messages > limits.max_messages_per_minute {
-            return false;
+        UserRateLimits {
+            messages: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_messages_per_minute).unwrap(),
+            )),
+            presence: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_presence_updates_per_minute).unwrap(),
+            )),
+            typing: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_typing_events_per_minute).unwrap(),
+            )),
+            voice: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_voice_updates_per_minute).unwrap(),
+            )),
+        }
+    })
+}
+
+impl UserRateLimits {
+    /// Check if a message from the given user with the given opcode is allowed.
+    /// Returns `Ok(())` if allowed, or `Err(retry_after_ms)` if rate limited.
+    fn check(&self, user_id: i64, opcode: u8) -> Result<(), u64> {
+        // Check total message limit first
+        if self.messages.check_key(&user_id).is_err() {
+            return Err(60_000); // ~60s until next window
         }
 
-        match opcode {
-            OP_PRESENCE_UPDATE => {
-                self.presence_updates += 1;
-                self.presence_updates <= limits.max_presence_updates_per_minute
-            }
-            OP_TYPING_START => {
-                self.typing_events += 1;
-                self.typing_events <= limits.max_typing_events_per_minute
-            }
-            OP_VOICE_STATE_UPDATE => {
-                self.voice_updates += 1;
-                self.voice_updates <= limits.max_voice_updates_per_minute
-            }
-            _ => true,
+        // Check per-opcode limits
+        let denied = match opcode {
+            OP_PRESENCE_UPDATE => self.presence.check_key(&user_id).is_err(),
+            OP_TYPING_START => self.typing.check_key(&user_id).is_err(),
+            OP_VOICE_STATE_UPDATE => self.voice.check_key(&user_id).is_err(),
+            _ => false,
+        };
+
+        if denied {
+            Err(60_000)
+        } else {
+            Ok(())
         }
     }
 }
@@ -1039,7 +1048,7 @@ async fn run_session(
         &session.guild_ids,
     );
     let heartbeat_timeout = Duration::from_millis(HEARTBEAT_TIMEOUT_MS);
-    let mut rate_limiter = WsMessageRateLimiter::new();
+    let rate_limits = user_rate_limits();
     let mut ws_ping_interval = tokio::time::interval(Duration::from_secs(20));
     ws_ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let heartbeat_sleep = tokio::time::sleep(heartbeat_timeout);
@@ -1063,17 +1072,43 @@ async fn run_session(
                             &text,
                             "client_message",
                         );
-                        if !rate_limiter.allow(opcode) {
-                            let _ = send_ws_close_logged(
-                                &mut sender,
-                                1008,
-                                "Gateway rate limit exceeded",
-                                Some(session.user_id),
-                                Some(session.session_id.as_str()),
-                                "rate_limit_close",
-                            )
-                            .await;
-                            break ("client exceeded websocket rate limits".to_string(), false);
+                        // Heartbeats are never rate limited
+                        if opcode != OP_HEARTBEAT {
+                            if let Err(retry_after_ms) = rate_limits.check(session.user_id, opcode) {
+                                match opcode {
+                                    OP_PRESENCE_UPDATE | OP_TYPING_START | OP_VOICE_STATE_UPDATE => {
+                                        // Silent drop for high-frequency events
+                                        tracing::debug!(
+                                            user_id = session.user_id,
+                                            opcode,
+                                            "rate limited (silent drop)"
+                                        );
+                                        continue;
+                                    }
+                                    _ => {
+                                        let error_payload = json!({
+                                            "op": OP_DISPATCH,
+                                            "t": "RATE_LIMIT",
+                                            "d": {
+                                                "retry_after": retry_after_ms,
+                                                "type": "messages"
+                                            }
+                                        });
+                                        let _ = send_ws_text_logged(
+                                            &mut sender,
+                                            error_payload.to_string(),
+                                            Some(session.user_id),
+                                            Some(session.session_id.as_str()),
+                                            "rate_limit",
+                                            Some(OP_DISPATCH),
+                                            Some("RATE_LIMIT"),
+                                            None,
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                         if let Ok(payload) = parsed_payload {
                             handle_client_message(&payload, &mut sender, &mut session, &state).await;
