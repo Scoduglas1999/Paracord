@@ -1,11 +1,12 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use governor::clock::{Clock, DefaultClock};
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
 use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
@@ -320,7 +321,7 @@ static USER_RATE_LIMITS: OnceLock<UserRateLimits> = OnceLock::new();
 fn user_rate_limits() -> &'static UserRateLimits {
     USER_RATE_LIMITS.get_or_init(|| {
         let limits = ws_limits();
-        UserRateLimits {
+        let rate_limits = UserRateLimits {
             messages: RateLimiter::keyed(Quota::per_minute(
                 NonZeroU32::new(limits.max_messages_per_minute).unwrap(),
             )),
@@ -333,7 +334,28 @@ fn user_rate_limits() -> &'static UserRateLimits {
             voice: RateLimiter::keyed(Quota::per_minute(
                 NonZeroU32::new(limits.max_voice_updates_per_minute).unwrap(),
             )),
-        }
+        };
+
+        // Periodic cleanup of stale rate limiter entries to prevent unbounded memory growth.
+        tokio::spawn(async {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let rl = user_rate_limits();
+                rl.messages.retain_recent();
+                rl.presence.retain_recent();
+                rl.typing.retain_recent();
+                rl.voice.retain_recent();
+                rl.messages.shrink_to_fit();
+                rl.presence.shrink_to_fit();
+                rl.typing.shrink_to_fit();
+                rl.voice.shrink_to_fit();
+                tracing::trace!("rate limiter cleanup: pruned stale entries");
+            }
+        });
+
+        rate_limits
     })
 }
 
@@ -341,21 +363,26 @@ impl UserRateLimits {
     /// Check if a message from the given user with the given opcode is allowed.
     /// Returns `Ok(())` if allowed, or `Err(retry_after_ms)` if rate limited.
     fn check(&self, user_id: i64, opcode: u8) -> Result<(), u64> {
+        let clock = DefaultClock::default();
+        let now = clock.now();
+
         // Check total message limit first
-        if self.messages.check_key(&user_id).is_err() {
-            return Err(60_000); // ~60s until next window
+        if let Err(not_until) = self.messages.check_key(&user_id) {
+            let wait = not_until.wait_time_from(now);
+            return Err(wait.as_millis().max(1) as u64);
         }
 
         // Check per-opcode limits
-        let denied = match opcode {
-            OP_PRESENCE_UPDATE => self.presence.check_key(&user_id).is_err(),
-            OP_TYPING_START => self.typing.check_key(&user_id).is_err(),
-            OP_VOICE_STATE_UPDATE => self.voice.check_key(&user_id).is_err(),
-            _ => false,
+        let not_until = match opcode {
+            OP_PRESENCE_UPDATE => self.presence.check_key(&user_id).err(),
+            OP_TYPING_START => self.typing.check_key(&user_id).err(),
+            OP_VOICE_STATE_UPDATE => self.voice.check_key(&user_id).err(),
+            _ => None,
         };
 
-        if denied {
-            Err(60_000)
+        if let Some(not_until) = not_until {
+            let wait = not_until.wait_time_from(now);
+            Err(wait.as_millis().max(1) as u64)
         } else {
             Ok(())
         }
