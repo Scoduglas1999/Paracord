@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { create } from 'zustand';
 import type {
   EditMessageRequest,
@@ -16,6 +17,17 @@ import { toast } from './toastStore';
 import { usePollStore } from './pollStore';
 
 const ENCRYPTED_DM_PLACEHOLDER = '[Encrypted message]';
+
+const _messageFetchControllers = new Map<string, AbortController>();
+
+/** Cancel any in-flight message fetch for the given channel. */
+export function cancelMessageFetch(channelId: string): void {
+  const controller = _messageFetchControllers.get(channelId);
+  if (controller) {
+    controller.abort();
+    _messageFetchControllers.delete(channelId);
+  }
+}
 
 function findChannel(channelId: string) {
   const channelsByGuild = useChannelStore.getState().channelsByGuild;
@@ -198,23 +210,39 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
 
   fetchMessages: async (channelId, params) => {
     if (get().loading[channelId]) return;
+
+    // Abort any in-flight fetch for a different channel
+    for (const [key, ctrl] of _messageFetchControllers) {
+      if (key !== channelId) {
+        ctrl.abort();
+        _messageFetchControllers.delete(key);
+      }
+    }
+
     set((state) => ({ loading: { ...state.loading, [channelId]: true } }));
+
+    const controller = new AbortController();
+    _messageFetchControllers.set(channelId, controller);
+
     const MAX_RETRIES = 2;
     const RETRY_DELAY = 300;
-    // Use a shorter timeout per request so stale HTTP/2 connections
-    // don't block message loading for 15s × 3 retries (~45s).
-    // With 5s per attempt the worst case is 5 + 0.3 + 5 + 0.6 + 5 ≈ 16s.
     const REQUEST_TIMEOUT = 5_000;
     let lastErr: unknown;
     try {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (controller.signal.aborted) return;
         try {
           if (attempt > 0) {
             await new Promise((r) => setTimeout(r, RETRY_DELAY * attempt));
           }
+          if (controller.signal.aborted) return;
           const { data } = await apiClient.get<Message[]>(
             `/channels/${channelId}/messages`,
-            { params: { limit: DEFAULT_MESSAGE_FETCH_LIMIT, ...params }, timeout: REQUEST_TIMEOUT },
+            {
+              params: { limit: DEFAULT_MESSAGE_FETCH_LIMIT, ...params },
+              timeout: REQUEST_TIMEOUT,
+              signal: controller.signal,
+            },
           );
           const decrypted = await decryptMessagesForChannel(channelId, data);
           if (!params?.before) {
@@ -241,12 +269,14 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
           });
           return;
         } catch (err) {
+          if (axios.isCancel(err) || controller.signal.aborted) return;
           lastErr = err;
         }
       }
       toast.error(`Failed to load messages: ${extractApiError(lastErr)}`);
     } finally {
       set((state) => ({ loading: { ...state.loading, [channelId]: false } }));
+      _messageFetchControllers.delete(channelId);
     }
   },
 

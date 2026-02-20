@@ -1,0 +1,45 @@
+# Builds the Paracord desktop client .deb package for Linux x64.
+# Usage:
+#   docker build -t paracord-client-deb -f Dockerfile.client-deb .
+#   docker cp $(docker create paracord-client-deb):/out/ ./dist-client/
+
+FROM rust:1.91-bookworm AS builder
+
+# Install Node.js 22
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs
+
+# Install Tauri Linux build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgtk-3-dev \
+    libwebkit2gtk-4.1-dev \
+    librsvg2-dev \
+    patchelf \
+    libglib2.0-dev \
+    libjavascriptcoregtk-4.1-dev \
+    libsoup-3.0-dev \
+    libasound2-dev \
+    libpulse-dev \
+    libssl-dev \
+    cmake \
+    libayatana-appindicator3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Copy workspace manifests for Rust dependency caching
+COPY Cargo.toml Cargo.lock* ./
+COPY crates/ crates/
+
+# Copy client source
+COPY client/ client/
+
+WORKDIR /src/client
+
+RUN npm ci
+RUN npx tauri build --bundles deb
+
+# Collect output
+RUN mkdir -p /out \
+    && cp src-tauri/target/release/bundle/deb/*.deb /out/ \
+    && ls -la /out/

@@ -6,7 +6,7 @@ export interface ScreenShareConfig {
 }
 
 export interface MediaEngine {
-  connect(endpoint: string, token: string): Promise<void>;
+  connect(endpoint: string, token: string, certHash?: string): Promise<void>;
   disconnect(): Promise<void>;
   setMute(muted: boolean): void;
   setDeaf(deafened: boolean): void;

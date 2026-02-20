@@ -118,7 +118,7 @@ Server-to-server federation is in active development with the transport layer al
 
 ### Self-Hosted & Zero-Config
 
-One binary, one SQLite database, zero external dependencies. Run the server and it auto-generates config, TLS certificates, and database on first start. UPnP (with NAT-PMP/PCP fallback) auto-forwards ports on most home routers. The web UI is baked into the server binary — no separate web server, no Docker, no nginx.
+One binary, one SQLite database, zero external dependencies. Run the server and it auto-generates config, TLS certificates, and database on first start. The web UI is baked into the server binary — no separate web server, no Docker, no nginx.
 
 ### Desktop Client
 
@@ -178,7 +178,7 @@ chmod +x paracord-server livekit-server
 ./paracord-server
 ```
 
-That's it. UPnP auto-forwards ports on most home routers. If your router doesn't support UPnP, forward TCP+UDP port 8080 and TCP port 8443 (HTTPS).
+That's it. For remote access, forward TCP+UDP port 8080 and TCP port 8443 (HTTPS) on your router/firewall.
 
 ### Docker
 
@@ -204,7 +204,7 @@ The server auto-generates `config/paracord.toml` on first run with:
 - Random JWT secret and LiveKit API credentials
 - SQLite database in `./data/`
 - TLS certificates in `./data/certs/`
-- UPnP enabled by default
+- Manual port forwarding for internet exposure
 
 All settings can be overridden via environment variables prefixed with `PARACORD_`. See `paracord.example.toml` in the server package for the full reference.
 
@@ -441,7 +441,7 @@ There is no built-in migration tool to move data from an existing SQLite databas
 | Auth | Argon2 hashing, JWT sessions, Ed25519 cryptographic identity |
 | Encryption | X25519 + AES-GCM (E2E DMs), AES-256-GCM (at-rest) |
 | TLS | rustls + rcgen auto-certs, ACME/Let's Encrypt |
-| Networking | UPnP IGD + NAT-PMP/PCP fallback |
+| Networking | Manual router/firewall port forwarding |
 | CI/CD | GitHub Actions (build, test, security audit, DAST) |
 | Testing | Vitest + Playwright E2E |
 
@@ -503,7 +503,7 @@ Produces `.exe` + `.msi` on Windows, `.deb` + `.AppImage` on Linux.
 ```
 paracord/
 ├── crates/                 # Rust server workspace
-│   ├── paracord-server/    # Binary entry point, TLS, UPnP, LiveKit management
+│   ├── paracord-server/    # Binary entry point, TLS, LiveKit management
 │   ├── paracord-api/       # REST API routes (90+ endpoints)
 │   ├── paracord-ws/        # WebSocket gateway (events, presence, typing)
 │   ├── paracord-core/      # Business logic, permissions engine, event bus
@@ -527,3 +527,4 @@ paracord/
 ## License
 
 Source-available. See [LICENSE](LICENSE) for full terms. You may use, study, and modify the software for personal use, and share official releases. Redistribution of modified versions and derivative works is not permitted without written permission.
+

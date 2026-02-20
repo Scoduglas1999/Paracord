@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/authStore';
 import { inviteApi } from '../api/invites';
 import { useGuildStore } from '../stores/guildStore';
 import { useChannelStore } from '../stores/channelStore';
+import { useUIStore } from '../stores/uiStore';
 import { extractApiError } from '../api/client';
 import type { Invite } from '../types';
 
@@ -52,7 +53,8 @@ export function InvitePage() {
         useChannelStore.getState().selectChannel(firstChannelId);
         navigate(`/app/guilds/${guild.id}/channels/${firstChannelId}`);
       } else {
-        navigate(`/app/guilds/${guild.id}/settings`);
+        useUIStore.getState().setGuildSettingsId(guild.id);
+        navigate(`/app`);
       }
     } catch (err: any) {
       setError(extractApiError(err) || 'Failed to accept invite');

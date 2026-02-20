@@ -2356,7 +2356,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   watchedStreamerId: null,
   previewStreamerId: null,
 
-  useNativeMedia: isTauri(),
+  useNativeMedia: true,
   mediaEngine: null,
 
   joinChannel: async (channelId, guildId, internalRetryAttempt = 0) => {
@@ -2538,7 +2538,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             set({ speakingUsers: new Set(speakers.keys()) });
           });
 
-          await engine.connect(mediaEndpoint, mediaToken);
+          await engine.connect(mediaEndpoint, mediaToken, data.cert_hash || undefined);
 
           // Apply initial mute/deaf state
           if (shouldMuteOnJoin) {
@@ -3046,7 +3046,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         connectionErrorChannelId: channelId,
         watchedStreamerId: null,
         previewStreamerId: null,
-        useNativeMedia: isTauri(),
+        useNativeMedia: true,
         mediaEngine: null,
       });
       return;
@@ -3138,7 +3138,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         voiceSuppressedForStream: false,
         watchedStreamerId: null,
         previewStreamerId: null,
-        useNativeMedia: isTauri(),
+        useNativeMedia: true,
         mediaEngine: null,
       };
     });

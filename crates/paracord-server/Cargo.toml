@@ -27,10 +27,13 @@ tracing-subscriber = { workspace = true }
 paracord-media = { workspace = true }
 paracord-relay = { path = "../paracord-relay" }
 paracord-transport = { path = "../paracord-transport" }
+quinn = { workspace = true }
 anyhow = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
+serde_json = { workspace = true }
 tower-http = { workspace = true }
-igd-next = { workspace = true }
-crab_nat = { workspace = true }
 reqwest = { workspace = true }
 which = { workspace = true }
 tempfile = { workspace = true }

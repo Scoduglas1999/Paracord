@@ -387,7 +387,7 @@ export function MessageInput({ channelId, guildId, channelName, replyingTo, onCa
 
   return (
     <div
-      className="relative px-4 pb-[calc(var(--safe-bottom)+0.75rem)] pt-2 sm:px-6 sm:pb-5"
+      className="relative mx-auto w-full max-w-[54rem] px-4 pb-[calc(var(--safe-bottom)+1.25rem)] pt-2 sm:px-6 sm:pb-8"
       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
       onDragLeave={() => setIsDragOver(false)}
       onDrop={handleDrop}
@@ -546,14 +546,13 @@ export function MessageInput({ channelId, guildId, channelName, replyingTo, onCa
       )}
 
       <div
-        className={`architect-input-shell relative flex min-h-[58px] items-center gap-2 rounded-[999px] border px-3 py-2 shadow-sm sm:min-h-[62px] sm:px-3.5 sm:py-2.5 ${
-          isDragOver ? 'border-2 border-dashed border-accent-primary/70' : 'border-border-subtle'
-        }`}
+        className={`architect-input-shell group relative flex min-h-[58px] items-center gap-2 border px-3 py-2 shadow-2xl backdrop-blur-xl transition-colors sm:min-h-[62px] sm:px-3.5 sm:py-2.5 ${isDragOver ? 'border-2 border-dashed border-accent-primary/70 bg-bg-primary/95' : 'border-white/10 bg-bg-mod-subtle/80 hover:bg-bg-primary/90 hover:border-white/15'
+          }`}
         style={{
-          borderTopLeftRadius: (replyingTo || stagedFiles.length > 0 || showPollComposer) ? '16px' : '9999px',
-          borderTopRightRadius: (replyingTo || stagedFiles.length > 0 || showPollComposer) ? '16px' : '9999px',
-          borderBottomLeftRadius: '9999px',
-          borderBottomRightRadius: '9999px',
+          borderTopLeftRadius: (replyingTo || stagedFiles.length > 0 || showPollComposer) ? '16px' : '24px',
+          borderTopRightRadius: (replyingTo || stagedFiles.length > 0 || showPollComposer) ? '16px' : '24px',
+          borderBottomLeftRadius: '24px',
+          borderBottomRightRadius: '24px',
         }}
       >
         {showFormattingTools && (
@@ -569,11 +568,10 @@ export function MessageInput({ channelId, guildId, channelName, replyingTo, onCa
               <button
                 key={member.user.id}
                 type="button"
-                className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
-                  i === mentionIndex
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${i === mentionIndex
                     ? 'bg-accent-primary/15 text-text-primary'
                     : 'text-text-secondary hover:bg-bg-mod-subtle'
-                }`}
+                  }`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   insertMention(member.user.username);
@@ -613,11 +611,10 @@ export function MessageInput({ channelId, guildId, channelName, replyingTo, onCa
         <button
           type="button"
           onClick={() => setShowFormattingTools((prev) => !prev)}
-          className={`command-icon-btn h-8 w-8 flex-shrink-0 border transition-colors ${
-            showFormattingTools
+          className={`command-icon-btn h-8 w-8 flex-shrink-0 border transition-colors ${showFormattingTools
               ? 'border-accent-primary/45 bg-accent-primary/15 text-accent-primary'
               : 'border-transparent text-text-secondary hover:border-border-subtle hover:text-text-primary'
-          }`}
+            }`}
           aria-label="Formatting tools"
           title="Formatting tools"
         >
@@ -628,11 +625,10 @@ export function MessageInput({ channelId, guildId, channelName, replyingTo, onCa
           <button
             type="button"
             onClick={togglePollComposer}
-            className={`command-icon-btn h-8 w-8 flex-shrink-0 border transition-colors ${
-              showPollComposer
+            className={`command-icon-btn h-8 w-8 flex-shrink-0 border transition-colors ${showPollComposer
                 ? 'border-accent-primary/45 bg-accent-primary/15 text-accent-primary'
                 : 'border-transparent text-text-secondary hover:border-border-subtle hover:text-text-primary'
-            }`}
+              }`}
             aria-label={showPollComposer ? 'Poll composer enabled' : 'Create a poll'}
             title={showPollComposer ? 'Poll composer enabled' : 'Create a poll'}
           >

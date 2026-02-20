@@ -15,6 +15,7 @@ import type { PaneSource } from '../components/voice/SplitPaneSourcePicker';
 import { useChannelStore } from '../stores/channelStore';
 import { useGuildStore } from '../stores/guildStore';
 import { useMemberStore } from '../stores/memberStore';
+import { cancelMessageFetch } from '../stores/messageStore';
 import { useUIStore } from '../stores/uiStore';
 import { useVoice } from '../hooks/useVoice';
 import { useStream } from '../hooks/useStream';
@@ -40,7 +41,7 @@ export function GuildPage() {
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
   const fetchMembers = useMemberStore((s) => s.fetchMembers);
   const isLoading = useChannelStore((s) =>
-    guildId ? (s.isLoading && !s.guildChannelsLoaded[guildId]) : false
+    guildId ? (s.isLoading && !(s.channelsByGuild[guildId]?.length > 0)) : false
   );
   const selectChannel = useChannelStore((s) => s.selectChannel);
   const channel = channels.find(c => c.id === channelId);
@@ -131,7 +132,16 @@ export function GuildPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guildId]);
 
+  const prevChannelIdRef = useRef<string | undefined>(channelId);
+
   useEffect(() => {
+    const prevChannelId = prevChannelIdRef.current;
+    prevChannelIdRef.current = channelId;
+
+    if (prevChannelId && prevChannelId !== channelId) {
+      cancelMessageFetch(prevChannelId);
+    }
+
     if (channelId) {
       selectChannel(channelId);
       setReplyingTo(null);

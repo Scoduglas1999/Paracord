@@ -190,9 +190,130 @@ impl WebTransportSession {
         self.quinn_conn.remote_address()
     }
 
+    /// Get a reference to the underlying QUIC connection.
+    pub fn quinn_conn(&self) -> &quinn::Connection {
+        &self.quinn_conn
+    }
+
     /// Close the session.
     pub fn close(&self, reason: &str) {
         self.quinn_conn
             .close(quinn::VarInt::from_u32(1), reason.as_bytes());
     }
+}
+
+// ── QSID datagram bridge ────────────────────────────────────────────────
+
+/// Decode a QUIC variable-length integer from the front of the buffer.
+/// Returns `(value, bytes_consumed)`.
+fn decode_quic_varint(buf: &[u8]) -> Option<(u64, usize)> {
+    if buf.is_empty() {
+        return None;
+    }
+    let first = buf[0];
+    let len = 1 << (first >> 6);
+    if buf.len() < len {
+        return None;
+    }
+    let val = match len {
+        1 => (first & 0x3f) as u64,
+        2 => {
+            let mut v = [0u8; 2];
+            v.copy_from_slice(&buf[..2]);
+            v[0] &= 0x3f;
+            u16::from_be_bytes(v) as u64
+        }
+        4 => {
+            let mut v = [0u8; 4];
+            v.copy_from_slice(&buf[..4]);
+            v[0] &= 0x3f;
+            u32::from_be_bytes(v) as u64
+        }
+        8 => {
+            let mut v = [0u8; 8];
+            v.copy_from_slice(&buf[..8]);
+            v[0] &= 0x3f;
+            u64::from_be_bytes(v)
+        }
+        _ => return None,
+    };
+    Some((val, len))
+}
+
+/// Encode a QUIC variable-length integer into the smallest representation.
+fn encode_quic_varint(val: u64) -> Vec<u8> {
+    if val <= 63 {
+        vec![val as u8]
+    } else if val <= 16383 {
+        let v = (val as u16) | 0x4000;
+        v.to_be_bytes().to_vec()
+    } else if val <= 1_073_741_823 {
+        let v = (val as u32) | 0x80000000;
+        v.to_be_bytes().to_vec()
+    } else {
+        let v = val | 0xc000000000000000;
+        v.to_be_bytes().to_vec()
+    }
+}
+
+/// Spawn a datagram bridge that translates between HTTP/3 datagrams
+/// (with QSID varint prefix) and raw media packets.
+///
+/// Returns `(outbound_tx, inbound_rx)` channels:
+/// - Write raw media packets to `outbound_tx` → bridge prepends QSID and
+///   sends via the QUIC connection.
+/// - Read raw media packets from `inbound_rx` ← bridge strips QSID from
+///   incoming QUIC datagrams.
+pub fn spawn_webtransport_bridge(
+    quinn_conn: quinn::Connection,
+    qsid: u64,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<Bytes>,
+    tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+) {
+    let (outbound_tx, mut outbound_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let (inbound_tx, inbound_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Bytes>();
+
+    let qsid_prefix = Bytes::from(encode_quic_varint(qsid));
+    let conn_out = quinn_conn.clone();
+    let prefix_clone = qsid_prefix.clone();
+
+    // Outbound: relay → browser
+    tokio::spawn(async move {
+        while let Some(raw_packet) = outbound_rx.recv().await {
+            let mut datagram =
+                bytes::BytesMut::with_capacity(prefix_clone.len() + raw_packet.len());
+            datagram.extend_from_slice(&prefix_clone);
+            datagram.extend_from_slice(&raw_packet);
+            if conn_out.send_datagram(datagram.freeze()).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Inbound: browser → relay
+    tokio::spawn(async move {
+        loop {
+            match quinn_conn.read_datagram().await {
+                Ok(datagram) => {
+                    // Strip the QSID varint prefix
+                    if let Some((_qsid_val, prefix_len)) =
+                        decode_quic_varint(&datagram)
+                    {
+                        if prefix_len <= datagram.len() {
+                            let raw = datagram.slice(prefix_len..);
+                            if inbound_tx.send(raw).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    (outbound_tx, inbound_rx)
 }

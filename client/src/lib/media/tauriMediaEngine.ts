@@ -31,17 +31,20 @@ export class TauriMediaEngine implements MediaEngine {
   private screenTrack: MediaStreamTrack | null = null;
   private screenShareEndedCb: (() => void) | null = null;
 
-  async connect(endpoint: string, token: string): Promise<void> {
+  // Video frame extraction
+  private videoStream: MediaStream | null = null;
+  private videoFrameLoop: number | null = null;
+  private screenFrameLoop: number | null = null;
+
+  async connect(endpoint: string, token: string, _certHash?: string): Promise<void> {
     await tauriReady;
-    // Extract room_id from endpoint or pass as part of token payload
     await invoke('start_voice_session', { endpoint, token, roomId: '' });
   }
 
   async disconnect(): Promise<void> {
     await tauriReady;
-    // Clean up screen share
+    this.stopFrameExtraction();
     this.cleanupScreenShare();
-    // Unsubscribe all event listeners
     for (const unlisten of this.unlisteners) {
       unlisten();
     }
@@ -58,26 +61,29 @@ export class TauriMediaEngine implements MediaEngine {
   }
 
   enableVideo(enabled: boolean): void {
-    invoke('voice_enable_video', { enabled });
+    if (enabled) {
+      // Capture camera in WebView, extract RGBA frames, send to Rust for VP9 encoding
+      navigator.mediaDevices
+        .getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } } })
+        .then((stream) => {
+          this.videoStream = stream;
+          invoke('voice_enable_video', { enabled: true });
+          this.startVideoFrameExtraction(stream, false);
+        })
+        .catch((err) => {
+          console.error('[TauriMediaEngine] camera capture failed:', err);
+        });
+    } else {
+      this.stopVideoCapture();
+      invoke('voice_enable_video', { enabled: false });
+    }
   }
 
   async startScreenShare(config: ScreenShareConfig): Promise<void> {
     await tauriReady;
 
-    // Clean up any existing screen share first
     this.cleanupScreenShare();
 
-    // Use getDisplayMedia in the WebView to show the screen/window picker
-    // and capture the screen. WebView2 (Chromium) fully supports this API.
-    //
-    // Do NOT constrain width/height — let the browser capture at the
-    // source's full device-pixel resolution. Constraining with max values
-    // causes the capture pipeline to downscale (often compounded by Windows
-    // DPI scaling, e.g. a 4K monitor at 150% = 2560x1440 logical → an
-    // additional downscale to 1920x1080 makes the stream look very soft).
-    // The quality preset will control encoding bitrate/resolution when the
-    // QUIC transport sends frames; the capture itself should always be
-    // native resolution for the sharpest local preview.
     const targetFps = config.maxFrameRate ?? 30;
 
     const constraints: DisplayMediaStreamOptions = {
@@ -97,18 +103,22 @@ export class TauriMediaEngine implements MediaEngine {
 
     this.screenTrack = videoTracks[0];
 
-    // When the user clicks "Stop sharing" in the browser's native overlay,
-    // the track ends. Clean up and notify the voiceStore.
     this.screenTrack.addEventListener('ended', () => {
       this.cleanupScreenShare();
       this.screenShareEndedCb?.();
     });
 
-    // Notify the Rust side (stub for now — will route frames to QUIC later)
     await invoke('voice_start_screen_share');
+
+    // Start frame extraction loop for screen share
+    this.startVideoFrameExtraction(this.screenStream, true);
   }
 
   stopScreenShare(): void {
+    if (this.screenFrameLoop !== null) {
+      cancelAnimationFrame(this.screenFrameLoop);
+      this.screenFrameLoop = null;
+    }
     this.cleanupScreenShare();
     invoke('voice_stop_screen_share');
   }
@@ -122,6 +132,10 @@ export class TauriMediaEngine implements MediaEngine {
   }
 
   private cleanupScreenShare(): void {
+    if (this.screenFrameLoop !== null) {
+      cancelAnimationFrame(this.screenFrameLoop);
+      this.screenFrameLoop = null;
+    }
     if (this.screenTrack) {
       this.screenTrack.stop();
       this.screenTrack = null;
@@ -131,6 +145,96 @@ export class TauriMediaEngine implements MediaEngine {
         track.stop();
       }
       this.screenStream = null;
+    }
+  }
+
+  private stopVideoCapture(): void {
+    if (this.videoFrameLoop !== null) {
+      cancelAnimationFrame(this.videoFrameLoop);
+      this.videoFrameLoop = null;
+    }
+    if (this.videoStream) {
+      for (const track of this.videoStream.getTracks()) {
+        track.stop();
+      }
+      this.videoStream = null;
+    }
+  }
+
+  private stopFrameExtraction(): void {
+    this.stopVideoCapture();
+    if (this.screenFrameLoop !== null) {
+      cancelAnimationFrame(this.screenFrameLoop);
+      this.screenFrameLoop = null;
+    }
+  }
+
+  /**
+   * Extract RGBA frames from a MediaStream and push them to the Rust side
+   * for VP9 encoding and QUIC transport.
+   */
+  private startVideoFrameExtraction(stream: MediaStream, isScreen: boolean): void {
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    const settings = videoTrack.getSettings();
+    const width = settings.width ?? 640;
+    const height = settings.height ?? 360;
+
+    // Use OffscreenCanvas to extract RGBA pixel data
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Create a video element to render the stream
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.play();
+
+    const command = isScreen ? 'voice_push_screen_frame' : 'voice_push_video_frame';
+    const targetInterval = 1000 / (isScreen ? 15 : 30); // fps
+    let lastFrameTime = 0;
+
+    const extractFrame = (now: number) => {
+      if (now - lastFrameTime < targetInterval) {
+        const loopId = requestAnimationFrame(extractFrame);
+        if (isScreen) {
+          this.screenFrameLoop = loopId;
+        } else {
+          this.videoFrameLoop = loopId;
+        }
+        return;
+      }
+      lastFrameTime = now;
+
+      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        ctx.drawImage(video, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        // Send RGBA bytes to Rust for encoding
+        invoke(command, {
+          width,
+          height,
+          data: Array.from(imageData.data),
+        }).catch(() => {
+          // VP9 feature may not be enabled; silently skip
+        });
+      }
+
+      const loopId = requestAnimationFrame(extractFrame);
+      if (isScreen) {
+        this.screenFrameLoop = loopId;
+      } else {
+        this.videoFrameLoop = loopId;
+      }
+    };
+
+    const loopId = requestAnimationFrame(extractFrame);
+    if (isScreen) {
+      this.screenFrameLoop = loopId;
+    } else {
+      this.videoFrameLoop = loopId;
     }
   }
 
@@ -164,7 +268,6 @@ export class TauriMediaEngine implements MediaEngine {
   }
 
   subscribeVideo(userId: string, canvas: HTMLCanvasElement): void {
-    // Use Tauri Channel API for streaming video frames to the canvas
     invoke('media_subscribe_video', {
       userId,
       canvasWidth: canvas.width,

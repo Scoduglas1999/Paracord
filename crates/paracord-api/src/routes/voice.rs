@@ -429,10 +429,10 @@ pub async fn join_voice(
         let host = first_forwarded_value(&headers, "x-forwarded-host")
             .or_else(|| first_forwarded_value(&headers, "host"))
             .unwrap_or_else(|| format!("localhost:{}", media_port));
-        let proto = first_forwarded_value(&headers, "x-forwarded-proto")
-            .unwrap_or_else(|| "https".to_string());
         let host_no_port = host.split(':').next().unwrap_or(&host);
-        let media_endpoint = format!("{}://{}:{}/media", proto, host_no_port, media_port);
+        // Browser clients connect via WebTransport (HTTPS/HTTP3) on the
+        // unified media port (same UDP port as raw QUIC, ALPN-routed).
+        let media_endpoint = format!("https://{}:{}/media", host_no_port, media_port);
         let room_name = format!("{}:{}", guild_id, channel_id);
 
         let media_claims = json!({
@@ -448,6 +448,12 @@ pub async fn join_voice(
         )
         .unwrap_or_default();
 
+        // Include the cert hash so browsers can trust self-signed certs
+        let cert_hash = state
+            .native_media
+            .as_ref()
+            .map(|nm| nm.cert_hash.clone());
+
         tracing::info!(
             "Native media voice join issued for user={} channel={}",
             auth.user_id,
@@ -458,6 +464,7 @@ pub async fn join_voice(
             "native_media": true,
             "media_endpoint": media_endpoint,
             "media_token": media_token,
+            "cert_hash": cert_hash,
             "room_name": room_name,
             "session_id": session_id,
             "livekit_available": state.config.livekit_available,

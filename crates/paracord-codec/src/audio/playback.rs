@@ -94,6 +94,13 @@ pub struct AudioPlayback {
     device_sample_rate: u32,
 }
 
+// SAFETY: `cpal::Stream` is `!Send` as a cross-platform precaution. On Windows
+// (WASAPI) and Linux (PulseAudio) the underlying handles are thread-safe. The
+// `_stream` field is only held for RAII lifetime management; we never call
+// methods on it from another thread.
+unsafe impl Send for AudioPlayback {}
+unsafe impl Sync for AudioPlayback {}
+
 impl AudioPlayback {
     /// Start playback on the default output device.
     pub fn start() -> Result<Self, PlaybackError> {
@@ -107,7 +114,7 @@ impl AudioPlayback {
         Self::start_from_device(device)
     }
 
-    fn start_from_device(device: Device) -> Result<Self, PlaybackError> {
+    pub fn start_from_device(device: Device) -> Result<Self, PlaybackError> {
         let config = device.default_output_config()?;
         let device_sample_rate = config.sample_rate().0;
         let device_channels = config.channels() as usize;

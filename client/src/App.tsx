@@ -18,8 +18,6 @@ import { BotAuthorizePage } from './pages/BotAuthorizePage';
 import { GuildHub } from './pages/GuildHub';
 
 // Lazy-loaded pages (heavy, visited infrequently)
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
-const GuildSettingsPage = lazy(() => import('./pages/GuildSettingsPage').then(m => ({ default: m.GuildSettingsPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then(m => ({ default: m.AdminPage })));
 const DiscoveryPage = lazy(() => import('./pages/DiscoveryPage').then(m => ({ default: m.DiscoveryPage })));
 const DeveloperPage = lazy(() => import('./pages/DeveloperPage').then(m => ({ default: m.DeveloperPage })));
@@ -202,11 +200,9 @@ export default function App() {
         <Route path="dms" element={<DMPage />} />
         <Route path="dms/:channelId" element={<DMPage />} />
         <Route path="friends" element={<FriendsPage />} />
-        <Route path="settings" element={<Suspense fallback={<LazyFallback />}><SettingsPage /></Suspense>} />
         <Route path="admin" element={<Suspense fallback={<LazyFallback />}><AdminPage /></Suspense>} />
         <Route path="discovery" element={<Suspense fallback={<LazyFallback />}><DiscoveryPage /></Suspense>} />
         <Route path="oauth2/authorize" element={<BotAuthorizePage />} />
-        <Route path="guilds/:guildId/settings" element={<Suspense fallback={<LazyFallback />}><GuildSettingsPage /></Suspense>} />
         <Route path="developers" element={<Suspense fallback={<LazyFallback />}><DeveloperPage /></Suspense>} />
       </Route>
 

@@ -15,6 +15,7 @@ use paracord_db::DbPool;
 use paracord_federation::FederationService;
 use paracord_media::{Storage, StorageManager, VoiceManager};
 use paracord_models::permissions::Permissions;
+use paracord_relay::relay::RelayForwarder;
 use paracord_relay::room::MediaRoomManager;
 use paracord_relay::speaker::SpeakerDetector;
 use paracord_transport::endpoint::MediaEndpoint;
@@ -99,6 +100,11 @@ pub struct NativeMediaState {
     pub rooms: Arc<MediaRoomManager>,
     pub speaker_detector: Arc<SpeakerDetector>,
     pub endpoint: Arc<MediaEndpoint>,
+    pub relay_forwarder: Arc<RelayForwarder>,
+    /// Base64-encoded SHA-256 hash of the server's TLS certificate DER.
+    /// Browsers need this for `serverCertificateHashes` when connecting
+    /// to self-signed certs via WebTransport.
+    pub cert_hash: String,
 }
 
 #[derive(Clone, Debug)]
@@ -133,7 +139,7 @@ pub struct AppConfig {
     pub federation_max_user_creates_per_peer_per_hour: Option<u32>,
     /// Whether the native QUIC media server is enabled.
     pub native_media_enabled: bool,
-    /// UDP port for the native QUIC media endpoint.
+    /// UDP port for the unified QUIC media endpoint (raw QUIC + WebTransport).
     pub native_media_port: u16,
     /// Maximum participants per voice room (native media).
     pub native_media_max_participants: u32,

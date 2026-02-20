@@ -32,6 +32,8 @@ interface UIState {
   searchPanelOpen: boolean;
   connectionStatus: ConnectionStatus;
   connectionLatency: number;
+  userSettingsOpen: boolean;
+  guildSettingsId: string | null;
 
   toggleSidebar: () => void;
   toggleDockPinned: () => void;
@@ -52,6 +54,8 @@ interface UIState {
   setSearchPanelOpen: (open: boolean) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setConnectionLatency: (latency: number) => void;
+  setUserSettingsOpen: (open: boolean) => void;
+  setGuildSettingsId: (id: string | null) => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -71,6 +75,8 @@ export const useUIStore = create<UIState>()(
       searchPanelOpen: false,
       connectionStatus: 'disconnected' as ConnectionStatus,
       connectionLatency: 0,
+      userSettingsOpen: false,
+      guildSettingsId: null,
 
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       toggleDockPinned: () => set((s) => ({ dockPinned: !s.dockPinned })),
@@ -91,6 +97,8 @@ export const useUIStore = create<UIState>()(
       setSearchPanelOpen: (searchPanelOpen) => set({ searchPanelOpen }),
       setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
       setConnectionLatency: (connectionLatency) => set({ connectionLatency }),
+      setUserSettingsOpen: (userSettingsOpen) => set({ userSettingsOpen }),
+      setGuildSettingsId: (guildSettingsId) => set({ guildSettingsId }),
     }),
     {
       name: 'ui-storage',

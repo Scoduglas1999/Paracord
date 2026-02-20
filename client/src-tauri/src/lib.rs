@@ -1,5 +1,6 @@
 mod audio_capture;
 mod commands;
+mod native_media;
 
 use tauri::Manager;
 
@@ -64,6 +65,7 @@ fn configure_webview2_overrides(app: &tauri::App) {
 
 pub fn run() {
     let builder = tauri::Builder::default()
+        .manage(native_media::MediaState::new())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -99,17 +101,20 @@ pub fn run() {
         audio_capture::start_system_audio_capture,
         audio_capture::stop_system_audio_capture,
         // Native QUIC media engine
-        commands::quic_upload_file,
-        commands::quic_download_file,
-        commands::start_voice_session,
-        commands::stop_voice_session,
-        commands::voice_set_mute,
-        commands::voice_set_deaf,
-        commands::voice_switch_input_device,
-        commands::voice_switch_output_device,
-        commands::voice_enable_video,
-        commands::voice_start_screen_share,
-        commands::voice_stop_screen_share,
+        native_media::commands::quic_upload_file,
+        native_media::commands::quic_download_file,
+        native_media::commands::start_voice_session,
+        native_media::commands::stop_voice_session,
+        native_media::commands::voice_set_mute,
+        native_media::commands::voice_set_deaf,
+        native_media::commands::voice_switch_input_device,
+        native_media::commands::voice_switch_output_device,
+        native_media::commands::voice_enable_video,
+        native_media::commands::voice_start_screen_share,
+        native_media::commands::voice_stop_screen_share,
+        native_media::commands::voice_push_video_frame,
+        native_media::commands::voice_push_screen_frame,
+        native_media::commands::media_subscribe_video,
     ]);
 
     builder

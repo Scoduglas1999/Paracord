@@ -2,29 +2,66 @@
 
 ### Native QUIC Media Engine
 
-A new custom media transport layer built on QUIC (via `quinn`) has been added alongside the existing LiveKit integration. The desktop app uses this native path by default; the browser client continues to use LiveKit. LiveKit code is untouched and remains fully functional.
+A custom media transport layer built on QUIC (via `quinn`) has been added alongside the existing LiveKit integration. LiveKit code is untouched and remains fully functional.
+
+**Server-side architecture:**
+
+When `native_media = true`, the server starts two listeners:
+- A raw QUIC endpoint (for desktop clients) that authenticates via JWT in a control stream
+- A WebTransport/HTTP3 endpoint (for browser clients) that authenticates via a JSON auth message on the first bidi stream
+
+Both endpoints feed into a shared relay that routes encrypted datagrams between participants in the same room. The relay includes room management, participant tracking, and voice activity (speaker) detection.
 
 **New server crates:**
-- `paracord-transport` -- QUIC endpoint with WebTransport support and file transfer protocol
-- `paracord-relay` -- Media room management, participant tracking, and speaker detection
-- `paracord-codec` -- Opus audio encoding/decoding, VP9 video encoding/decoding, noise suppression (nnnoiseless), jitter buffering, and audio capture/playback via cpal
+- `paracord-transport` -- QUIC endpoint, WebTransport server, datagram bridge, file transfer protocol
+- `paracord-relay` -- Media room management, relay forwarder, participant tracking, speaker detection
+- `paracord-codec` -- Opus audio encoding/decoding, VP9 video encoding/decoding (behind `vpx` feature), RNNoise noise suppression, jitter buffering, audio capture/playback via cpal
 - `paracord-media-dev` -- Development utility for testing the media server independently
 
 **New client media library** (`client/src/lib/media/`):
-- Abstract `MediaEngine` interface with two implementations: `BrowserMediaEngine` (WebTransport) and `TauriMediaEngine` (native QUIC via Tauri IPC)
-- Audio pipeline: Opus codec wrapper, jitter buffer, audio processor
-- Video pipeline: VP9 encoder/decoder, canvas renderer
-- Transport layer: WebTransport client, file transfer protocol, stream frame protocol
-- E2EE sender key exchange (Signal Protocol compatible)
+- Abstract `MediaEngine` interface with two implementations:
+  - `BrowserMediaEngine` -- Full WebTransport + WebCodecs implementation (~1000 lines). Handles audio capture/playback, Opus encode/decode, VP9 video, E2EE encryption, jitter buffering, and canvas rendering entirely in the browser.
+  - `TauriMediaEngine` -- Thin IPC wrapper that delegates to the native Rust audio pipeline in the Tauri binary.
+- Transport layer: WebTransport client, datagram bridge with QSID framing, file transfer protocol
+- E2EE sender key exchange with epoch rotation
+
+**Desktop native audio pipeline (Tauri):**
+
+The Tauri binary includes a fully functional native audio pipeline:
+- Microphone capture via cpal → RNNoise noise suppression → Opus encoding → AES-GCM encryption → QUIC datagram transmission
+- Receive path: QUIC datagram → AES-GCM decryption → Opus decoding → jitter buffer → cpal speaker output with multi-source mixing
+- Mute/deaf toggling via atomic flags, input device switching at runtime
+- E2EE sender key announcement over QUIC control stream
+- VP9 video encoding/decoding available when built with the `vpx` feature flag
+
+**What is not yet complete on the desktop path:**
+- Output device switching (returns an error; input device switching works)
+- Video subscription negotiation (subscribe control message is a no-op)
+- Video decode on receive (frames are decrypted but not yet routed to per-SSRC decoders)
 
 **Server configuration:**
 ```toml
 [voice]
 native_media = true    # Enable native QUIC media server (default: false)
-port = 8444            # UDP port for QUIC endpoint
+port = 8443            # UDP port for raw QUIC endpoint (desktop clients)
+wt_port = 8444         # UDP port for WebTransport/HTTP3 endpoint (browser clients)
+max_participants_per_room = 50
+audio_bitrate = 96000
+e2ee_required = true
 ```
 
-When `native_media = true`, the server starts a QUIC endpoint on the configured UDP port. The voice join endpoint returns native media connection details when available and falls back to LiveKit otherwise.
+The voice join endpoint returns native media connection details when `native_media` is enabled:
+```json
+{
+  "native_media": true,
+  "media_endpoint": "https://host:8444/media",
+  "media_token": "<jwt>",
+  "cert_hash": "<sha256>",
+  "room_name": "guild_id:channel_id",
+  "session_id": "<uuid>"
+}
+```
+The `cert_hash` field provides the SHA-256 fingerprint of the server's self-signed TLS certificate for WebTransport certificate pinning. When LiveKit is also available, its fields are returned alongside (purely additive). Clients can request explicit LiveKit fallback via `?fallback=livekit`.
 
 ### Guild File Storage Management
 
@@ -68,10 +105,11 @@ Six new WebSocket opcodes support native media session negotiation:
 
 ### Desktop App (Tauri) Improvements
 
+- **Native audio pipeline**: Full mic capture → Opus encode → E2EE → QUIC send pipeline, plus the reverse receive path with jitter buffering and speaker mixing
 - **Screen capture infobar suppressed**: The Chromium "is sharing a window" bar is now auto-hidden using the WebView2 `ICoreWebView2_27` ScreenCaptureStarting API
 - **Production-ready packaging**: Dev console no longer opens on launch; `console.log`/`console.info` calls are stripped from production builds
 - **Diagnostics logging**: Voice session events are logged to `%LOCALAPPDATA%/Paracord/logs/client-voice.log` for troubleshooting
-- **Native media command stubs**: Tauri IPC commands registered for voice session management, device switching, and QUIC file transfer (stubs pending full codec integration)
+- **QUIC file transfer**: Upload and download files over QUIC datagrams via Tauri IPC commands
 - **NSIS installer**: Windows `.exe` installer via NSIS bundler
 
 ### Stream Viewer Fixes
@@ -80,12 +118,6 @@ Six new WebSocket opcodes support native media session negotiation:
 - **Stream stop reliability**: Stopping a stream no longer hangs for 15 seconds; re-entrancy guard prevents duplicate stop calls
 - **Auto-watch on stream start**: Starting a stream automatically sets you as the watched streamer so the StreamViewer renders immediately
 - **Voice channel navigation**: Clicking a voice channel you're already in navigates back to it instead of disconnecting
-
-### Voice Join Improvements
-
-- Voice join endpoint now supports `?fallback=livekit` query parameter for explicit LiveKit fallback after native media failure
-- Native media response includes QUIC endpoint URL, JWT token, room name, and session ID
-- When both native media and LiveKit are available, native media fields are returned alongside LiveKit fields (purely additive)
 
 ### PostgreSQL Support
 
@@ -106,7 +138,7 @@ Six missing PostgreSQL migrations have been added to bring `migrations_pg/` in s
 ### New Workspace Dependencies
 
 - `quinn` 0.11 -- QUIC protocol implementation
-- `h3` 0.0.8 / `h3-quinn` 0.0.10 -- HTTP/3 support
+- `h3` 0.0.8 / `h3-quinn` 0.0.10 -- HTTP/3 and WebTransport support
 - `audiopus` 0.3.0-rc.0 -- Opus codec bindings
 - `nnnoiseless` 0.5 -- RNNoise-based noise suppression
 - `cpal` 0.15 -- Cross-platform audio I/O
@@ -114,6 +146,6 @@ Six missing PostgreSQL migrations have been added to bring `migrations_pg/` in s
 
 ### Breaking Changes
 
-- Voice join response may now include `native_media`, `media_endpoint`, `media_token` fields alongside existing LiveKit fields
+- Voice join response may now include `native_media`, `media_endpoint`, `media_token`, `cert_hash` fields alongside existing LiveKit fields
 - Desktop app defaults to native media path instead of LiveKit (browser is unaffected)
-- Tauri installer target changed from `all` to `nsis` (Windows `.exe` only)
+- Tauri installer targets changed from `all` to `nsis` + `msi` (Windows `.exe` and `.msi`)

@@ -21,23 +21,38 @@ export class WebTransportManager {
 
   private lastUrl = '';
   private lastToken = '';
+  private lastCertHash?: string;
 
   get isConnected(): boolean {
     return this.transport !== null;
   }
 
-  async connect(url: string, token: string): Promise<void> {
+  async connect(url: string, token: string, certHash?: string): Promise<void> {
     this.lastUrl = url;
     this.lastToken = token;
+    this.lastCertHash = certHash;
     this.shouldReconnect = true;
     this.reconnectAttempts = 0;
 
-    await this.establishConnection(url, token);
+    await this.establishConnection(url, token, certHash);
   }
 
-  private async establishConnection(url: string, token: string): Promise<void> {
+  private async establishConnection(url: string, token: string, certHash?: string): Promise<void> {
     try {
-      this.transport = new WebTransport(url);
+      // When a cert hash is provided (self-signed cert), pass it to the
+      // WebTransport constructor so the browser trusts the server.
+      const options: WebTransportOptions | undefined = certHash
+        ? {
+            serverCertificateHashes: [
+              {
+                algorithm: 'sha-256',
+                value: Uint8Array.from(atob(certHash), (c) => c.charCodeAt(0)),
+              },
+            ],
+          }
+        : undefined;
+
+      this.transport = new WebTransport(url, options);
       await this.transport.ready;
 
       // Send auth on first bidirectional stream
@@ -192,7 +207,7 @@ export class WebTransportManager {
     const delayMs = Math.min(500 * Math.pow(2, this.reconnectAttempts - 1), 30_000);
     this.reconnectTimer = setTimeout(async () => {
       try {
-        await this.establishConnection(this.lastUrl, this.lastToken);
+        await this.establishConnection(this.lastUrl, this.lastToken, this.lastCertHash);
       } catch {
         // establishConnection handles retry scheduling internally
       }

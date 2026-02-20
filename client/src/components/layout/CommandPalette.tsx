@@ -74,7 +74,7 @@ export function CommandPalette() {
       label: 'User Settings',
       sublabel: 'Account, appearance, notifications',
       icon: <Settings size={16} />,
-      action: () => navigate('/app/settings'),
+      action: () => useUIStore.getState().setUserSettingsOpen(true),
       category: 'Navigation',
       keywords: 'settings preferences account profile',
     });

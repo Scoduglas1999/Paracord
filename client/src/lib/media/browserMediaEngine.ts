@@ -95,7 +95,7 @@ export class BrowserMediaEngine implements MediaEngine {
   // Playback timer
   private playbackInterval: ReturnType<typeof setInterval> | null = null;
 
-  async connect(endpoint: string, token: string): Promise<void> {
+  async connect(endpoint: string, token: string, certHash?: string): Promise<void> {
     // Generate local SSRC
     this.localSsrc = (Math.random() * 0xffffffff) >>> 0;
     this.sequence = 0;
@@ -114,7 +114,7 @@ export class BrowserMediaEngine implements MediaEngine {
       this.cleanupVideo();
     });
 
-    await this.transport.connect(endpoint, token);
+    await this.transport.connect(endpoint, token, certHash);
 
     // Announce our SSRC and sender key
     const keyBytes = await this.senderKeys.exportKey();

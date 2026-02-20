@@ -49,6 +49,42 @@ impl MediaEndpoint {
         Ok(Self { endpoint })
     }
 
+    /// Bind a unified QUIC endpoint that advertises multiple ALPN protocols.
+    ///
+    /// This allows a single UDP port to handle both raw QUIC media connections
+    /// (e.g. `paracord-media` ALPN) and HTTP/3 WebTransport connections
+    /// (`h3` ALPN). After accepting a connection, inspect the negotiated ALPN
+    /// via `connection.handshake_data()` to route appropriately.
+    pub fn bind_unified(
+        addr: SocketAddr,
+        tls: TlsConfig,
+        alpn_protocols: Vec<Vec<u8>>,
+    ) -> anyhow::Result<Self> {
+        let mut server_crypto = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(tls.cert_chain.clone(), tls.private_key.clone_key())?;
+
+        server_crypto.alpn_protocols = alpn_protocols;
+
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(
+            QuicServerConfig::try_from(server_crypto)?,
+        ));
+
+        let client_crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
+            .with_no_client_auth();
+
+        let client_config = quinn::ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto)?,
+        ));
+
+        let mut endpoint = quinn::Endpoint::server(server_config, addr)?;
+        endpoint.set_default_client_config(client_config);
+
+        Ok(Self { endpoint })
+    }
+
     /// Create a client-only endpoint (no server config, for P2P initiators).
     pub fn client(addr: SocketAddr) -> anyhow::Result<Self> {
         let client_crypto = rustls::ClientConfig::builder()

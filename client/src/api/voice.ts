@@ -16,6 +16,8 @@ export interface VoiceJoinResponse {
   media_token?: string;
   /** When true, LiveKit is available as a fallback if native media fails. */
   livekit_available?: boolean;
+  /** TLS certificate hash for QUIC certificate pinning. */
+  cert_hash?: string;
 }
 
 function resolveV2VoiceUrl(path: string): string {

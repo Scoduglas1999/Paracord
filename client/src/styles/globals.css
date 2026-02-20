@@ -1610,3 +1610,48 @@ html[data-theme='amoled'] #root {
 .hljs-attr {
   color: #7ecbff !important;
 }
+
+/* =========================================================================
+   Global Scrollbar Styling (Webkit & Standard)
+   ========================================================================= */
+
+/* Standard syntax for Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-auto-thumb) transparent;
+}
+
+/* Webkit syntax for Chrome, Safari, Edge */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-auto-thumb);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-auto-thumb-hover);
+}
+
+/* Hide scrollbars completely when needed (e.g. some internal lists) */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+  /* Firefox */
+}

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use tokio::sync::Notify;
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{debug, info, warn};
 
 use paracord_transport::protocol::{MediaHeader, HEADER_SIZE};
@@ -10,36 +10,104 @@ use paracord_transport::protocol::{MediaHeader, HEADER_SIZE};
 use crate::room::MediaRoomManager;
 use crate::speaker::SpeakerDetector;
 
+/// Transport abstraction for relay connections.
+/// Raw QUIC is used for Tauri desktop and federation; channel-bridged
+/// connections are used for WebTransport browser clients.
+enum MediaTransport {
+    /// Raw QUIC (Tauri desktop, federation).
+    Quic(quinn::Connection),
+    /// Channel-bridged (WebTransport browser clients).
+    /// The bridge task translates between HTTP/3 datagrams (with QSID
+    /// framing) and raw media packets.
+    Bridged {
+        outbound_tx: mpsc::UnboundedSender<Bytes>,
+        inbound_rx: Arc<Mutex<mpsc::UnboundedReceiver<Bytes>>>,
+    },
+}
+
+impl Clone for MediaTransport {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Quic(conn) => Self::Quic(conn.clone()),
+            Self::Bridged {
+                outbound_tx,
+                inbound_rx,
+            } => Self::Bridged {
+                outbound_tx: outbound_tx.clone(),
+                inbound_rx: Arc::clone(inbound_rx),
+            },
+        }
+    }
+}
+
 /// Handle to a connected participant's QUIC connection for datagram forwarding.
 #[derive(Clone)]
 pub struct ConnectionHandle {
     pub user_id: i64,
     pub room_id: String,
-    conn: quinn::Connection,
+    transport: MediaTransport,
 }
 
 impl ConnectionHandle {
+    /// Create a handle wrapping a raw QUIC connection.
     pub fn new(user_id: i64, room_id: String, conn: quinn::Connection) -> Self {
         Self {
             user_id,
             room_id,
-            conn,
+            transport: MediaTransport::Quic(conn),
+        }
+    }
+
+    /// Create a handle wrapping a channel-bridged WebTransport connection.
+    pub fn new_bridged(
+        user_id: i64,
+        room_id: String,
+        outbound_tx: mpsc::UnboundedSender<Bytes>,
+        inbound_rx: mpsc::UnboundedReceiver<Bytes>,
+    ) -> Self {
+        Self {
+            user_id,
+            room_id,
+            transport: MediaTransport::Bridged {
+                outbound_tx,
+                inbound_rx: Arc::new(Mutex::new(inbound_rx)),
+            },
         }
     }
 
     /// Send a datagram to this connection.
     pub fn send_datagram(&self, data: Bytes) -> Result<(), quinn::SendDatagramError> {
-        self.conn.send_datagram(data)
+        match &self.transport {
+            MediaTransport::Quic(conn) => conn.send_datagram(data),
+            MediaTransport::Bridged { outbound_tx, .. } => {
+                outbound_tx
+                    .send(data)
+                    .map_err(|_| quinn::SendDatagramError::ConnectionLost(
+                        quinn::ConnectionError::LocallyClosed,
+                    ))
+            }
+        }
     }
 
     /// Read a datagram from this connection.
     pub async fn read_datagram(&self) -> Result<Bytes, quinn::ConnectionError> {
-        self.conn.read_datagram().await
+        match &self.transport {
+            MediaTransport::Quic(conn) => conn.read_datagram().await,
+            MediaTransport::Bridged { inbound_rx, .. } => {
+                let mut rx = inbound_rx.lock().await;
+                rx.recv()
+                    .await
+                    .ok_or(quinn::ConnectionError::LocallyClosed)
+            }
+        }
     }
 
     /// Check if the connection is still alive.
     pub fn is_alive(&self) -> bool {
-        self.conn.close_reason().is_none()
+        match &self.transport {
+            MediaTransport::Quic(conn) => conn.close_reason().is_none(),
+            MediaTransport::Bridged { outbound_tx, .. } => !outbound_tx.is_closed(),
+        }
     }
 }
 

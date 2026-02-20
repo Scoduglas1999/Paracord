@@ -189,7 +189,10 @@ pub struct VoiceConfig {
     /// Enable the native QUIC media server (replaces LiveKit when true).
     #[serde(default = "default_false")]
     pub native_media: bool,
-    /// UDP port for the QUIC media endpoint.
+    /// UDP port for the unified QUIC media endpoint.
+    /// Defaults to the same port as TLS (8443) — TCP serves HTTPS while
+    /// UDP on the same port handles both raw QUIC and WebTransport (via ALPN).
+    /// Server admins only need to forward one port (TCP+UDP) for full functionality.
     #[serde(default = "default_voice_port")]
     pub port: u16,
     /// Maximum participants per voice room.
@@ -254,15 +257,6 @@ impl Default for LiveKitConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
-    /// Automatically forward ports via UPnP on startup (default: false).
-    #[serde(default = "default_false")]
-    pub upnp: bool,
-    /// Secondary confirmation to allow internet exposure via UPnP.
-    #[serde(default = "default_false")]
-    pub upnp_confirm_exposure: bool,
-    /// Lease duration in seconds for UPnP mappings (default: 3600 = 1 hour, auto-renewed).
-    #[serde(default = "default_upnp_lease")]
-    pub upnp_lease_seconds: u32,
     /// On Windows, automatically add local firewall allow rules on startup.
     #[serde(default = "default_false")]
     pub windows_firewall_auto_allow: bool,
@@ -271,9 +265,6 @@ pub struct NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            upnp: false,
-            upnp_confirm_exposure: false,
-            upnp_lease_seconds: default_upnp_lease(),
             windows_firewall_auto_allow: false,
         }
     }
@@ -548,9 +539,6 @@ fn default_voice_max_participants() -> u32 {
 fn default_voice_audio_bitrate() -> u32 {
     96_000
 }
-fn default_upnp_lease() -> u32 {
-    3600
-}
 fn default_tls_port() -> u16 {
     8443
 }
@@ -654,8 +642,8 @@ fn generate_config_template(config: &Config) -> String {
 [server]
 bind_address = "{bind_address}"
 server_name = "{server_name}"
-# public_url is auto-detected via UPnP when not set.
-# Set explicitly to override: public_url = "https://your-domain-or-ip:8443"
+# Set explicitly for internet-facing deployments:
+# public_url = "https://your-domain-or-ip:8443"
 
 [database]
 engine = "{db_engine}"
@@ -704,8 +692,8 @@ api_key = "{lk_key}"
 api_secret = "{lk_secret}"
 url = "{lk_url}"
 http_url = "{lk_http_url}"
-# public_url is auto-detected via UPnP when not set.
-# Set explicitly to override: public_url = "wss://your-domain-or-ip:8443/livekit"
+# Optional public URL sent to clients:
+# public_url = "wss://your-domain-or-ip:8443/livekit"
 
 [federation]
 enabled = {federation_enabled}
@@ -719,13 +707,6 @@ allow_discovery = {federation_allow_discovery}
 # max_user_creates_per_peer_per_hour = 100
 
 [network]
-# Automatically forward ports via UPnP on startup.
-# When enabled, the server discovers your router, forwards the required ports,
-# detects your public IP, and prints a shareable URL.
-upnp = {upnp}
-# Secondary confirmation flag required before UPnP port mapping is attempted.
-upnp_confirm_exposure = {upnp_confirm_exposure}
-upnp_lease_seconds = {upnp_lease}
 # On Windows, optionally auto-create local firewall allow rules.
 windows_firewall_auto_allow = {windows_firewall_auto_allow}
 
@@ -823,9 +804,6 @@ max_backups = {backup_max_backups}
             .as_deref()
             .unwrap_or("./data/federation_signing_key.hex"),
         federation_allow_discovery = config.federation.allow_discovery,
-        upnp = config.network.upnp,
-        upnp_confirm_exposure = config.network.upnp_confirm_exposure,
-        upnp_lease = config.network.upnp_lease_seconds,
         windows_firewall_auto_allow = config.network.windows_firewall_auto_allow,
         tls_enabled = config.tls.enabled,
         tls_port = config.tls.port,
@@ -1000,16 +978,6 @@ impl Config {
         }
         if let Ok(value) = std::env::var("PARACORD_LIVEKIT_PUBLIC_URL") {
             config.livekit.public_url = Some(value);
-        }
-        if let Ok(value) = std::env::var("PARACORD_UPNP") {
-            if let Ok(parsed) = value.parse::<bool>() {
-                config.network.upnp = parsed;
-            }
-        }
-        if let Ok(value) = std::env::var("PARACORD_UPNP_CONFIRM_EXPOSURE") {
-            if let Ok(parsed) = value.parse::<bool>() {
-                config.network.upnp_confirm_exposure = parsed;
-            }
         }
         if let Ok(value) = std::env::var("PARACORD_WINDOWS_FIREWALL_AUTO_ALLOW") {
             if let Ok(parsed) = value.parse::<bool>() {

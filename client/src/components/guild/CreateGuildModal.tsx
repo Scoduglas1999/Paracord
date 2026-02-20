@@ -4,6 +4,7 @@ import { X, Upload } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 import { useGuildStore } from '../../stores/guildStore';
 import { useChannelStore } from '../../stores/channelStore';
+import { useUIStore } from '../../stores/uiStore';
 import { inviteApi } from '../../api/invites';
 import { useNavigate } from 'react-router-dom';
 import { isAllowedImageMimeType } from '../../lib/security';
@@ -71,7 +72,10 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
         useChannelStore.getState().selectChannel(firstChannel.id);
         navigate(`/app/guilds/${guild.id}/channels/${firstChannel.id}`);
       } else {
-        navigate(`/app/guilds/${guild.id}/settings`);
+        // We close the modal, navigate to app overlay, and open settings
+        onClose();
+        useUIStore.getState().setGuildSettingsId(guild.id);
+        navigate(`/app`);
       }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to create server');
@@ -102,7 +106,10 @@ export function CreateGuildModal({ onClose }: CreateGuildModalProps) {
         useChannelStore.getState().selectChannel(firstChannelId);
         navigate(`/app/guilds/${guild.id}/channels/${firstChannelId}`);
       } else {
-        navigate(`/app/guilds/${guild.id}/settings`);
+        // Provide immediate visual context for the newly joined guild by opening settings
+        onClose();
+        useUIStore.getState().setGuildSettingsId(guild.id);
+        navigate(`/app`);
       }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to join server');

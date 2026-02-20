@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useRelationshipStore } from '../../stores/relationshipStore';
 import { useVoiceStore } from '../../stores/voiceStore';
 import { usePresenceStore } from '../../stores/presenceStore';
+import { useUIStore } from '../../stores/uiStore';
 import { VoiceControls } from '../voice/VoiceControls';
 import { InviteModal } from '../guild/InviteModal';
 import { Permissions, hasPermission, isAdmin as isGlobalAdmin, type Channel } from '../../types/index';
@@ -382,7 +383,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
         <Tooltip content={currentGuild.name} side="right">
           <button
             className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-xs font-bold text-text-primary transition-colors hover:bg-bg-mod-strong"
-            onClick={() => navigate(`/app/guilds/${currentGuild.id}/settings`)}
+            onClick={() => useUIStore.getState().setGuildSettingsId(currentGuild.id)}
           >
             {currentGuild.name.slice(0, 2).toUpperCase()}
           </button>
@@ -465,7 +466,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
               )}
               disabled={!canManageGuild}
               title={canManageGuild ? 'Server Settings' : 'You need Manage Server permission'}
-              onClick={() => { setShowGuildMenu(false); navigate(`/app/guilds/${currentGuild.id}/settings`); }}
+              onClick={() => { setShowGuildMenu(false); useUIStore.getState().setGuildSettingsId(currentGuild.id); }}
             >
               Server Settings
               <Settings size={14} className="opacity-0 group-hover:opacity-100" />
@@ -917,7 +918,7 @@ function UserPanel({
             </button>
           </Tooltip>
           <Tooltip content="User Settings">
-            <button onClick={() => navigate('/app/settings')} className="flex h-10 w-10 items-center justify-center rounded-lg border border-transparent text-text-secondary transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary">
+            <button onClick={() => useUIStore.getState().setUserSettingsOpen(true)} className="flex h-10 w-10 items-center justify-center rounded-lg border border-transparent text-text-secondary transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary">
               <Settings size={20} />
             </button>
           </Tooltip>

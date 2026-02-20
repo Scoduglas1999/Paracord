@@ -61,6 +61,13 @@ pub struct AudioCapture {
     stop_flag: Arc<AtomicBool>,
 }
 
+// SAFETY: `cpal::Stream` is `!Send` as a cross-platform precaution. On Windows
+// (WASAPI) and Linux (PulseAudio) the underlying handles are thread-safe. The
+// `_stream` field is only held for RAII lifetime management; we never call
+// methods on it from another thread.
+unsafe impl Send for AudioCapture {}
+unsafe impl Sync for AudioCapture {}
+
 impl AudioCapture {
     /// Start capturing audio from the default input device.
     ///

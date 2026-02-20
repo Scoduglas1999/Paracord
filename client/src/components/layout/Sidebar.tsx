@@ -249,7 +249,7 @@ export function Sidebar() {
 
                   <Tooltip side="right" content="User Settings">
                     <button
-                      onClick={() => navigate('/app/settings')}
+                      onClick={() => useUIStore.getState().setUserSettingsOpen(true)}
                       className="group relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/10 transition-all duration-200 hover:-translate-y-0.5 hover:bg-white"
                     >
                       {user?.username ? (

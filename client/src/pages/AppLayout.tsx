@@ -13,6 +13,8 @@ import { useGuildStore } from '../stores/guildStore';
 import { useVoiceStore } from '../stores/voiceStore';
 import { useKeyboardNavigation } from '../hooks/useKeyboardNavigation';
 import { useSwipeGesture } from '../hooks/useSwipeGesture';
+import { SettingsPage } from './SettingsPage';
+import { GuildSettingsPage } from './GuildSettingsPage';
 
 export function AppLayout() {
   useKeyboardNavigation();
@@ -25,6 +27,9 @@ export function AppLayout() {
   const voiceConnected = useVoiceStore((s) => s.connected);
   const voiceChannelId = useVoiceStore((s) => s.channelId);
   const location = useLocation();
+
+  const userSettingsOpen = useUIStore((s) => s.userSettingsOpen);
+  const guildSettingsId = useUIStore((s) => s.guildSettingsId);
 
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -62,6 +67,8 @@ export function AppLayout() {
     || /^\/app\/guilds\/[^/]+\/settings$/.test(location.pathname);
   const isGuildChannelRoute = /^\/app\/guilds\/[^/]+\/channels\/[^/]+$/.test(location.pathname);
 
+  // Since we are changing settings to overlays, we don't need to hide the shell for them anymore
+  // But we'll keep the variable false for now just in case a user hits the explicit URL directly.
   const showShell = !isSettingsRoute;
   const showDesktopChannelPanel = showShell && !isMobile;
   const showMobileChannelPanel = showShell && isMobile && sidebarOpen && !sidebarCollapsed;
@@ -158,6 +165,51 @@ export function AppLayout() {
 
       <CommandPalette />
       <ConfirmDialog />
+
+      {/* Windowed Settings Overlays */}
+      <AnimatePresence>
+        {userSettingsOpen && (
+          <motion.div
+            className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-8 md:p-12 lg:p-20 backdrop-blur-md"
+            style={{ backgroundColor: 'var(--overlay-backdrop)' }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="w-full h-full max-w-6xl max-h-[900px] shadow-2xl relative flex flex-col"
+            >
+              <SettingsPage />
+            </motion.div>
+          </motion.div>
+        )}
+
+        {guildSettingsId && (
+          <motion.div
+            className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-8 md:p-12 lg:p-20 backdrop-blur-md"
+            style={{ backgroundColor: 'var(--overlay-backdrop)' }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="w-full h-full max-w-6xl max-h-[900px] shadow-2xl relative flex flex-col"
+            >
+              <GuildSettingsPage />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
