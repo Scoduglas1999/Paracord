@@ -20,3 +20,4 @@ chrono = { workspace = true }
 futures-util = "0.3"
 moka = { workspace = true }
 dashmap = { workspace = true }
+flate2 = "1"

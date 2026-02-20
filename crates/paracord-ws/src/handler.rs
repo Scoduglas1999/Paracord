@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, Instant};
 
+use crate::compression::WsCompressor;
 use crate::session::Session;
 
 const HEARTBEAT_INTERVAL_MS: u64 = 41250;
@@ -198,6 +199,7 @@ fn wire_log_ws_close(
 async fn send_ws_text_logged(
     sender: &mut (impl SinkExt<Message> + Unpin),
     payload: String,
+    compressor: &WsCompressor,
     user_id: Option<i64>,
     session_id: Option<&str>,
     frame_type: &str,
@@ -214,10 +216,27 @@ async fn send_ws_text_logged(
         event_type,
         sequence,
     );
-    sender
-        .send(Message::Text(payload.into()))
-        .await
-        .map_err(|_| ())
+
+    if let Some(result) = compressor.compress(&payload) {
+        match result {
+            Ok(compressed) => sender
+                .send(Message::Binary(compressed.into()))
+                .await
+                .map_err(|_| ()),
+            Err(e) => {
+                tracing::warn!("zlib-stream compression failed, sending uncompressed: {e}");
+                sender
+                    .send(Message::Text(payload.into()))
+                    .await
+                    .map_err(|_| ())
+            }
+        }
+    } else {
+        sender
+            .send(Message::Text(payload.into()))
+            .await
+            .map_err(|_| ())
+    }
 }
 
 async fn send_ws_close_logged(
@@ -520,7 +539,8 @@ async fn can_receive_channel_event(
     perms.contains(Permissions::VIEW_CHANNEL)
 }
 
-pub async fn handle_connection(socket: WebSocket, state: AppState) {
+pub async fn handle_connection(socket: WebSocket, state: AppState, compress: bool) {
+    let compressor = WsCompressor::new(compress);
     let mut connection_guard = ConnectionGuard::new();
     if !try_acquire_global_connection_slot() {
         let (mut sender, _) = socket.split();
@@ -538,6 +558,10 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     connection_guard.global_acquired = true;
     observability::ws_connection_open();
 
+    if compress {
+        tracing::debug!("Client requested zlib-stream compression");
+    }
+
     let (mut sender, mut receiver) = socket.split();
 
     // Send HELLO
@@ -548,6 +572,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     if send_ws_text_logged(
         &mut sender,
         hello_msg,
+        &compressor,
         None,
         None,
         "hello",
@@ -574,6 +599,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
             let _ = send_ws_text_logged(
                 &mut sender,
                 json!({"op": OP_INVALID_SESSION, "d": false}).to_string(),
+                &compressor,
                 None,
                 None,
                 "invalid_session",
@@ -610,6 +636,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         if send_ws_text_logged(
             &mut sender,
             resumed_payload.to_string(),
+            &compressor,
             Some(session.user_id),
             Some(session.session_id.as_str()),
             "resumed",
@@ -769,6 +796,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         if send_ws_text_logged(
             &mut sender,
             ready.to_string(),
+            &compressor,
             Some(session.user_id),
             Some(session.session_id.as_str()),
             "ready",
@@ -787,6 +815,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     let session_user_id = session.user_id;
 
     // Track this user as online
+    state.presence_manager.cancel_offline(session_user_id);
     state.online_users.write().await.insert(session_user_id);
     let online_presence = {
         let existing = state
@@ -823,7 +852,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         presence_recipient_ids,
     );
 
-    let session = run_session(sender, receiver, session, state.clone()).await;
+    let session = run_session(sender, receiver, session, state.clone(), &compressor).await;
 
     // Voice cleanup: when the gateway WebSocket drops, don't remove voice
     // state immediately — the user may still be connected to LiveKit (their
@@ -1026,6 +1055,7 @@ async fn run_session(
     mut receiver: impl StreamExt<Item = Result<Message, axum::Error>> + Unpin,
     mut session: Session,
     state: AppState,
+    compressor: &WsCompressor,
 ) -> Session {
     let mut event_rx = state.event_bus.register_session(
         session.session_id.clone(),
@@ -1070,7 +1100,7 @@ async fn run_session(
                             break ("client exceeded websocket rate limits".to_string(), false);
                         }
                         if let Ok(payload) = parsed_payload {
-                            handle_client_message(&payload, &mut sender, &mut session, &state).await;
+                            handle_client_message(&payload, &mut sender, &mut session, &state, compressor).await;
                             if opcode == OP_HEARTBEAT {
                                 heartbeat_sleep.as_mut().reset(Instant::now() + heartbeat_timeout);
                             }
@@ -1189,6 +1219,7 @@ async fn run_session(
                         if send_ws_text_logged(
                             &mut sender,
                             dispatch_str,
+                            compressor,
                             Some(session.user_id),
                             Some(session.session_id.as_str()),
                             "dispatch",
@@ -1272,6 +1303,7 @@ async fn handle_client_message(
     sender: &mut (impl SinkExt<Message> + Unpin),
     session: &mut Session,
     state: &AppState,
+    compressor: &WsCompressor,
 ) {
     let op = payload.get("op").and_then(|v| v.as_u64()).unwrap_or(255) as u8;
 
@@ -1280,6 +1312,7 @@ async fn handle_client_message(
             let _ = send_ws_text_logged(
                 sender,
                 HEARTBEAT_ACK_MSG.to_string(),
+                compressor,
                 Some(session.user_id),
                 Some(session.session_id.as_str()),
                 "heartbeat_ack",
