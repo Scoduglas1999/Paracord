@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "Paracord",
+        "visible": false,
         "width": 1280,
         "height": 800,
         "minWidth": 940,
@@ -22,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' asset: data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:"
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' asset: data: blob: https:; media-src 'self' data: blob:; connect-src 'self' http: https: ws: wss:"
     }
   },
   "bundle": {

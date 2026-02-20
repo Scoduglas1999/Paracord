@@ -31,6 +31,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.0.0",
+    "@fontsource-variable/inter": "^5.1.1",
+    "@fontsource/jetbrains-mono": "^5.1.1",
     "fflate": "^0.8.2",
     "framer-motion": "^12.34.0",
     "highlight.js": "^11.11.1",

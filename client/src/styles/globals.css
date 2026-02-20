@@ -1,3 +1,8 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
 @import "tailwindcss";
 
 @theme {
@@ -335,7 +340,8 @@ button {
 
 html {
   font-size: 16px;
-  -webkit-text-size-adjust: 100%;
+  text-size-adjust: none;
+  -webkit-text-size-adjust: none;
 }
 
 html,
@@ -345,6 +351,7 @@ body,
   min-height: 100%;
   width: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   font-family: var(--font-primary);
   font-feature-settings: 'tnum', 'cv03', 'cv04';
   color: var(--text-primary);
@@ -355,6 +362,19 @@ body,
   line-height: var(--line-height-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable selection in content areas */
+input, textarea, [contenteditable="true"],
+.message-content, .markdown-content, pre, code,
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 html[data-theme='light'],
@@ -372,30 +392,6 @@ html[data-theme='amoled'] #root {
 ::selection {
   color: var(--text-primary);
   background: rgba(126, 175, 255, 0.34);
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: var(--scrollbar-auto-track);
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-auto-thumb);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-auto-thumb-hover);
-}
-
-/* Thin scrollbar variant */
-.scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
 }
 
 /* Skeleton loading animation */

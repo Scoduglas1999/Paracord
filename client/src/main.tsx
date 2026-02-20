@@ -19,6 +19,15 @@ if (isTauri() && 'serviceWorker' in navigator) {
   });
 }
 
+// Desktop-only: block default context menu and drag navigation
+if (isTauri()) {
+  document.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+  });
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('drop', (e) => e.preventDefault());
+}
+
 logVoiceDiagnostic('[desktop] frontend main.tsx boot');
 void getDesktopDiagnosticsLogPath().then((path) => {
   if (path) {
@@ -37,3 +46,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </React.StrictMode>
 );
+
+// Desktop-only: show window after React renders (prevents white flash)
+if (isTauri()) {
+  import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+    getCurrentWindow().show();
+  });
+}

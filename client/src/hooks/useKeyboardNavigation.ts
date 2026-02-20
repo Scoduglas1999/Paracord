@@ -6,6 +6,7 @@ import { useVoiceStore } from '../stores/voiceStore';
 import { useUIStore } from '../stores/uiStore';
 import { useAuthStore } from '../stores/authStore';
 import { gateway } from '../gateway/manager';
+import { isTauri } from '../lib/tauriEnv';
 
 const DEFAULT_KEYBINDS: Record<string, string> = {
   toggleMute: 'Ctrl+Shift+M',
@@ -53,6 +54,17 @@ export function useKeyboardNavigation() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Block browser shortcuts in Tauri desktop app
+      if (isTauri()) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey) { e.preventDefault(); return; }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'p') { e.preventDefault(); return; }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'r') { e.preventDefault(); return; }
+        if (e.key === 'F12') { e.preventDefault(); return; }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'i')) { e.preventDefault(); return; }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'J' || e.key === 'j')) { e.preventDefault(); return; }
+        if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '=' || e.key === '0')) { e.preventDefault(); return; }
+      }
+
       // Ignore events inside input/textarea/contenteditable to avoid conflicts
       const target = e.target as HTMLElement;
       const isEditing =
