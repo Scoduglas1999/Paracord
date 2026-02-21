@@ -54,6 +54,7 @@ export interface Guild {
   vanity_url_code?: string;
   created_at: string;
   hub_settings?: HubSettings;
+  bot_settings?: any;
   /** Base URL of the server this guild was fetched from (client-side tag). */
   server_url?: string;
 }

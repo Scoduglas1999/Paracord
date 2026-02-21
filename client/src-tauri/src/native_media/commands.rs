@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::sync::atomic::Ordering;
 use tauri::State;
 
 use super::MediaState;
@@ -163,6 +164,7 @@ pub async fn voice_stop_screen_share(
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
     super::video_pipeline::stop_screen_share(session);
+    session.screen_audio_enabled.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -188,6 +190,36 @@ pub async fn voice_push_screen_frame(
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
     super::video_pipeline::encode_and_send_video_frame(session, width, height, &data, true)
+}
+
+#[tauri::command]
+pub async fn voice_set_screen_audio_enabled(
+    enabled: bool,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    let guard = state.session.lock().await;
+    let session = guard.as_ref().ok_or("no active session")?;
+    session.screen_audio_enabled.store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn voice_push_screen_audio_frame(
+    samples: Vec<f32>,
+    state: State<'_, MediaState>,
+) -> Result<(), String> {
+    if samples.is_empty() {
+        return Ok(());
+    }
+
+    let guard = state.session.lock().await;
+    let session = guard.as_ref().ok_or("no active session")?;
+    if !session.screen_audio_enabled.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let _ = session.screen_audio_tx.try_send(samples);
+    Ok(())
 }
 
 #[tauri::command]

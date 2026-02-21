@@ -13,6 +13,7 @@ mod config;
 mod embedded_ui;
 mod livekit_proc;
 mod tls;
+mod bots;
 
 #[derive(Clone, Default)]
 struct AtRestRuntimeProfile {
@@ -583,6 +584,7 @@ async fn main() -> Result<()> {
         shutdown_notify.clone(),
     );
     spawn_federation_delivery_worker(state.clone(), shutdown_notify.clone());
+    bots::spawn_bot_manager(state.clone(), shutdown_notify.clone());
 
     let router = paracord_api::build_router()
         .merge(paracord_ws::gateway_router())

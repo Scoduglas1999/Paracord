@@ -47,6 +47,9 @@ class ConnectionManager {
   private readonly useRealtimeV2 =
     import.meta.env.VITE_RT_V2 !== '0' && import.meta.env.VITE_RT_V2 !== 'false';
   private offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  /** Timer for automatic recovery when the gateway lands in 'disconnected'. */
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryAttempts = 0;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -73,21 +76,15 @@ class ConnectionManager {
   /** Keep the global status bar aligned with aggregate per-server socket state. */
   private syncUiConnectionStatus(): void {
     const all = Array.from(this.connections.values());
-    if (all.length === 0) {
-      useUIStore.getState().setConnectionStatus('disconnected');
-      return;
-    }
-    if (this.offline) {
-      useUIStore.getState().setConnectionStatus('disconnected');
-      return;
-    }
 
-    if (all.some((conn) => conn.connected)) {
-      useUIStore.getState().setConnectionStatus('connected');
-      return;
-    }
+    type Status = 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
+    let status: Status = 'disconnected';
 
-    if (
+    if (all.length === 0 || this.offline) {
+      status = 'disconnected';
+    } else if (all.some((conn) => conn.connected)) {
+      status = 'connected';
+    } else if (
       all.some(
         (conn) =>
           conn.ws?.readyState === WebSocket.CONNECTING ||
@@ -95,16 +92,34 @@ class ConnectionManager {
           conn.eventSource !== null
       )
     ) {
-      useUIStore.getState().setConnectionStatus('connecting');
-      return;
+      status = 'connecting';
+    } else if (all.some((conn) => conn.reconnectTimer !== null)) {
+      status = 'reconnecting';
     }
 
-    if (all.some((conn) => conn.reconnectTimer !== null)) {
-      useUIStore.getState().setConnectionStatus('reconnecting');
-      return;
-    }
+    useUIStore.getState().setConnectionStatus(status);
 
-    useUIStore.getState().setConnectionStatus('disconnected');
+    // Auto-recovery: when we land on 'disconnected' but servers should be
+    // connected, schedule a `connectAll()` with exponential back-off so the
+    // gateway doesn't stay permanently dead after e.g. a token refresh failure.
+    if (status === 'connected') {
+      this.recoveryAttempts = 0;
+      if (this.recoveryTimer) {
+        clearTimeout(this.recoveryTimer);
+        this.recoveryTimer = null;
+      }
+    } else if (status === 'disconnected' && !this.offline && !this.recoveryTimer) {
+      const servers = useServerListStore.getState().servers;
+      const localToken = useAuthStore.getState().token;
+      if (servers.length > 0 || localToken) {
+        const delay = Math.min(5000 * Math.pow(2, this.recoveryAttempts), 60_000);
+        this.recoveryAttempts++;
+        this.recoveryTimer = setTimeout(() => {
+          this.recoveryTimer = null;
+          void this.connectAll();
+        }, delay);
+      }
+    }
   }
 
   /** Get or create a connection for a server */
@@ -903,6 +918,11 @@ class ConnectionManager {
 
   /** Disconnect from all servers */
   disconnectAll(): void {
+    if (this.recoveryTimer) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+    this.recoveryAttempts = 0;
     for (const serverId of Array.from(this.connections.keys())) {
       this.disconnectServer(serverId);
     }

@@ -60,7 +60,11 @@ pub fn stop_system_audio_capture() -> Result<(), String> {
             let _ = thread.join();
         }
     }
-    SYSTEM_AUDIO_CAPTURE_ENABLED.store(false, Ordering::SeqCst);
+    // Note: do NOT clear SYSTEM_AUDIO_CAPTURE_ENABLED here.
+    // The JS side calls stop then start in sequence to recover from stale
+    // sessions; clearing the flag here would cause the subsequent start to
+    // fail with "System audio capture disabled".  The flag is managed
+    // exclusively by set_system_audio_capture_enabled().
     Ok(())
 }
 

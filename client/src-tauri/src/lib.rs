@@ -114,6 +114,8 @@ pub fn run() {
         native_media::commands::voice_stop_screen_share,
         native_media::commands::voice_push_video_frame,
         native_media::commands::voice_push_screen_frame,
+        native_media::commands::voice_set_screen_audio_enabled,
+        native_media::commands::voice_push_screen_audio_frame,
         native_media::commands::media_subscribe_video,
     ]);
 

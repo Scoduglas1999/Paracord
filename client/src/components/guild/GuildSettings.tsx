@@ -22,6 +22,7 @@ import { EventList } from './EventList';
 import { ChannelManager } from './ChannelManager';
 import { FileStorageSection } from './FileStorageSection';
 import { ServerHubSettings } from './ServerHubSettings';
+import { BotStoreSection } from './BotStoreSection';
 
 interface GuildSettingsProps {
   guildId: string;
@@ -29,11 +30,12 @@ interface GuildSettingsProps {
   onClose: () => void;
 }
 
-type SettingsSection = 'overview' | 'server-hub' | 'roles' | 'members' | 'channels' | 'invites' | 'emojis' | 'webhooks' | 'bots' | 'events' | 'bans' | 'audit-log' | 'file-storage';
+type SettingsSection = 'overview' | 'server-hub' | 'bot-store' | 'roles' | 'members' | 'channels' | 'invites' | 'emojis' | 'webhooks' | 'bots' | 'events' | 'bans' | 'audit-log' | 'file-storage';
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <Hash size={16} /> },
   { id: 'server-hub', label: 'Server Hub', icon: <LayoutTemplate size={16} /> },
+  { id: 'bot-store', label: 'Bot Store', icon: <Bot size={16} /> },
   { id: 'roles', label: 'Roles', icon: <Shield size={16} /> },
   { id: 'members', label: 'Members', icon: <Users size={16} /> },
   { id: 'channels', label: 'Channels', icon: <Hash size={16} /> },
@@ -209,6 +211,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     if (
       requested === 'overview' ||
       requested === 'server-hub' ||
+      requested === 'bot-store' ||
       requested === 'roles' ||
       requested === 'members' ||
       requested === 'channels' ||
@@ -639,6 +642,15 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       <div className="pointer-events-none absolute -left-20 top-0 h-72 w-72 rounded-full blur-[120px]" style={{ backgroundColor: 'var(--ambient-glow-primary)' }} />
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full blur-[140px]" style={{ backgroundColor: 'var(--ambient-glow-success)' }} />
 
+      {!isMobile && (
+        <div className="absolute right-6 top-6 z-50 flex flex-col items-center gap-1">
+          <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75 hover:bg-bg-mod-subtle">
+            <X size={18} />
+          </button>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+        </div>
+      )}
+
       {isMobile ? (
         <div className="relative z-10 border-b border-border-subtle/70 bg-bg-secondary/70 px-3 pb-2.5 pt-[calc(var(--safe-top)+0.75rem)]">
           <div className="mb-2 flex items-center justify-between">
@@ -699,15 +711,6 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       <div className={cn('relative z-10 flex-1 overflow-y-auto', isMobile ? 'px-6 pb-[calc(var(--safe-bottom)+1rem)] pt-6' : 'px-10 py-8')}>
         <div className="w-full max-w-[740px] space-y-8">
           {!isMobile && (
-            <div className="sticky top-2 z-20 ml-auto mb-4 flex w-fit flex-col items-center gap-1 md:top-3">
-              <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
-                <X size={18} />
-              </button>
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
-            </div>
-          )}
-
-          {!isMobile && (
             <nav className="mb-4 flex items-center gap-1.5 text-xs text-text-muted" aria-label="Breadcrumb">
               <span className="font-medium">{guild?.name || guildName}</span>
               <span aria-hidden>/</span>
@@ -719,7 +722,7 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
             </nav>
           )}
           {error && (
-            <div className="rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-4 py-2.5 text-sm font-medium text-accent-danger">{error}</div>
+            <div className="mb-8 rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-4 py-2.5 text-sm font-medium text-accent-danger">{error}</div>
           )}
           <div className="flex flex-wrap items-center gap-2.5">
             <button
@@ -1674,6 +1677,10 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                 )}
               </div>
             </div>
+          )}
+
+          {activeSection === 'bot-store' && (
+            <BotStoreSection guildId={guildId} canManage={canManageRoleSettings} />
           )}
 
           {activeSection === 'file-storage' && (

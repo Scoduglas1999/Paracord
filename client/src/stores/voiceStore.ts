@@ -3263,6 +3263,10 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           maxWidth: capture.width,
           maxHeight: capture.height,
         });
+        const nativeStreamAudioActive = mediaEngine.isScreenShareAudioActive();
+        const nativeStreamAudioWarning = nativeStreamAudioActive
+          ? null
+          : 'Stream started without PC audio. Native system audio capture failed. Try stopping the stream and starting it again.';
 
         // Set content hint so the encoder optimises for the right signal type.
         // We intentionally do NOT call tuneScreenShareCaptureTrack() here —
@@ -3317,8 +3321,8 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             participants,
             channelParticipants,
             watchedStreamerId: localUserId ?? state.watchedStreamerId,
-            streamAudioWarning: null,
-            systemAudioCaptureActive: false,
+            streamAudioWarning: nativeStreamAudioWarning,
+            systemAudioCaptureActive: nativeStreamAudioActive,
           };
         });
       } catch (error) {
@@ -3571,13 +3575,41 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       } catch (err) {
         console.warn('[voice] Post-publish sender tuning failed (non-critical):', err);
       }
-      set({
-        selfStream: true,
-        livekitToken: data.token,
-        livekitUrl: normalizedUrl,
-        roomName: data.room_name,
-        streamAudioWarning,
-        systemAudioCaptureActive,
+      // Update local voice state for stream indicator AND auto-watch self
+      // so the StreamViewer renders immediately with the local preview.
+      const localUserId = useAuthStore.getState().user?.id;
+      set((state) => {
+        const participants = new Map(state.participants);
+        const channelParticipants = new Map(state.channelParticipants);
+        if (localUserId) {
+          const existing = participants.get(localUserId);
+          if (existing) {
+            participants.set(localUserId, { ...existing, self_stream: true });
+          } else {
+            const vs = buildLocalVoiceState(
+              channelId!, state.guildId || null,
+              '', state.selfMute, state.selfDeaf, true, state.selfVideo,
+            );
+            if (vs) participants.set(localUserId, vs);
+          }
+          if (channelId) {
+            const chMembers = (channelParticipants.get(channelId) || []).map(m =>
+              m.user_id === localUserId ? { ...m, self_stream: true } : m
+            );
+            channelParticipants.set(channelId, chMembers);
+          }
+        }
+        return {
+          selfStream: true,
+          livekitToken: data.token,
+          livekitUrl: normalizedUrl,
+          roomName: data.room_name,
+          streamAudioWarning,
+          systemAudioCaptureActive,
+          participants,
+          channelParticipants,
+          watchedStreamerId: localUserId ?? state.watchedStreamerId,
+        };
       });
     } catch (error) {
       void stopNativeSystemAudio();

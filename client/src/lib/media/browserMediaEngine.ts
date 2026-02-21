@@ -70,6 +70,8 @@ export class BrowserMediaEngine implements MediaEngine {
   private screenEncoder: MediaVideoEncoder | null = null;
   private screenFrameCallbackId: number | null = null;
   private screenTrack: MediaStreamTrack | null = null;
+  private screenAudioSource: MediaStreamAudioSourceNode | null = null;
+  private screenAudioActive = false;
   private screenSequence = 0;
   private screenShareEndedCb: (() => void) | null = null;
 
@@ -198,6 +200,7 @@ export class BrowserMediaEngine implements MediaEngine {
   async startScreenShare(config: ScreenShareConfig): Promise<void> {
     // Stop any existing screen share first
     this.cleanupScreenShare();
+    this.screenAudioActive = false;
 
     const constraints: DisplayMediaStreamOptions = {
       video: {
@@ -207,6 +210,12 @@ export class BrowserMediaEngine implements MediaEngine {
       },
       audio: config.audio,
     };
+    if (config.audio) {
+      const hintable = constraints as unknown as Record<string, unknown>;
+      hintable.systemAudio = 'include';
+      hintable.selfBrowserSurface = 'include';
+      hintable.surfaceSwitching = 'include';
+    }
 
     this.screenStream = await navigator.mediaDevices.getDisplayMedia(constraints);
 
@@ -217,6 +226,17 @@ export class BrowserMediaEngine implements MediaEngine {
     }
 
     this.screenTrack = videoTracks[0];
+
+    // Mix captured display audio into the existing outbound Opus pipeline.
+    // Native QUIC transport currently has a single audio track, so stream audio
+    // is delivered by mixing it with the microphone uplink while sharing.
+    const audioTracks = this.screenStream.getAudioTracks();
+    if (config.audio && audioTracks.length > 0 && this.audioContext && this.workletNode) {
+      const audioOnlyStream = new MediaStream(audioTracks);
+      this.screenAudioSource = this.audioContext.createMediaStreamSource(audioOnlyStream);
+      this.screenAudioSource.connect(this.workletNode);
+      this.screenAudioActive = true;
+    }
 
     // Listen for the user stopping the share via the browser's built-in UI
     this.screenTrack.addEventListener('ended', () => {
@@ -269,6 +289,10 @@ export class BrowserMediaEngine implements MediaEngine {
 
   getLocalScreenShareTrack(): MediaStreamTrack | null {
     return this.screenTrack;
+  }
+
+  isScreenShareAudioActive(): boolean {
+    return this.screenAudioActive;
   }
 
   onScreenShareEnded(cb: () => void): void {
@@ -986,6 +1010,12 @@ export class BrowserMediaEngine implements MediaEngine {
       cancelAnimationFrame(this.screenFrameCallbackId);
       this.screenFrameCallbackId = null;
     }
+
+    if (this.screenAudioSource) {
+      this.screenAudioSource.disconnect();
+      this.screenAudioSource = null;
+    }
+    this.screenAudioActive = false;
 
     if (this.screenTrack) {
       const cleanup = (this.screenTrack as unknown as Record<string, () => void>).__paracordCleanup;

@@ -35,6 +35,7 @@ pub struct UpdateGuildRequest {
     pub description: Option<String>,
     pub icon: Option<String>,
     pub hub_settings: Option<Value>,
+    pub bot_settings: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +74,7 @@ pub async fn create_guild(
         "member_count": 1,
         "created_at": guild.created_at.to_rfc3339(),
         "hub_settings": guild.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": guild.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     });
 
     state.member_index.add_member(guild_id, auth.user_id);
@@ -102,6 +104,7 @@ pub async fn list_guilds(
                 "owner_id": g.owner_id.to_string(),
                 "created_at": g.created_at.to_rfc3339(),
                 "hub_settings": g.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+                "bot_settings": g.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
             })
         })
         .collect();
@@ -134,6 +137,7 @@ pub async fn get_guild(
         "member_count": member_count,
         "created_at": guild.created_at.to_rfc3339(),
         "hub_settings": guild.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": guild.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     })))
 }
 
@@ -159,6 +163,11 @@ pub async fn update_guild(
         .as_ref()
         .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
 
+    let bot_settings_str = body
+        .bot_settings
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
+
     let updated = paracord_core::guild::update_guild(
         &state.db,
         guild_id,
@@ -167,6 +176,7 @@ pub async fn update_guild(
         body.description.as_deref(),
         body.icon.as_deref(),
         hub_settings_str.as_deref(),
+        bot_settings_str.as_deref(),
     )
     .await?;
 
@@ -178,6 +188,7 @@ pub async fn update_guild(
         "owner_id": updated.owner_id.to_string(),
         "created_at": updated.created_at.to_rfc3339(),
         "hub_settings": updated.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": updated.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     });
 
     state

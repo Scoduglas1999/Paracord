@@ -1,4 +1,5 @@
 import type { MediaEngine, ScreenShareConfig } from './mediaEngine';
+import { startNativeSystemAudio, stopNativeSystemAudio } from '../systemAudioCapture';
 
 // Tauri API imports - these resolve at runtime in the Tauri environment
 let invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
@@ -30,6 +31,12 @@ export class TauriMediaEngine implements MediaEngine {
   private screenStream: MediaStream | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   private screenShareEndedCb: (() => void) | null = null;
+  private screenAudioContext: AudioContext | null = null;
+  private screenAudioSource: MediaStreamAudioSourceNode | null = null;
+  private screenAudioProcessor: ScriptProcessorNode | null = null;
+  private screenAudioAccumulator: number[] = [];
+  private nativeSystemAudioTrack: MediaStreamTrack | null = null;
+  private screenAudioActive = false;
 
   // Video frame extraction
   private videoStream: MediaStream | null = null;
@@ -45,6 +52,7 @@ export class TauriMediaEngine implements MediaEngine {
     await tauriReady;
     this.stopFrameExtraction();
     this.cleanupScreenShare();
+    this.screenAudioActive = false;
     for (const unlisten of this.unlisteners) {
       unlisten();
     }
@@ -83,6 +91,7 @@ export class TauriMediaEngine implements MediaEngine {
     await tauriReady;
 
     this.cleanupScreenShare();
+    this.screenAudioActive = false;
 
     const targetFps = config.maxFrameRate ?? 30;
 
@@ -90,7 +99,9 @@ export class TauriMediaEngine implements MediaEngine {
       video: {
         frameRate: { ideal: targetFps, max: targetFps },
       },
-      audio: config.audio,
+      // Desktop QUIC streaming uses the native system-audio capture path.
+      // Keep getDisplayMedia focused on video capture only.
+      audio: false,
     };
 
     this.screenStream = await navigator.mediaDevices.getDisplayMedia(constraints);
@@ -105,10 +116,21 @@ export class TauriMediaEngine implements MediaEngine {
 
     this.screenTrack.addEventListener('ended', () => {
       this.cleanupScreenShare();
+      this.screenAudioActive = false;
       this.screenShareEndedCb?.();
     });
 
     await invoke('voice_start_screen_share');
+    if (config.audio) {
+      const audioForwardingReady = await this.startScreenAudioForwarding();
+      if (!audioForwardingReady) {
+        console.warn('[TauriMediaEngine] Native system audio capture unavailable; streaming video-only.');
+      }
+      this.screenAudioActive = audioForwardingReady;
+    } else {
+      await invoke('voice_set_screen_audio_enabled', { enabled: false }).catch(() => { });
+      this.screenAudioActive = false;
+    }
 
     // Start frame extraction loop for screen share
     this.startVideoFrameExtraction(this.screenStream, true);
@@ -120,11 +142,16 @@ export class TauriMediaEngine implements MediaEngine {
       this.screenFrameLoop = null;
     }
     this.cleanupScreenShare();
+    this.screenAudioActive = false;
     invoke('voice_stop_screen_share');
   }
 
   getLocalScreenShareTrack(): MediaStreamTrack | null {
     return this.screenTrack;
+  }
+
+  isScreenShareAudioActive(): boolean {
+    return this.screenAudioActive;
   }
 
   onScreenShareEnded(cb: () => void): void {
@@ -146,6 +173,93 @@ export class TauriMediaEngine implements MediaEngine {
       }
       this.screenStream = null;
     }
+
+    this.stopScreenAudioForwarding();
+  }
+
+  private async startScreenAudioForwarding(): Promise<boolean> {
+    this.stopScreenAudioForwarding();
+
+    try {
+      const nativeTrack = await startNativeSystemAudio();
+      if (!nativeTrack) {
+        await invoke('voice_set_screen_audio_enabled', { enabled: false }).catch(() => { });
+        return false;
+      }
+      this.nativeSystemAudioTrack = nativeTrack;
+
+      const audioOnly = new MediaStream([nativeTrack]);
+      const context = new AudioContext({ sampleRate: 48_000 });
+      const source = context.createMediaStreamSource(audioOnly);
+      const inputChannels = Math.max(1, source.channelCount || 2);
+      const processor = context.createScriptProcessor(2048, inputChannels, 1);
+
+      this.screenAudioAccumulator = [];
+
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer;
+        const channels = input.numberOfChannels;
+        const frames = input.length;
+        if (channels <= 0 || frames <= 0) return;
+
+        const channelData: Float32Array[] = [];
+        for (let ch = 0; ch < channels; ch += 1) {
+          channelData.push(input.getChannelData(ch));
+        }
+
+        for (let i = 0; i < frames; i += 1) {
+          let sum = 0;
+          for (let ch = 0; ch < channelData.length; ch += 1) {
+            sum += channelData[ch][i] ?? 0;
+          }
+          this.screenAudioAccumulator.push(sum / channelData.length);
+        }
+
+        while (this.screenAudioAccumulator.length >= 960) {
+          const frame = this.screenAudioAccumulator.splice(0, 960);
+          invoke('voice_push_screen_audio_frame', { samples: frame }).catch(() => {});
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(context.destination);
+      await context.resume().catch(() => {});
+      await invoke('voice_set_screen_audio_enabled', { enabled: true }).catch(() => { });
+
+      this.screenAudioContext = context;
+      this.screenAudioSource = source;
+      this.screenAudioProcessor = processor;
+      this.screenAudioActive = true;
+      return true;
+    } catch (err) {
+      console.warn('[TauriMediaEngine] Failed to initialize screen-audio forwarding:', err);
+      this.stopScreenAudioForwarding();
+      return false;
+    }
+  }
+
+  private stopScreenAudioForwarding(): void {
+    if (this.screenAudioProcessor) {
+      this.screenAudioProcessor.onaudioprocess = null;
+      this.screenAudioProcessor.disconnect();
+      this.screenAudioProcessor = null;
+    }
+    if (this.screenAudioSource) {
+      this.screenAudioSource.disconnect();
+      this.screenAudioSource = null;
+    }
+    if (this.screenAudioContext) {
+      this.screenAudioContext.close().catch(() => {});
+      this.screenAudioContext = null;
+    }
+    if (this.nativeSystemAudioTrack) {
+      this.nativeSystemAudioTrack.stop();
+      this.nativeSystemAudioTrack = null;
+    }
+    this.screenAudioAccumulator = [];
+    this.screenAudioActive = false;
+    void stopNativeSystemAudio();
+    invoke('voice_set_screen_audio_enabled', { enabled: false }).catch(() => {});
   }
 
   private stopVideoCapture(): void {
@@ -288,3 +402,4 @@ export class TauriMediaEngine implements MediaEngine {
     });
   }
 }
+

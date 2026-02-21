@@ -227,6 +227,9 @@ impl PartialUploadManager {
 }
 
 async fn cleanup_old_partials(dir: &Path, max_age: Duration) -> Result<(), std::io::Error> {
+    if !dir.exists() {
+        return Ok(());
+    }
     let mut entries = tokio::fs::read_dir(dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();

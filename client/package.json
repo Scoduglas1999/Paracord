@@ -1,7 +1,7 @@
 {
   "name": "paracord-client",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.5",
   "type": "module",
   "scripts": {
     "dev": "vite",

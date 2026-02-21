@@ -176,7 +176,7 @@ export function Sidebar() {
           aria-label="Server dock"
           aria-expanded={dockExpanded}
           className={cn(
-            'dock-surface relative z-30 flex h-full max-h-[780px] flex-col items-center gap-3 px-1.5 py-3 transition-[width,transform] duration-200',
+            'dock-surface relative z-30 flex h-full max-h-[780px] flex-col items-center gap-4 px-2 py-4 transition-[width,transform] duration-200',
             dockExpanded ? 'w-[60px]' : 'w-[18px] translate-x-1'
           )}
         >

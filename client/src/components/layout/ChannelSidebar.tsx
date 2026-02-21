@@ -165,7 +165,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
   if (!currentGuild && collapsed) {
     const compactDms = dmChannels.slice(0, 32);
     return (
-      <div className="flex h-full flex-col items-center px-1.5 py-3">
+      <div className="flex h-full flex-col items-center px-2 py-4">
         <Tooltip content="Home" side="right">
           <button
             onClick={() => navigate('/app')}

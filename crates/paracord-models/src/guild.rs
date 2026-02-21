@@ -16,4 +16,5 @@ pub struct Guild {
     pub vanity_url_code: Option<String>,
     pub created_at: DateTime<Utc>,
     pub hub_settings: Option<serde_json::Value>,
+    pub bot_settings: Option<serde_json::Value>,
 }

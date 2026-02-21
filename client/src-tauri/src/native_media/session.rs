@@ -33,6 +33,9 @@ pub struct NativeMediaSession {
     // Audio capture
     pub audio_capture: Option<AudioCapture>,
     pub pcm_rx: Option<mpsc::Receiver<Vec<f32>>>,
+    pub screen_audio_rx: Option<mpsc::Receiver<Vec<f32>>>,
+    pub screen_audio_tx: mpsc::Sender<Vec<f32>>,
+    pub screen_audio_enabled: Arc<AtomicBool>,
 
     // Audio playback
     pub audio_playback: AudioPlayback,
@@ -134,6 +137,7 @@ impl NativeMediaSession {
         // Start audio capture
         let (audio_capture, pcm_rx) =
             AudioCapture::start().map_err(|e| format!("audio capture: {e}"))?;
+        let (screen_audio_tx, screen_audio_rx) = mpsc::channel::<Vec<f32>>(64);
 
         // E2EE key setup
         let sender_key: [u8; 16] = rand::random();
@@ -152,6 +156,9 @@ impl NativeMediaSession {
             connection,
             audio_capture: Some(audio_capture),
             pcm_rx: Some(pcm_rx),
+            screen_audio_rx: Some(screen_audio_rx),
+            screen_audio_tx,
+            screen_audio_enabled: Arc::new(AtomicBool::new(false)),
             audio_playback,
             opus_encoder,
             noise_suppressor,

@@ -9,9 +9,13 @@ use paracord_transport::protocol::{MediaHeader, TrackType, HEADER_SIZE};
 
 use super::session::NativeMediaSession;
 
+const VOICE_BITRATE_BPS: i32 = 96_000;
+const STREAM_BITRATE_BPS: i32 = 192_000;
+
 /// Spawn the audio send task: captures mic → noise suppress → Opus encode → encrypt → QUIC datagram.
 pub fn spawn_audio_send_task(session: &mut NativeMediaSession) {
     let muted = session.muted.clone();
+    let screen_audio_enabled = session.screen_audio_enabled.clone();
     let shutdown = session.shutdown.clone();
     let local_ssrc = session.local_ssrc;
 
@@ -19,6 +23,7 @@ pub fn spawn_audio_send_task(session: &mut NativeMediaSession) {
     let Some(mut pcm_rx) = session.pcm_rx.take() else {
         return;
     };
+    let mut screen_audio_rx = session.screen_audio_rx.take();
 
     let conn_inner = session.connection.inner().clone();
     let key_epoch = session.key_epoch;
@@ -39,26 +44,64 @@ pub fn spawn_audio_send_task(session: &mut NativeMediaSession) {
 
         let mut seq: u16 = 0;
         let mut timestamp: u32 = 0;
+        let mut latest_screen_frame: Option<Vec<f32>> = None;
+        let mut active_bitrate = VOICE_BITRATE_BPS;
 
         loop {
             tokio::select! {
                 _ = shutdown.notified() => break,
+                maybe_screen = async {
+                    match screen_audio_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending::<Option<Vec<f32>>>().await,
+                    }
+                } => {
+                    match maybe_screen {
+                        Some(frame) => latest_screen_frame = Some(frame),
+                        None => screen_audio_rx = None,
+                    }
+                }
                 frame = pcm_rx.recv() => {
                     let Some(pcm) = frame else { break };
 
-                    // Skip encoding if muted
-                    if muted.load(Ordering::SeqCst) {
+                    let include_screen_audio = screen_audio_enabled.load(Ordering::SeqCst);
+                    let has_screen_audio = include_screen_audio && latest_screen_frame.is_some();
+                    let mic_muted = muted.load(Ordering::SeqCst);
+                    if mic_muted && !has_screen_audio {
                         continue;
                     }
 
-                    // Noise suppression
-                    let denoised = noise_suppressor.process_frame(&pcm);
+                    // Use a higher Opus bitrate while screen audio is active.
+                    let target_bitrate = if has_screen_audio {
+                        STREAM_BITRATE_BPS
+                    } else {
+                        VOICE_BITRATE_BPS
+                    };
+                    if target_bitrate != active_bitrate {
+                        if let Err(e) = opus_encoder.set_bitrate(target_bitrate) {
+                            tracing::warn!("opus bitrate update failed: {e}");
+                        } else {
+                            active_bitrate = target_bitrate;
+                        }
+                    }
+
+                    // Run mic through denoiser unless muted, then mix in screen audio if active.
+                    let mut mixed = if mic_muted {
+                        vec![0.0f32; FRAME_SIZE]
+                    } else {
+                        noise_suppressor.process_frame(&pcm)
+                    };
+                    if has_screen_audio {
+                        if let Some(screen) = latest_screen_frame.as_deref() {
+                            mix_audio_in_place(&mut mixed, screen);
+                        }
+                    }
 
                     // Compute audio level (RMS → dBov approximation)
-                    let audio_level = compute_audio_level(&denoised);
+                    let audio_level = compute_audio_level(&mixed);
 
                     // Opus encode
-                    let opus_data = match opus_encoder.encode(&denoised) {
+                    let opus_data = match opus_encoder.encode(&mixed) {
                         Ok(data) => data,
                         Err(e) => {
                             tracing::warn!("opus encode error: {e}");
@@ -259,4 +302,36 @@ fn compute_audio_level(pcm: &[f32]) -> u8 {
     }
     let db = 20.0 * rms.log10();
     (-db).clamp(0.0, 127.0) as u8
+}
+
+/// Mix a secondary stream into the primary mono frame in-place.
+/// If `overlay` is stereo interleaved, it is downmixed to mono first.
+fn mix_audio_in_place(primary: &mut [f32], overlay: &[f32]) {
+    if overlay.is_empty() || primary.is_empty() {
+        return;
+    }
+
+    let overlay_mono: Vec<f32> = if overlay.len() == primary.len() * 2 {
+        let mut mono = Vec::with_capacity(primary.len());
+        for i in 0..primary.len() {
+            let left = overlay[i * 2];
+            let right = overlay[i * 2 + 1];
+            mono.push((left + right) * 0.5);
+        }
+        mono
+    } else if overlay.len() == primary.len() {
+        overlay.to_vec()
+    } else {
+        // Fallback for mismatched frame lengths: trim or zero-pad overlay.
+        let mut mono = vec![0.0f32; primary.len()];
+        let n = overlay.len().min(primary.len());
+        mono[..n].copy_from_slice(&overlay[..n]);
+        mono
+    };
+
+    for (dst, src) in primary.iter_mut().zip(overlay_mono.iter()) {
+        // Keep headroom and clamp to valid PCM range.
+        let mixed = (*dst * 0.75) + (*src * 0.75);
+        *dst = mixed.clamp(-1.0, 1.0);
+    }
 }

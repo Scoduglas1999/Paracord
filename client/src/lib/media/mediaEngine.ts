@@ -13,6 +13,8 @@ export interface MediaEngine {
   enableVideo(enabled: boolean): void;
   startScreenShare(config: ScreenShareConfig): Promise<void>;
   stopScreenShare(): void;
+  /** Whether stream-audio capture is currently active for screen sharing. */
+  isScreenShareAudioActive(): boolean;
   /** Return the local screen share video track (if actively sharing). */
   getLocalScreenShareTrack(): MediaStreamTrack | null;
   /** Register a callback fired when the user stops screen sharing via the
