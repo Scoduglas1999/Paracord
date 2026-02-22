@@ -9,14 +9,14 @@ const buttonVariants = cva(
     {
         variants: {
             variant: {
-                default: "border border-transparent bg-accent-primary text-white shadow-[0_10px_24px_rgba(235,77,75,0.32)] hover:-translate-y-0.5 hover:bg-accent-primary-hover",
+                default: "border border-white/10 bg-accent-primary text-white shadow-[0_8px_16px_rgba(111,134,255,0.25)] hover:-translate-y-0.5 hover:bg-accent-primary-hover hover:shadow-[0_12px_24px_rgba(111,134,255,0.35)]",
                 destructive:
-                    "border border-transparent bg-accent-danger text-white hover:bg-red-700",
+                    "border border-white/10 bg-accent-danger text-white shadow-[0_8px_16px_rgba(255,93,114,0.25)] hover:-translate-y-0.5 hover:bg-red-500 hover:shadow-[0_12px_24px_rgba(255,93,114,0.35)]",
                 outline:
-                    "border border-border-subtle bg-bg-mod-subtle/40 text-text-primary hover:bg-bg-mod-subtle",
+                    "border border-border-strong bg-bg-mod-subtle text-text-primary shadow-sm hover:bg-bg-mod-strong hover:border-border-glow",
                 secondary:
-                    "border border-transparent bg-accent-success text-white hover:bg-green-600",
-                ghost: "border border-transparent text-text-secondary hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary",
+                    "border border-white/10 bg-accent-success text-white shadow-[0_8px_16px_rgba(53,193,143,0.25)] hover:-translate-y-0.5 hover:bg-green-500 hover:shadow-[0_12px_24px_rgba(53,193,143,0.35)]",
+                ghost: "border border-transparent text-text-secondary hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary hover:shadow-sm",
                 link: "text-text-link underline-offset-4 hover:underline",
             },
             size: {
@@ -45,7 +45,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         return (
             <motion.button
                 ref={ref}
-                whileTap={{ scale: 0.98 }}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.97 }}
                 className={cn(buttonVariants({ variant, size, className }))}
                 disabled={disabled || loading}
                 {...props}

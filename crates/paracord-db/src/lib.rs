@@ -7,6 +7,8 @@ pub mod channels;
 pub mod dms;
 pub mod emojis;
 pub mod federation;
+pub mod federation_file_cache;
+pub mod guild_storage_policies;
 pub mod guilds;
 pub mod invites;
 pub mod members;

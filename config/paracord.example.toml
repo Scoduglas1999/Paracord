@@ -119,15 +119,6 @@ allow_discovery = false
 # max_user_creates_per_peer_per_hour = 100
 
 [network]
-# Automatically forward ports via UPnP on startup (default: false).
-# When enabled, the server discovers your router, forwards required ports,
-# detects your public IP, and prints a shareable URL. Set to false if you
-# are behind a VPN, inside Docker, or prefer manual port forwarding.
-upnp = false
-# Secondary confirmation to avoid accidental internet exposure via UPnP.
-upnp_confirm_exposure = false
-# How long each UPnP mapping lasts in seconds (auto-renewed). 0 = permanent on some routers.
-upnp_lease_seconds = 3600
 # On Windows, optionally auto-create local firewall allow rules for Paracord binaries.
 windows_firewall_auto_allow = false
 

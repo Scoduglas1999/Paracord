@@ -242,6 +242,46 @@ impl FederationClient {
             .map_err(|e| FederationError::RemoteError(format!("invalid media relay response: {e}")))
     }
 
+    pub async fn request_file_token(
+        &self,
+        federation_endpoint: &str,
+        payload: &FederationFileTokenRequest,
+    ) -> Result<FederationFileTokenResponse, FederationError> {
+        let url = format!("{}/file/token", federation_endpoint.trim_end_matches('/'));
+        let body = serde_json::to_vec(payload).map_err(|e| FederationError::Http(e.to_string()))?;
+        let resp = self.post_with_retry(&url, body).await?;
+        resp.json()
+            .await
+            .map_err(|e| FederationError::RemoteError(format!("invalid file token response: {e}")))
+    }
+
+    pub async fn download_federated_file(
+        &self,
+        download_url: &str,
+    ) -> Result<(Vec<u8>, Option<String>, Option<String>), FederationError> {
+        let resp = self.get_with_retry(download_url).await?;
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                v.split("filename=\"")
+                    .nth(1)
+                    .and_then(|s| s.strip_suffix('"'))
+                    .map(str::to_string)
+            });
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| FederationError::Http(e.to_string()))?;
+        Ok((bytes.to_vec(), content_type, filename))
+    }
+
     /// GET request with exponential backoff retry.
     async fn get_with_retry(&self, url: &str) -> Result<reqwest::Response, FederationError> {
         self.get_with_retry_with_headers(url, &[]).await
@@ -460,4 +500,19 @@ pub struct FederationMediaRelayResponse {
     pub token: Option<String>,
     pub room_name: Option<String>,
     pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FederationFileTokenRequest {
+    pub origin_server: String,
+    pub attachment_id: String,
+    pub room_id: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FederationFileTokenResponse {
+    pub token: String,
+    pub download_url: String,
+    pub expires_in_seconds: i64,
 }

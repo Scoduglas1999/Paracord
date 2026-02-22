@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { create } from 'zustand';
 import type {
   EditMessageRequest,
@@ -7,7 +8,7 @@ import type {
   SendMessageRequest,
 } from '../types';
 import { channelApi } from '../api/channels';
-import { extractApiError } from '../api/client';
+import { apiClient, extractApiError } from '../api/client';
 import { DEFAULT_MESSAGE_FETCH_LIMIT } from '../lib/constants';
 import { decryptDmMessage, encryptDmMessageV2 } from '../lib/dmE2ee';
 import { hasUnlockedPrivateKey, withUnlockedPrivateKey } from '../lib/accountSession';
@@ -16,6 +17,17 @@ import { toast } from './toastStore';
 import { usePollStore } from './pollStore';
 
 const ENCRYPTED_DM_PLACEHOLDER = '[Encrypted message]';
+
+const _messageFetchControllers = new Map<string, AbortController>();
+
+/** Cancel any in-flight message fetch for the given channel. */
+export function cancelMessageFetch(channelId: string): void {
+  const controller = _messageFetchControllers.get(channelId);
+  if (controller) {
+    controller.abort();
+    _messageFetchControllers.delete(channelId);
+  }
+}
 
 function findChannel(channelId: string) {
   const channelsByGuild = useChannelStore.getState().channelsByGuild;
@@ -198,50 +210,74 @@ export const useMessageStore = create<MessageState>()((set, get) => ({
 
   fetchMessages: async (channelId, params) => {
     if (get().loading[channelId]) return;
-    set((state) => ({ loading: { ...state.loading, [channelId]: true } }));
-    const MAX_RETRIES = 2;
-    const RETRY_DELAY = 1500;
-    let lastErr: unknown;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        if (attempt > 0) {
-          await new Promise((r) => setTimeout(r, RETRY_DELAY * attempt));
-        }
-        const { data } = await channelApi.getMessages(channelId, {
-          limit: DEFAULT_MESSAGE_FETCH_LIMIT,
-          ...params,
-        });
-        const decrypted = await decryptMessagesForChannel(channelId, data);
-        if (!params?.before) {
-          usePollStore.getState().clearPollsForChannel(channelId);
-        }
-        for (const message of decrypted) {
-          if (message.poll) {
-            usePollStore.getState().upsertPoll(message.poll);
-          }
-        }
-        set((state) => {
-          const existing = params?.before ? state.messages[channelId] || [] : [];
-          // API returns newest first (ORDER BY id DESC); reverse to
-          // chronological order (oldest at top, newest at bottom).
-          const sorted = [...decrypted].reverse();
-          const merged = params?.before ? [...sorted, ...existing] : sorted;
-          return {
-            messages: { ...state.messages, [channelId]: merged },
-            hasMore: {
-              ...state.hasMore,
-              [channelId]: decrypted.length >= DEFAULT_MESSAGE_FETCH_LIMIT,
-            },
-          };
-        });
-        set((state) => ({ loading: { ...state.loading, [channelId]: false } }));
-        return;
-      } catch (err) {
-        lastErr = err;
+
+    // Abort any in-flight fetch for a different channel
+    for (const [key, ctrl] of _messageFetchControllers) {
+      if (key !== channelId) {
+        ctrl.abort();
+        _messageFetchControllers.delete(key);
       }
     }
-    toast.error(`Failed to load messages: ${extractApiError(lastErr)}`);
-    set((state) => ({ loading: { ...state.loading, [channelId]: false } }));
+
+    set((state) => ({ loading: { ...state.loading, [channelId]: true } }));
+
+    const controller = new AbortController();
+    _messageFetchControllers.set(channelId, controller);
+
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 300;
+    const REQUEST_TIMEOUT = 5_000;
+    let lastErr: unknown;
+    try {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (controller.signal.aborted) return;
+        try {
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, RETRY_DELAY * attempt));
+          }
+          if (controller.signal.aborted) return;
+          const { data } = await apiClient.get<Message[]>(
+            `/channels/${channelId}/messages`,
+            {
+              params: { limit: DEFAULT_MESSAGE_FETCH_LIMIT, ...params },
+              timeout: REQUEST_TIMEOUT,
+              signal: controller.signal,
+            },
+          );
+          const decrypted = await decryptMessagesForChannel(channelId, data);
+          if (!params?.before) {
+            usePollStore.getState().clearPollsForChannel(channelId);
+          }
+          for (const message of decrypted) {
+            if (message.poll) {
+              usePollStore.getState().upsertPoll(message.poll);
+            }
+          }
+          set((state) => {
+            const existing = params?.before ? state.messages[channelId] || [] : [];
+            // API returns newest first (ORDER BY id DESC); reverse to
+            // chronological order (oldest at top, newest at bottom).
+            const sorted = [...decrypted].reverse();
+            const merged = params?.before ? [...sorted, ...existing] : sorted;
+            return {
+              messages: { ...state.messages, [channelId]: merged },
+              hasMore: {
+                ...state.hasMore,
+                [channelId]: decrypted.length >= DEFAULT_MESSAGE_FETCH_LIMIT,
+              },
+            };
+          });
+          return;
+        } catch (err) {
+          if (axios.isCancel(err) || controller.signal.aborted) return;
+          lastErr = err;
+        }
+      }
+      toast.error(`Failed to load messages: ${extractApiError(lastErr)}`);
+    } finally {
+      set((state) => ({ loading: { ...state.loading, [channelId]: false } }));
+      _messageFetchControllers.delete(channelId);
+    }
   },
 
   sendMessage: async (channelId, content, referencedMessageId, attachmentIds) => {

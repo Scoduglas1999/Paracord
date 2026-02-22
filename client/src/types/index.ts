@@ -29,12 +29,21 @@ export interface UserSettings {
   keybinds?: Record<string, unknown>;
 }
 
+export interface HubSettings {
+  description?: string;
+  banner_hash?: string;
+  pinned_channels?: string[];
+  welcome_text?: string;
+  [key: string]: any;
+}
+
 export interface Guild {
   id: string;
   name: string;
   icon?: string;
   icon_hash?: string | null;
   banner?: string;
+  banner_hash?: string;
   description?: string;
   owner_id: string;
   member_count: number;
@@ -42,7 +51,10 @@ export interface Guild {
   system_channel_id?: string;
   rules_channel_id?: string;
   default_channel_id?: string | null;
+  vanity_url_code?: string;
   created_at: string;
+  hub_settings?: HubSettings;
+  bot_settings?: any;
   /** Base URL of the server this guild was fetched from (client-side tag). */
   server_url?: string;
 }
@@ -186,6 +198,8 @@ export interface Attachment {
   proxy_url?: string;
   width?: number;
   height?: number;
+  origin_server?: string;
+  content_hash?: string;
 }
 
 export interface Reaction {

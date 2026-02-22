@@ -1,15 +1,19 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use governor::clock::{Clock, DefaultClock};
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
 use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
 use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, Instant};
 
+use crate::compression::WsCompressor;
 use crate::session::Session;
 
 const HEARTBEAT_INTERVAL_MS: u64 = 41250;
@@ -227,6 +231,7 @@ fn wire_log_ws_close(
 async fn send_ws_text_logged(
     sender: &mut (impl SinkExt<Message> + Unpin),
     payload: String,
+    compressor: &WsCompressor,
     user_id: Option<i64>,
     session_id: Option<&str>,
     frame_type: &str,
@@ -243,10 +248,27 @@ async fn send_ws_text_logged(
         event_type,
         sequence,
     );
-    sender
-        .send(Message::Text(payload.into()))
-        .await
-        .map_err(|_| ())
+
+    if let Some(result) = compressor.compress(&payload) {
+        match result {
+            Ok(compressed) => sender
+                .send(Message::Binary(compressed.into()))
+                .await
+                .map_err(|_| ()),
+            Err(e) => {
+                tracing::warn!("zlib-stream compression failed, sending uncompressed: {e}");
+                sender
+                    .send(Message::Text(payload.into()))
+                    .await
+                    .map_err(|_| ())
+            }
+        }
+    } else {
+        sender
+            .send(Message::Text(payload.into()))
+            .await
+            .map_err(|_| ())
+    }
 }
 
 async fn send_ws_close_logged(
@@ -329,55 +351,88 @@ fn try_acquire_user_connection_slot(user_id: i64) -> bool {
     true
 }
 
-struct WsMessageRateLimiter {
-    window_started_at: i64,
-    total_messages: u32,
-    presence_updates: u32,
-    typing_events: u32,
-    voice_updates: u32,
+/// User-level rate limiters shared across all connections for the same user.
+/// This prevents users from bypassing rate limits by opening multiple tabs/connections.
+struct UserRateLimits {
+    /// General messages (any opcode except heartbeat): 240/min per user
+    messages: DefaultKeyedRateLimiter<i64>,
+    /// Presence updates: 60/min per user
+    presence: DefaultKeyedRateLimiter<i64>,
+    /// Typing events: 120/min per user
+    typing: DefaultKeyedRateLimiter<i64>,
+    /// Voice state updates: 60/min per user
+    voice: DefaultKeyedRateLimiter<i64>,
 }
 
-impl WsMessageRateLimiter {
-    fn new() -> Self {
-        Self {
-            window_started_at: chrono::Utc::now().timestamp(),
-            total_messages: 0,
-            presence_updates: 0,
-            typing_events: 0,
-            voice_updates: 0,
-        }
-    }
+static USER_RATE_LIMITS: OnceLock<UserRateLimits> = OnceLock::new();
 
-    fn allow(&mut self, opcode: u8) -> bool {
-        let now = chrono::Utc::now().timestamp();
-        if now - self.window_started_at >= 60 {
-            self.window_started_at = now;
-            self.total_messages = 0;
-            self.presence_updates = 0;
-            self.typing_events = 0;
-            self.voice_updates = 0;
-        }
-
-        self.total_messages += 1;
+fn user_rate_limits() -> &'static UserRateLimits {
+    USER_RATE_LIMITS.get_or_init(|| {
         let limits = ws_limits();
-        if self.total_messages > limits.max_messages_per_minute {
-            return false;
+        let rate_limits = UserRateLimits {
+            messages: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_messages_per_minute).unwrap(),
+            )),
+            presence: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_presence_updates_per_minute).unwrap(),
+            )),
+            typing: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_typing_events_per_minute).unwrap(),
+            )),
+            voice: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(limits.max_voice_updates_per_minute).unwrap(),
+            )),
+        };
+
+        // Periodic cleanup of stale rate limiter entries to prevent unbounded memory growth.
+        tokio::spawn(async {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                let rl = user_rate_limits();
+                rl.messages.retain_recent();
+                rl.presence.retain_recent();
+                rl.typing.retain_recent();
+                rl.voice.retain_recent();
+                rl.messages.shrink_to_fit();
+                rl.presence.shrink_to_fit();
+                rl.typing.shrink_to_fit();
+                rl.voice.shrink_to_fit();
+                tracing::trace!("rate limiter cleanup: pruned stale entries");
+            }
+        });
+
+        rate_limits
+    })
+}
+
+impl UserRateLimits {
+    /// Check if a message from the given user with the given opcode is allowed.
+    /// Returns `Ok(())` if allowed, or `Err(retry_after_ms)` if rate limited.
+    fn check(&self, user_id: i64, opcode: u8) -> Result<(), u64> {
+        let clock = DefaultClock::default();
+        let now = clock.now();
+
+        // Check total message limit first
+        if let Err(not_until) = self.messages.check_key(&user_id) {
+            let wait = not_until.wait_time_from(now);
+            return Err(wait.as_millis().max(1) as u64);
         }
 
-        match opcode {
-            OP_PRESENCE_UPDATE => {
-                self.presence_updates += 1;
-                self.presence_updates <= limits.max_presence_updates_per_minute
-            }
-            OP_TYPING_START => {
-                self.typing_events += 1;
-                self.typing_events <= limits.max_typing_events_per_minute
-            }
-            OP_VOICE_STATE_UPDATE => {
-                self.voice_updates += 1;
-                self.voice_updates <= limits.max_voice_updates_per_minute
-            }
-            _ => true,
+        // Check per-opcode limits
+        let not_until = match opcode {
+            OP_PRESENCE_UPDATE => self.presence.check_key(&user_id).err(),
+            OP_TYPING_START => self.typing.check_key(&user_id).err(),
+            OP_VOICE_STATE_UPDATE => self.voice.check_key(&user_id).err(),
+            _ => None,
+        };
+
+        if let Some(not_until) = not_until {
+            let wait = not_until.wait_time_from(now);
+            Err(wait.as_millis().max(1) as u64)
+        } else {
+            Ok(())
         }
     }
 }
@@ -549,7 +604,8 @@ async fn can_receive_channel_event(
     perms.contains(Permissions::VIEW_CHANNEL)
 }
 
-pub async fn handle_connection(socket: WebSocket, state: AppState) {
+pub async fn handle_connection(socket: WebSocket, state: AppState, compress: bool) {
+    let compressor = WsCompressor::new(compress);
     let mut connection_guard = ConnectionGuard::new();
     if !try_acquire_global_connection_slot() {
         let (mut sender, _) = socket.split();
@@ -567,6 +623,10 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     connection_guard.global_acquired = true;
     observability::ws_connection_open();
 
+    if compress {
+        tracing::debug!("Client requested zlib-stream compression");
+    }
+
     let (mut sender, mut receiver) = socket.split();
 
     // Send HELLO
@@ -577,6 +637,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     if send_ws_text_logged(
         &mut sender,
         hello_msg,
+        &compressor,
         None,
         None,
         "hello",
@@ -603,6 +664,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
             let _ = send_ws_text_logged(
                 &mut sender,
                 json!({"op": OP_INVALID_SESSION, "d": false}).to_string(),
+                &compressor,
                 None,
                 None,
                 "invalid_session",
@@ -674,6 +736,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         if send_ws_text_logged(
             &mut sender,
             resumed_payload.to_string(),
+            &compressor,
             Some(session.user_id),
             Some(session.session_id.as_str()),
             "resumed",
@@ -833,6 +896,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         if send_ws_text_logged(
             &mut sender,
             ready.to_string(),
+            &compressor,
             Some(session.user_id),
             Some(session.session_id.as_str()),
             "ready",
@@ -851,6 +915,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     let session_user_id = session.user_id;
 
     // Track this user as online
+    state.presence_manager.cancel_offline(session_user_id);
     state.online_users.write().await.insert(session_user_id);
     let online_presence = {
         let existing = state
@@ -887,7 +952,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
         presence_recipient_ids,
     );
 
-    let session = run_session(sender, receiver, session, state.clone()).await;
+    let session = run_session(sender, receiver, session, state.clone(), &compressor).await;
 
     // Voice cleanup: when the gateway WebSocket drops, don't remove voice
     // state immediately — the user may still be connected to LiveKit (their
@@ -989,22 +1054,38 @@ pub async fn handle_connection(socket: WebSocket, state: AppState) {
     };
 
     if should_mark_offline {
-        state.online_users.write().await.remove(&session_user_id);
-        let offline_presence = default_presence_payload(session_user_id, "offline");
-        state
-            .user_presences
-            .write()
-            .await
-            .insert(session_user_id, offline_presence.clone());
+        // Defer the offline transition through PresenceManager to avoid race
+        // conditions where a reconnecting client briefly appears offline.
+        let state_clone = state.clone();
+        let guild_ids = session.guild_ids.clone();
+        state.presence_manager.schedule_offline(session_user_id, async move {
+            // Re-check connection count after the grace period — the user may
+            // have reconnected during the delay.
+            let still_offline = user_connections()
+                .get(&session_user_id)
+                .map(|c| *c)
+                .unwrap_or(0)
+                == 0;
+            if !still_offline {
+                return;
+            }
 
-        // Publish offline presence to scoped recipients only.
-        let offline_presence_recipient_ids =
-            collect_presence_recipient_ids(&state, session_user_id, &session.guild_ids).await;
-        state.event_bus.dispatch_to_users(
-            EVENT_PRESENCE_UPDATE,
-            offline_presence,
-            offline_presence_recipient_ids,
-        );
+            state_clone.online_users.write().await.remove(&session_user_id);
+            let offline_presence = default_presence_payload(session_user_id, "offline");
+            state_clone
+                .user_presences
+                .write()
+                .await
+                .insert(session_user_id, offline_presence.clone());
+
+            let offline_presence_recipient_ids =
+                collect_presence_recipient_ids(&state_clone, session_user_id, &guild_ids).await;
+            state_clone.event_bus.dispatch_to_users(
+                EVENT_PRESENCE_UPDATE,
+                offline_presence,
+                offline_presence_recipient_ids,
+            );
+        });
     }
 }
 
@@ -1115,6 +1196,7 @@ async fn run_session(
     mut receiver: impl StreamExt<Item = Result<Message, axum::Error>> + Unpin,
     mut session: Session,
     state: AppState,
+    compressor: &WsCompressor,
 ) -> Session {
     let mut event_rx = state.event_bus.register_session(
         session.session_id.clone(),
@@ -1122,7 +1204,7 @@ async fn run_session(
         &session.guild_ids,
     );
     let heartbeat_timeout = Duration::from_millis(HEARTBEAT_TIMEOUT_MS);
-    let mut rate_limiter = WsMessageRateLimiter::new();
+    let rate_limits = user_rate_limits();
     let mut ws_ping_interval = tokio::time::interval(Duration::from_secs(20));
     ws_ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let heartbeat_sleep = tokio::time::sleep(heartbeat_timeout);
@@ -1146,20 +1228,47 @@ async fn run_session(
                             &text,
                             "client_message",
                         );
-                        if !rate_limiter.allow(opcode) {
-                            let _ = send_ws_close_logged(
-                                &mut sender,
-                                1008,
-                                "Gateway rate limit exceeded",
-                                Some(session.user_id),
-                                Some(session.session_id.as_str()),
-                                "rate_limit_close",
-                            )
-                            .await;
-                            break ("client exceeded websocket rate limits".to_string(), false);
+                        // Heartbeats are never rate limited
+                        if opcode != OP_HEARTBEAT {
+                            if let Err(retry_after_ms) = rate_limits.check(session.user_id, opcode) {
+                                match opcode {
+                                    OP_PRESENCE_UPDATE | OP_TYPING_START | OP_VOICE_STATE_UPDATE => {
+                                        // Silent drop for high-frequency events
+                                        tracing::debug!(
+                                            user_id = session.user_id,
+                                            opcode,
+                                            "rate limited (silent drop)"
+                                        );
+                                        continue;
+                                    }
+                                    _ => {
+                                        let error_payload = json!({
+                                            "op": OP_DISPATCH,
+                                            "t": "RATE_LIMIT",
+                                            "d": {
+                                                "retry_after": retry_after_ms,
+                                                "type": "messages"
+                                            }
+                                        });
+                                        let _ = send_ws_text_logged(
+                                            &mut sender,
+                                            error_payload.to_string(),
+                                            compressor,
+                                            Some(session.user_id),
+                                            Some(session.session_id.as_str()),
+                                            "rate_limit",
+                                            Some(OP_DISPATCH),
+                                            Some("RATE_LIMIT"),
+                                            None,
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                         if let Ok(payload) = parsed_payload {
-                            handle_client_message(&payload, &mut sender, &mut session, &state).await;
+                            handle_client_message(&payload, &mut sender, &mut session, &state, compressor).await;
                             if opcode == OP_HEARTBEAT {
                                 heartbeat_sleep.as_mut().reset(Instant::now() + heartbeat_timeout);
                             }
@@ -1295,6 +1404,7 @@ async fn run_session(
                         if send_ws_text_logged(
                             &mut sender,
                             dispatch_str,
+                            compressor,
                             Some(session.user_id),
                             Some(session.session_id.as_str()),
                             "dispatch",
@@ -1378,6 +1488,7 @@ async fn handle_client_message(
     sender: &mut (impl SinkExt<Message> + Unpin),
     session: &mut Session,
     state: &AppState,
+    compressor: &WsCompressor,
 ) {
     let op = payload.get("op").and_then(|v| v.as_u64()).unwrap_or(255) as u8;
 
@@ -1386,6 +1497,7 @@ async fn handle_client_message(
             let _ = send_ws_text_logged(
                 sender,
                 HEARTBEAT_ACK_MSG.to_string(),
+                compressor,
                 Some(session.user_id),
                 Some(session.session_id.as_str()),
                 "heartbeat_ack",
@@ -1675,6 +1787,122 @@ async fn handle_client_message(
                             }),
                             Some(guild_id),
                         );
+                    }
+                }
+            }
+        }
+        // ── Native media opcodes ──────────────────────────────────────────
+        OP_MEDIA_CONNECT => {
+            // Client requests a native media session. Respond with
+            // OP_MEDIA_SESSION_DESC containing relay endpoint and peers.
+            if let Some(ref native) = state.native_media {
+                if let Some(d) = payload.get("d") {
+                    let guild_id = d
+                        .get("guild_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<i64>().ok());
+                    let channel_id = d
+                        .get("channel_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<i64>().ok());
+                    if let (Some(guild_id), Some(channel_id)) = (guild_id, channel_id) {
+                        let participant = paracord_relay::participant::MediaParticipant::new(
+                            session.user_id,
+                            session.session_id.clone(),
+                        );
+                        let room_id = native.rooms.get_or_create_room(guild_id, channel_id);
+                        let _ = native.rooms.join_room(guild_id, channel_id, participant);
+
+                        // Build peer list from current room participants
+                        let peers: Vec<Value> = native
+                            .rooms
+                            .get_room(&room_id)
+                            .map(|room| {
+                                room.participants
+                                    .values()
+                                    .filter(|p| p.user_id != session.user_id)
+                                    .map(|p| {
+                                        json!({
+                                            "user_id": p.user_id.to_string(),
+                                            "public_addr": p.public_addr.map(|a| a.to_string()),
+                                            "supports_p2p": p.public_addr.is_some(),
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        let port = state.config.native_media_port;
+                        let desc = json!({
+                            "relay_endpoint": format!("quic://0.0.0.0:{}", port),
+                            "wt_endpoint": format!("https://0.0.0.0:{}/media", port),
+                            "token": "", // Token generation deferred
+                            "room_id": room_id,
+                            "codecs": ["opus", "vp9"],
+                            "peers": peers,
+                        });
+                        let response = json!({
+                            "op": OP_MEDIA_SESSION_DESC,
+                            "d": desc,
+                        });
+                        let _ = sender
+                            .send(Message::Text(response.to_string().into()))
+                            .await;
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "OP_MEDIA_CONNECT from user {} but native media not enabled",
+                    session.user_id
+                );
+            }
+        }
+        OP_MEDIA_KEY_ANNOUNCE => {
+            // Client announces a new sender key. Relay to all other
+            // participants in the same room via the event bus.
+            if let Some(d) = payload.get("d") {
+                if let Ok(announce) =
+                    serde_json::from_value::<MediaKeyAnnounce>(d.clone())
+                {
+                    // Deliver each per-recipient key
+                    for encrypted_key in &announce.encrypted_keys {
+                        let deliver = json!({
+                            "op": OP_MEDIA_KEY_DELIVER,
+                            "d": {
+                                "sender_user_id": session.user_id.to_string(),
+                                "epoch": announce.epoch,
+                                "ciphertext": encrypted_key.ciphertext,
+                            },
+                        });
+                        // Dispatch as a targeted event to the specific recipient
+                        state.event_bus.dispatch(
+                            EVENT_MEDIA_KEY_DELIVER,
+                            json!({
+                                "target_user_id": encrypted_key.recipient_user_id,
+                                "payload": deliver,
+                            }),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+        OP_MEDIA_SUBSCRIBE => {
+            // Client subscribes to a peer's media tracks.
+            // The relay manages subscription state internally.
+            if state.native_media.is_some() {
+                if let Some(d) = payload.get("d") {
+                    if let Ok(sub) =
+                        serde_json::from_value::<MediaSubscribe>(d.clone())
+                    {
+                        tracing::debug!(
+                            "User {} subscribes to user {} track {}",
+                            session.user_id,
+                            sub.user_id,
+                            sub.track_type
+                        );
+                        // Subscription tracking is handled by the QUIC relay;
+                        // this WS opcode is primarily for signaling intent.
                     }
                 }
             }

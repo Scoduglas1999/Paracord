@@ -1,0 +1,44 @@
+[package]
+name = "paracord-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# QUIC
+quinn = "0.11"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+rustls = { workspace = true }
+
+# Workspace crates
+paracord-models = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Auth
+jsonwebtoken = { workspace = true }
+
+# Crypto / TLS
+rcgen = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Concurrent collections
+dashmap = { workspace = true }
+
+# Bytes
+bytes = "1"

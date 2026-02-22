@@ -1,0 +1,47 @@
+[package]
+name = "paracord-codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enable VP9 encoding/decoding via libvpx.
+# Requires libvpx to be installed on the system.
+# On Windows: install via vcpkg (`vcpkg install libvpx:x64-windows-static`)
+#   and set VPX_LIB_DIR to point to the library.
+# On Linux: `apt install libvpx-dev` or equivalent.
+# On macOS: `brew install libvpx`.
+vpx = ["dep:vpx-encode", "dep:env-libvpx-sys"]
+
+[dependencies]
+# Audio
+audiopus = "0.3.0-rc.0"
+nnnoiseless = "0.5"
+cpal = "0.15"
+rubato = "0.15"
+
+# Video (optional, feature-gated)
+vpx-encode = { version = "0.6", features = ["vp9"], optional = true }
+env-libvpx-sys = { version = "5.1", optional = true }
+
+# Crypto (frame encryption)
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Bytes
+bytes = "1"

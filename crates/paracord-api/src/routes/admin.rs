@@ -101,12 +101,51 @@ pub async fn get_settings(
     _admin: AdminUser,
 ) -> Result<Json<Value>, ApiError> {
     let settings = state.runtime.read().await;
+
+    // Read storage/federation settings from DB (they are config-level, not in RuntimeSettings)
+    let max_guild_storage_quota = paracord_db::server_settings::get_setting(
+        &state.db,
+        "max_guild_storage_quota",
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| state.config.max_guild_storage_quota.to_string());
+    let federation_file_cache_enabled = paracord_db::server_settings::get_setting(
+        &state.db,
+        "federation_file_cache_enabled",
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| state.config.federation_file_cache_enabled.to_string());
+    let federation_file_cache_max_size = paracord_db::server_settings::get_setting(
+        &state.db,
+        "federation_file_cache_max_size",
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| state.config.federation_file_cache_max_size.to_string());
+    let federation_file_cache_ttl_hours = paracord_db::server_settings::get_setting(
+        &state.db,
+        "federation_file_cache_ttl_hours",
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| state.config.federation_file_cache_ttl_hours.to_string());
+
     Ok(Json(json!({
         "registration_enabled": settings.registration_enabled.to_string(),
         "server_name": settings.server_name,
         "server_description": settings.server_description,
         "max_guilds_per_user": settings.max_guilds_per_user.to_string(),
         "max_members_per_guild": settings.max_members_per_guild.to_string(),
+        "max_guild_storage_quota": max_guild_storage_quota,
+        "federation_file_cache_enabled": federation_file_cache_enabled,
+        "federation_file_cache_max_size": federation_file_cache_max_size,
+        "federation_file_cache_ttl_hours": federation_file_cache_ttl_hours,
     })))
 }
 
@@ -116,6 +155,10 @@ const ALLOWED_SETTINGS: &[&str] = &[
     "server_description",
     "max_guilds_per_user",
     "max_members_per_guild",
+    "max_guild_storage_quota",
+    "federation_file_cache_enabled",
+    "federation_file_cache_max_size",
+    "federation_file_cache_ttl_hours",
 ];
 
 const MAX_STRING_SETTING_LEN: usize = 256;
@@ -149,6 +192,21 @@ fn validate_setting(key: &str, value: &str) -> Result<(), String> {
             if n == 0 || n > 100_000 {
                 return Err(format!("{key}: must be between 1 and 100000"));
             }
+        }
+        "max_guild_storage_quota" | "federation_file_cache_max_size" => {
+            let _n: u64 = value
+                .parse()
+                .map_err(|_| format!("{key}: must be a positive integer"))?;
+        }
+        "federation_file_cache_enabled" => {
+            if value != "true" && value != "false" {
+                return Err(format!("{key}: must be \"true\" or \"false\""));
+            }
+        }
+        "federation_file_cache_ttl_hours" => {
+            let _n: u64 = value
+                .parse()
+                .map_err(|_| format!("{key}: must be a positive integer"))?;
         }
         _ => {}
     }

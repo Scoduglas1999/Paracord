@@ -10,13 +10,16 @@ members = [
     "crates/paracord-models",
     "crates/paracord-media",
     "crates/paracord-util",
-]
-exclude = [
+    # Custom media server crates
+    "crates/paracord-transport",
+    "crates/paracord-relay",
+    "crates/paracord-codec",
+    "crates/paracord-media-dev",
     "client/src-tauri",
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.5"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-or-later"
@@ -70,6 +73,9 @@ hkdf = "0.12"
 # Concurrent collections
 dashmap = "6"
 
+# Rate limiting
+governor = "0.10"
+
 # Caching
 moka = { version = "0.12", features = ["future"] }
 
@@ -78,8 +84,6 @@ thiserror = "2"
 anyhow = "1"
 
 # Networking
-igd-next = { version = "0.15", features = ["aio_tokio"] }
-crab_nat = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio-tungstenite = "0.28"
 
@@ -96,6 +100,18 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rust-embed = "8"
 mime_guess = "2"
 
+# QUIC transport
+quinn = "0.11"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+bytes = "1"
+
+# Audio/Video codecs
+audiopus = "0.3.0-rc.0"
+nnnoiseless = "0.5"
+cpal = "0.15"
+rubato = "0.15"
+
 # Workspace crates
 paracord-api = { path = "crates/paracord-api" }
 paracord-ws = { path = "crates/paracord-ws" }
@@ -105,3 +121,6 @@ paracord-federation = { path = "crates/paracord-federation" }
 paracord-models = { path = "crates/paracord-models" }
 paracord-media = { path = "crates/paracord-media" }
 paracord-util = { path = "crates/paracord-util" }
+paracord-transport = { path = "crates/paracord-transport" }
+paracord-relay = { path = "crates/paracord-relay" }
+paracord-codec = { path = "crates/paracord-codec" }

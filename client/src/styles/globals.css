@@ -1,3 +1,8 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
 @import "tailwindcss";
 
 @theme {
@@ -335,7 +340,8 @@ button {
 
 html {
   font-size: 16px;
-  -webkit-text-size-adjust: 100%;
+  text-size-adjust: none;
+  -webkit-text-size-adjust: none;
 }
 
 html,
@@ -345,6 +351,7 @@ body,
   min-height: 100%;
   width: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   font-family: var(--font-primary);
   font-feature-settings: 'tnum', 'cv03', 'cv04';
   color: var(--text-primary);
@@ -355,6 +362,19 @@ body,
   line-height: var(--line-height-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable selection in content areas */
+input, textarea, [contenteditable="true"],
+.message-content, .markdown-content, pre, code,
+[data-selectable] {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 html[data-theme='light'],
@@ -372,30 +392,6 @@ html[data-theme='amoled'] #root {
 ::selection {
   color: var(--text-primary);
   background: rgba(126, 175, 255, 0.34);
-}
-
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: var(--scrollbar-auto-track);
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--scrollbar-auto-thumb);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-auto-thumb-hover);
-}
-
-/* Thin scrollbar variant */
-.scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
 }
 
 /* Skeleton loading animation */
@@ -446,6 +442,7 @@ html[data-theme='amoled'] #root {
   flex: 1;
   min-height: 0;
   gap: 16px;
+  padding: 12px 16px 16px 16px;
 }
 
 .dock-stage {
@@ -464,9 +461,8 @@ html[data-theme='amoled'] #root {
 }
 
 .panel-surface {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
-  background-color: color-mix(in srgb, var(--bg-secondary) 90%, black 10%);
-  border-radius: 24px;
+  background-color: var(--bg-secondary);
+  border-radius: 20px;
   border: 1px solid color-mix(in srgb, var(--border-subtle) 64%, transparent);
   box-shadow:
     0 12px 34px rgba(0, 0, 0, 0.34),
@@ -474,9 +470,9 @@ html[data-theme='amoled'] #root {
 }
 
 .dock-surface {
-  background-color: #050505;
+  background-color: var(--bg-nav, rgba(10, 14, 23, 0.65));
   color: #fff;
-  border-radius: 32px;
+  border-radius: 36px;
   box-shadow:
     0 18px 48px rgba(0, 0, 0, 0.55),
     inset 0 0 0 1px rgba(255, 255, 255, 0.08);
@@ -487,6 +483,7 @@ html[data-theme='amoled'] #root {
   min-width: 260px;
   height: 100%;
   overflow: hidden;
+  border-radius: 20px;
 }
 
 .nav-panel-collapsible {
@@ -509,6 +506,8 @@ html[data-theme='amoled'] #root {
   height: 100%;
   display: flex;
   flex-direction: column;
+  border-radius: 20px;
+  overflow: hidden;
 }
 
 .stage-panel {
@@ -523,6 +522,7 @@ html[data-theme='amoled'] #root {
   min-width: var(--member-list-width);
   height: 100%;
   overflow: hidden;
+  border-radius: 20px;
 }
 
 .mobile-sidebar-overlay {
@@ -536,7 +536,7 @@ html[data-theme='amoled'] #root {
 .mobile-nav-panel {
   width: min(88vw, 19rem);
   height: 100%;
-  border-radius: 0 24px 24px 0;
+  border-radius: 0 20px 20px 0;
   border-left: none;
   overflow: hidden;
 }
@@ -644,7 +644,7 @@ html[data-theme='amoled'] #root {
    Active panels receive a subtle accent glow on box-shadow keyed to keyboard focus. */
 
 .glass-rail {
-  background: linear-gradient(165deg, var(--glass-rail-fill-top), var(--glass-rail-fill-bottom));
+  background: var(--bg-nav, rgba(10, 14, 23, 0.65));
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(28px) saturate(150%);
@@ -662,7 +662,7 @@ html[data-theme='amoled'] #root {
 }
 
 .glass-panel {
-  background: linear-gradient(170deg, var(--glass-panel-fill-top), var(--glass-panel-fill-bottom));
+  background: var(--bg-panel, var(--bg-secondary));
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(18px) saturate(130%);
@@ -677,7 +677,7 @@ html[data-theme='amoled'] #root {
 }
 
 .glass-modal {
-  background: linear-gradient(165deg, var(--glass-modal-fill-top), var(--glass-modal-fill-bottom));
+  background: var(--bg-floating, rgba(20, 28, 42, 0.95));
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-xl);
   backdrop-filter: blur(12px) saturate(120%);
@@ -1559,11 +1559,15 @@ html[data-theme='amoled'] #root {
   color: var(--text-primary) !important;
   padding: 0 !important;
 }
+
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
 .hljs-section,
-.hljs-link { color: var(--accent-primary) !important; }
+.hljs-link {
+  color: var(--accent-primary) !important;
+}
+
 .hljs-string,
 .hljs-title,
 .hljs-name,
@@ -1574,14 +1578,76 @@ html[data-theme='amoled'] #root {
 .hljs-addition,
 .hljs-variable,
 .hljs-template-tag,
-.hljs-template-variable { color: #b5cea8 !important; }
+.hljs-template-variable {
+  color: #b5cea8 !important;
+}
+
 .hljs-comment,
 .hljs-quote,
 .hljs-deletion,
-.hljs-meta { color: var(--text-muted) !important; }
-.hljs-number { color: #d19a66 !important; }
+.hljs-meta {
+  color: var(--text-muted) !important;
+}
+
+.hljs-number {
+  color: #d19a66 !important;
+}
+
 .hljs-built_in,
 .hljs-class .hljs-title,
-.hljs-title.function_ { color: #e5c07b !important; }
-.hljs-params { color: var(--text-secondary) !important; }
-.hljs-attr { color: #7ecbff !important; }
+.hljs-title.function_ {
+  color: #e5c07b !important;
+}
+
+.hljs-params {
+  color: var(--text-secondary) !important;
+}
+
+.hljs-attr {
+  color: #7ecbff !important;
+}
+
+/* =========================================================================
+   Global Scrollbar Styling (Webkit & Standard)
+   ========================================================================= */
+
+/* Standard syntax for Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-auto-thumb) transparent;
+}
+
+/* Webkit syntax for Chrome, Safari, Edge */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-auto-thumb);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-auto-thumb-hover);
+}
+
+/* Hide scrollbars completely when needed (e.g. some internal lists) */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  /* IE and Edge */
+  scrollbar-width: none;
+  /* Firefox */
+}

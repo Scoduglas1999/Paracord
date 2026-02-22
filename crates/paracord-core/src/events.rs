@@ -23,6 +23,7 @@ pub struct EventBus {
     sessions: Arc<DashMap<String, SessionSubscription>>,
     guild_sessions: Arc<DashMap<i64, HashSet<String>>>,
     user_sessions: Arc<DashMap<i64, HashSet<String>>>,
+    system_sender: broadcast::Sender<ServerEvent>,
 }
 
 #[derive(Clone)]
@@ -34,12 +35,18 @@ struct SessionSubscription {
 
 impl EventBus {
     pub fn new(capacity: usize) -> Self {
+        let (system_sender, _) = broadcast::channel(capacity);
         Self {
             capacity,
             sessions: Arc::new(DashMap::new()),
             guild_sessions: Arc::new(DashMap::new()),
             user_sessions: Arc::new(DashMap::new()),
+            system_sender,
         }
+    }
+
+    pub fn subscribe_system(&self) -> broadcast::Receiver<ServerEvent> {
+        self.system_sender.subscribe()
     }
 
     pub fn register_session(
@@ -176,6 +183,9 @@ impl EventBus {
                 "server_out"
             );
         }
+
+        // Send to native bot system listener
+        let _ = self.system_sender.send(event.clone());
 
         // Send to matching sessions
         for sid in session_ids {

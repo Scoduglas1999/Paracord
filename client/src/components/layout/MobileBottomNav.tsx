@@ -57,7 +57,7 @@ export function MobileBottomNav() {
         navigate('/app/friends');
         break;
       case 'settings':
-        navigate('/app/settings');
+        useUIStore.getState().setUserSettingsOpen(true);
         break;
     }
   };

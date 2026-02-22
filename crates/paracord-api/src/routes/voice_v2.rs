@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::middleware::AuthUser;
+use super::voice::VoiceJoinQuery;
 
 #[derive(Deserialize)]
 pub struct VoiceStateUpdateRequest {
@@ -28,8 +29,9 @@ pub async fn join_voice_v2(
     auth: AuthUser,
     headers: HeaderMap,
     Path(channel_id): Path<i64>,
+    query: Query<VoiceJoinQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    super::voice::join_voice(state, auth, headers, Path(channel_id)).await
+    super::voice::join_voice(state, auth, headers, Path(channel_id), query).await
 }
 
 pub async fn leave_voice_v2(
@@ -44,9 +46,10 @@ pub async fn recover_voice_v2(
     state: State<AppState>,
     auth: AuthUser,
     headers: HeaderMap,
+    query: Query<VoiceJoinQuery>,
     Json(req): Json<VoiceRecoverRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    super::voice::join_voice(state, auth, headers, Path(req.channel_id)).await
+    super::voice::join_voice(state, auth, headers, Path(req.channel_id), query).await
 }
 
 pub async fn update_voice_state_v2(

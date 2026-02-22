@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
-import { X, Upload, GripVertical, Shield, Users, Hash, Link, Gavel, ScrollText, RefreshCw, Trash2, Smile, Calendar, Bot, ArrowLeft } from 'lucide-react';
+import { X, Upload, GripVertical, Shield, Users, Hash, Link, Gavel, ScrollText, RefreshCw, Trash2, Smile, Calendar, Bot, ArrowLeft, HardDrive, LayoutTemplate } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { guildApi } from '../../api/guilds';
 import { inviteApi } from '../../api/invites';
@@ -20,6 +20,9 @@ import { confirm } from '../../stores/confirmStore';
 import { buildGuildEmojiImageUrl } from '../../lib/customEmoji';
 import { EventList } from './EventList';
 import { ChannelManager } from './ChannelManager';
+import { FileStorageSection } from './FileStorageSection';
+import { ServerHubSettings } from './ServerHubSettings';
+import { BotStoreSection } from './BotStoreSection';
 
 interface GuildSettingsProps {
   guildId: string;
@@ -27,10 +30,12 @@ interface GuildSettingsProps {
   onClose: () => void;
 }
 
-type SettingsSection = 'overview' | 'roles' | 'members' | 'channels' | 'invites' | 'emojis' | 'webhooks' | 'bots' | 'events' | 'bans' | 'audit-log';
+type SettingsSection = 'overview' | 'server-hub' | 'bot-store' | 'roles' | 'members' | 'channels' | 'invites' | 'emojis' | 'webhooks' | 'bots' | 'events' | 'bans' | 'audit-log' | 'file-storage';
 
 const NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <Hash size={16} /> },
+  { id: 'server-hub', label: 'Server Hub', icon: <LayoutTemplate size={16} /> },
+  { id: 'bot-store', label: 'Bot Store', icon: <Bot size={16} /> },
   { id: 'roles', label: 'Roles', icon: <Shield size={16} /> },
   { id: 'members', label: 'Members', icon: <Users size={16} /> },
   { id: 'channels', label: 'Channels', icon: <Hash size={16} /> },
@@ -39,6 +44,7 @@ const NAV_ITEMS: { id: SettingsSection; label: string; icon: ReactNode }[] = [
   { id: 'webhooks', label: 'Webhooks', icon: <Link size={16} /> },
   { id: 'bots', label: 'Bots', icon: <Bot size={16} /> },
   { id: 'events', label: 'Events', icon: <Calendar size={16} /> },
+  { id: 'file-storage', label: 'File Storage', icon: <HardDrive size={16} /> },
   { id: 'bans', label: 'Bans', icon: <Gavel size={16} /> },
   { id: 'audit-log', label: 'Audit Log', icon: <ScrollText size={16} /> },
 ];
@@ -204,6 +210,8 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
     const requested = params.get('section');
     if (
       requested === 'overview' ||
+      requested === 'server-hub' ||
+      requested === 'bot-store' ||
       requested === 'roles' ||
       requested === 'members' ||
       requested === 'channels' ||
@@ -213,7 +221,8 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       requested === 'bots' ||
       requested === 'events' ||
       requested === 'bans' ||
-      requested === 'audit-log'
+      requested === 'audit-log' ||
+      requested === 'file-storage'
     ) {
       setActiveSection(requested);
     }
@@ -633,6 +642,15 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
       <div className="pointer-events-none absolute -left-20 top-0 h-72 w-72 rounded-full blur-[120px]" style={{ backgroundColor: 'var(--ambient-glow-primary)' }} />
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full blur-[140px]" style={{ backgroundColor: 'var(--ambient-glow-success)' }} />
 
+      {!isMobile && (
+        <div className="absolute right-6 top-6 z-50 flex flex-col items-center gap-1">
+          <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75 hover:bg-bg-mod-subtle">
+            <X size={18} />
+          </button>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+        </div>
+      )}
+
       {isMobile ? (
         <div className="relative z-10 border-b border-border-subtle/70 bg-bg-secondary/70 px-3 pb-2.5 pt-[calc(var(--safe-top)+0.75rem)]">
           <div className="mb-2 flex items-center justify-between">
@@ -692,267 +710,440 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
 
       <div className={cn('relative z-10 flex-1 overflow-y-auto', isMobile ? 'px-6 pb-[calc(var(--safe-bottom)+1rem)] pt-6' : 'px-10 py-8')}>
         <div className="w-full max-w-[740px] space-y-8">
-        {!isMobile && (
-          <div className="sticky top-2 z-20 ml-auto mb-4 flex w-fit flex-col items-center gap-1 md:top-3">
-            <button onClick={onClose} className="command-icon-btn rounded-full border border-border-strong bg-bg-secondary/75">
-              <X size={18} />
+          {!isMobile && (
+            <nav className="mb-4 flex items-center gap-1.5 text-xs text-text-muted" aria-label="Breadcrumb">
+              <span className="font-medium">{guild?.name || guildName}</span>
+              <span aria-hidden>/</span>
+              <span className="font-medium">Settings</span>
+              <span aria-hidden>/</span>
+              <span className="font-semibold text-text-secondary">
+                {NAV_ITEMS.find(i => i.id === activeSection)?.label ?? activeSection}
+              </span>
+            </nav>
+          )}
+          {error && (
+            <div className="mb-8 rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-4 py-2.5 text-sm font-medium text-accent-danger">{error}</div>
+          )}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={() => void refreshAll()}
+              className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle px-4 text-sm font-semibold text-text-secondary hover:bg-bg-mod-strong hover:text-text-primary"
+            >
+              <RefreshCw size={15} />
+              Refresh
             </button>
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Esc</span>
+            {loading && <span className="text-sm text-text-muted">Loading...</span>}
           </div>
-        )}
 
-        {!isMobile && (
-          <nav className="mb-4 flex items-center gap-1.5 text-xs text-text-muted" aria-label="Breadcrumb">
-            <span className="font-medium">{guild?.name || guildName}</span>
-            <span aria-hidden>/</span>
-            <span className="font-medium">Settings</span>
-            <span aria-hidden>/</span>
-            <span className="font-semibold text-text-secondary">
-              {NAV_ITEMS.find(i => i.id === activeSection)?.label ?? activeSection}
-            </span>
-          </nav>
-        )}
-        {error && (
-          <div className="rounded-xl border border-accent-danger/35 bg-accent-danger/10 px-4 py-2.5 text-sm font-medium text-accent-danger">{error}</div>
-        )}
-        <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            onClick={() => void refreshAll()}
-            className="inline-flex h-10 items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle px-4 text-sm font-semibold text-text-secondary hover:bg-bg-mod-strong hover:text-text-primary"
-          >
-            <RefreshCw size={15} />
-            Refresh
-          </button>
-          {loading && <span className="text-sm text-text-muted">Loading...</span>}
-        </div>
-
-        {activeSection === 'overview' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack-relaxed">
-            <h2 className="settings-section-title !mb-0">Server Overview</h2>
-            <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
-              <div className="flex-shrink-0">
-                <label className="cursor-pointer">
-                  <input type="file" accept="image/*" className="hidden" onChange={onGuildIconChange} />
-                  <div
-                    className="w-24 h-24 rounded-full flex flex-col items-center justify-center border-2 border-dashed transition-colors hover:border-[var(--interactive-normal)]"
-                    style={{ borderColor: 'var(--interactive-muted)', backgroundColor: 'var(--bg-secondary)' }}
-                  >
-                    {iconDataUrl ? (
-                      <img src={iconDataUrl} alt="Server icon" className="w-full h-full rounded-full object-cover" />
-                    ) : (
-                      <>
-                        <Upload size={20} style={{ color: 'var(--text-muted)' }} />
-                        <span className="text-[10px] mt-1 font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>
-                          Upload
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </label>
-              </div>
-              <div className="flex-1 card-stack-relaxed">
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Server Name</span>
-                  <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field mt-3" />
-                </label>
-                <label className="block">
-                  <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Description</span>
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    rows={3}
-                    className="input-field mt-3 resize-none"
-                    placeholder="Describe your server"
-                  />
-                </label>
-              </div>
-            </div>
-            <div className="settings-action-row">
-              <button className="btn-primary" onClick={() => void saveOverview()}>Save Changes</button>
-              {guild && authUser && guild.owner_id !== authUser.id && (
-                <button className="btn-ghost" onClick={() => void handleLeaveGuild()}>
-                  Leave Server
-                </button>
-              )}
-            </div>
-            <div className="grid gap-7 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
-                <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Members</div>
-                <div className="mt-1 text-xl font-semibold text-text-primary">{members.length}</div>
-              </div>
-              <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
-                <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Roles</div>
-                <div className="mt-1 text-xl font-semibold text-text-primary">{roles.length}</div>
-              </div>
-              <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
-                <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Channels</div>
-                <div className="mt-1 text-xl font-semibold text-text-primary">{channels.length}</div>
-              </div>
-              <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
-                <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Active Invites</div>
-                <div className="mt-1 text-xl font-semibold text-text-primary">{invites.length}</div>
-              </div>
-            </div>
-            {guild && authUser && guild.owner_id === authUser.id && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 px-4 py-4">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-                  Transfer Ownership
-                </div>
-                <div className="text-sm text-text-muted">
-                  Transfer this server to another member. You will lose owner privileges.
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2.5">
-                  <select
-                    className="select-field min-w-[16rem] flex-1"
-                    value={ownershipTargetUserId}
-                    onChange={(e) => setOwnershipTargetUserId(e.target.value)}
-                  >
-                    {ownershipCandidates.map((member) => (
-                      <option key={member.user.id} value={member.user.id}>
-                        {(member.nick || member.user.username) + ' (' + member.user.id + ')'}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="rounded-lg border border-accent-danger/30 bg-accent-danger/10 px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15 disabled:opacity-60"
-                    onClick={() => void transferOwnership()}
-                    disabled={transferringOwnership || !ownershipTargetUserId}
-                  >
-                    {transferringOwnership ? 'Transferring...' : 'Transfer'}
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm leading-6 text-text-secondary">
-              Keep this server profile complete so new members instantly recognize your community and can orient themselves faster.
-            </div>
-          </div>
-        )}
-
-        {activeSection === 'roles' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack-relaxed">
-            <h2 className="settings-section-title !mb-0">Roles</h2>
-            {!canManageRoleSettings && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
-                Only server admins can create, edit, or assign roles.
-              </div>
-            )}
-            <div className="card-stack">
-              {roles.map((role) => {
-                const roleColor = roleColorHex(role);
-                const isEditing = editingRoleId === role.id;
-                return (
-                  <div key={role.id}>
-                    <div className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
-                      <GripVertical size={16} style={{ color: 'var(--text-muted)' }} />
-                      <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 border border-border-subtle" style={{ backgroundColor: roleColor }} />
-                      <input
-                        className="flex-1 bg-transparent text-base leading-normal outline-none"
-                        style={{ color: roleColor !== '#000000' ? roleColor : 'var(--text-primary)' }}
-                        defaultValue={role.name}
-                        disabled={!canManageRoleSettings}
-                        onBlur={(e) => {
-                          if (!canManageRoleSettings) return;
-                          if (e.target.value !== role.name) void renameRole(role.id, e.target.value);
-                        }}
-                      />
-                      {role.hoist && (
-                        <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border-subtle" style={{ color: 'var(--text-muted)' }}>Hoisted</span>
-                      )}
-                      {canManageRoleSettings && role.id !== guildId && (
-                        <button
-                          className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                          onClick={() => isEditing ? cancelRoleEditing() : startEditingRole(role)}
-                        >
-                          {isEditing ? 'Close' : 'Edit'}
-                        </button>
-                      )}
-                      {canManageRoleSettings && role.id !== guildId && (
-                        <button className="icon-btn" onClick={() => void deleteRole(role.id)}>
-                          <Trash2 size={14} />
-                        </button>
+          {activeSection === 'overview' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack-relaxed">
+              <h2 className="settings-section-title !mb-0">Server Overview</h2>
+              <div className="flex flex-col gap-6 sm:flex-row sm:gap-8">
+                <div className="flex-shrink-0">
+                  <label className="cursor-pointer">
+                    <input type="file" accept="image/*" className="hidden" onChange={onGuildIconChange} />
+                    <div
+                      className="w-24 h-24 rounded-full flex flex-col items-center justify-center border-2 border-dashed transition-colors hover:border-[var(--interactive-normal)]"
+                      style={{ borderColor: 'var(--interactive-muted)', backgroundColor: 'var(--bg-secondary)' }}
+                    >
+                      {iconDataUrl ? (
+                        <img src={iconDataUrl} alt="Server icon" className="w-full h-full rounded-full object-cover" />
+                      ) : (
+                        <>
+                          <Upload size={20} style={{ color: 'var(--text-muted)' }} />
+                          <span className="text-[10px] mt-1 font-semibold uppercase" style={{ color: 'var(--text-muted)' }}>
+                            Upload
+                          </span>
+                        </>
                       )}
                     </div>
-                    {isEditing && (
-                      <div className="card-surface ml-0 mt-3 rounded-xl border border-border-subtle bg-bg-primary/60 p-6 space-y-6 sm:ml-8">
-                        <div className="flex items-center gap-4">
-                          <label className="block">
-                            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Color</span>
-                            <div className="mt-1 flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={editingRoleColor}
-                                onChange={(e) => setEditingRoleColor(e.target.value)}
-                                className="h-9 w-9 cursor-pointer rounded-lg border border-border-subtle bg-transparent"
-                              />
-                              <input
-                                type="text"
-                                value={editingRoleColor}
-                                onChange={(e) => setEditingRoleColor(e.target.value)}
-                                className="input-field w-28"
-                                maxLength={7}
-                              />
-                            </div>
-                          </label>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-4 sm:gap-6">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={editingRoleHoist}
-                              onChange={(e) => setEditingRoleHoist(e.target.checked)}
-                              className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
-                            />
-                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Display separately (hoist)</span>
-                          </label>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={editingRoleMentionable}
-                              onChange={(e) => setEditingRoleMentionable(e.target.checked)}
-                              className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
-                            />
-                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Allow anyone to @mention this role</span>
-                          </label>
-                        </div>
-                        <div>
-                          <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Permissions</span>
-                          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                            {[
-                              { name: 'Manage Channels', flag: 1 << 4 },
-                              { name: 'Manage Server', flag: 1 << 5 },
-                              { name: 'Manage Messages', flag: 1 << 13 },
-                              { name: 'Manage Roles', flag: 1 << 28 },
-                              { name: 'Kick Members', flag: 1 << 1 },
-                              { name: 'Ban Members', flag: 1 << 2 },
-                              { name: 'Administrator', flag: 1 << 3 },
-                              { name: 'Send Messages', flag: 1 << 11 },
-                              { name: 'Attach Files', flag: 1 << 15 },
-                              { name: 'Add Reactions', flag: 1 << 6 },
-                              { name: 'Connect (Voice)', flag: 1 << 20 },
-                              { name: 'Speak (Voice)', flag: 1 << 21 },
-                              { name: 'Stream', flag: 1 << 9 },
-                              { name: 'View Audit Log', flag: 1 << 7 },
-                              { name: 'Create Invite', flag: 1 << 0 },
-                              { name: 'Change Nickname', flag: 1 << 26 },
-                            ].map((perm) => (
-                              <label key={perm.name} className="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1.5 hover:bg-bg-mod-subtle transition-colors">
+                  </label>
+                </div>
+                <div className="flex-1 card-stack-relaxed">
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Server Name</span>
+                    <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="input-field mt-3" />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Description</span>
+                    <textarea
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      rows={3}
+                      className="input-field mt-3 resize-none"
+                      placeholder="Describe your server"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="settings-action-row">
+                <button className="btn-primary" onClick={() => void saveOverview()}>Save Changes</button>
+                {guild && authUser && guild.owner_id !== authUser.id && (
+                  <button className="btn-ghost" onClick={() => void handleLeaveGuild()}>
+                    Leave Server
+                  </button>
+                )}
+              </div>
+              <div className="grid gap-7 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
+                  <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Members</div>
+                  <div className="mt-1 text-xl font-semibold text-text-primary">{members.length}</div>
+                </div>
+                <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
+                  <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Roles</div>
+                  <div className="mt-1 text-xl font-semibold text-text-primary">{roles.length}</div>
+                </div>
+                <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
+                  <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Channels</div>
+                  <div className="mt-1 text-xl font-semibold text-text-primary">{channels.length}</div>
+                </div>
+                <div className="card-surface min-h-[5.5rem] rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3.5">
+                  <div className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Active Invites</div>
+                  <div className="mt-1 text-xl font-semibold text-text-primary">{invites.length}</div>
+                </div>
+              </div>
+              {guild && authUser && guild.owner_id === authUser.id && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 px-4 py-4">
+                  <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                    Transfer Ownership
+                  </div>
+                  <div className="text-sm text-text-muted">
+                    Transfer this server to another member. You will lose owner privileges.
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-2.5">
+                    <select
+                      className="select-field min-w-[16rem] flex-1"
+                      value={ownershipTargetUserId}
+                      onChange={(e) => setOwnershipTargetUserId(e.target.value)}
+                    >
+                      {ownershipCandidates.map((member) => (
+                        <option key={member.user.id} value={member.user.id}>
+                          {(member.nick || member.user.username) + ' (' + member.user.id + ')'}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="rounded-lg border border-accent-danger/30 bg-accent-danger/10 px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15 disabled:opacity-60"
+                      onClick={() => void transferOwnership()}
+                      disabled={transferringOwnership || !ownershipTargetUserId}
+                    >
+                      {transferringOwnership ? 'Transferring...' : 'Transfer'}
+                    </button>
+                  </div>
+                </div>
+              )}
+              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm leading-6 text-text-secondary">
+                Keep this server profile complete so new members instantly recognize your community and can orient themselves faster.
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'server-hub' && guild && (
+            <ServerHubSettings
+              guild={guild}
+              channels={channels}
+              onUpdate={() => refreshAll()}
+              setError={setError}
+            />
+          )}
+
+          {activeSection === 'roles' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack-relaxed">
+              <h2 className="settings-section-title !mb-0">Roles</h2>
+              {!canManageRoleSettings && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                  Only server admins can create, edit, or assign roles.
+                </div>
+              )}
+              <div className="card-stack">
+                {roles.map((role) => {
+                  const roleColor = roleColorHex(role);
+                  const isEditing = editingRoleId === role.id;
+                  return (
+                    <div key={role.id}>
+                      <div className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5">
+                        <GripVertical size={16} style={{ color: 'var(--text-muted)' }} />
+                        <div className="w-3.5 h-3.5 rounded-full flex-shrink-0 border border-border-subtle" style={{ backgroundColor: roleColor }} />
+                        <input
+                          className="flex-1 bg-transparent text-base leading-normal outline-none"
+                          style={{ color: roleColor !== '#000000' ? roleColor : 'var(--text-primary)' }}
+                          defaultValue={role.name}
+                          disabled={!canManageRoleSettings}
+                          onBlur={(e) => {
+                            if (!canManageRoleSettings) return;
+                            if (e.target.value !== role.name) void renameRole(role.id, e.target.value);
+                          }}
+                        />
+                        {role.hoist && (
+                          <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border border-border-subtle" style={{ color: 'var(--text-muted)' }}>Hoisted</span>
+                        )}
+                        {canManageRoleSettings && role.id !== guildId && (
+                          <button
+                            className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                            onClick={() => isEditing ? cancelRoleEditing() : startEditingRole(role)}
+                          >
+                            {isEditing ? 'Close' : 'Edit'}
+                          </button>
+                        )}
+                        {canManageRoleSettings && role.id !== guildId && (
+                          <button className="icon-btn" onClick={() => void deleteRole(role.id)}>
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                      {isEditing && (
+                        <div className="card-surface ml-0 mt-3 rounded-xl border border-border-subtle bg-bg-primary/60 p-6 space-y-6 sm:ml-8">
+                          <div className="flex items-center gap-4">
+                            <label className="block">
+                              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Color</span>
+                              <div className="mt-1 flex items-center gap-2">
                                 <input
-                                  type="checkbox"
-                                  checked={(editingRolePermissions & perm.flag) !== 0}
-                                  onChange={() => togglePermission(perm.flag)}
-                                  className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                                  type="color"
+                                  value={editingRoleColor}
+                                  onChange={(e) => setEditingRoleColor(e.target.value)}
+                                  className="h-9 w-9 cursor-pointer rounded-lg border border-border-subtle bg-transparent"
                                 />
-                                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{perm.name}</span>
-                              </label>
-                            ))}
+                                <input
+                                  type="text"
+                                  value={editingRoleColor}
+                                  onChange={(e) => setEditingRoleColor(e.target.value)}
+                                  className="input-field w-28"
+                                  maxLength={7}
+                                />
+                              </div>
+                            </label>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={editingRoleHoist}
+                                onChange={(e) => setEditingRoleHoist(e.target.checked)}
+                                className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                              />
+                              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Display separately (hoist)</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={editingRoleMentionable}
+                                onChange={(e) => setEditingRoleMentionable(e.target.checked)}
+                                className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                              />
+                              <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Allow anyone to @mention this role</span>
+                            </label>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>Permissions</span>
+                            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              {[
+                                { name: 'Manage Channels', flag: 1 << 4 },
+                                { name: 'Manage Server', flag: 1 << 5 },
+                                { name: 'Manage Messages', flag: 1 << 13 },
+                                { name: 'Manage Roles', flag: 1 << 28 },
+                                { name: 'Kick Members', flag: 1 << 1 },
+                                { name: 'Ban Members', flag: 1 << 2 },
+                                { name: 'Administrator', flag: 1 << 3 },
+                                { name: 'Send Messages', flag: 1 << 11 },
+                                { name: 'Attach Files', flag: 1 << 15 },
+                                { name: 'Add Reactions', flag: 1 << 6 },
+                                { name: 'Connect (Voice)', flag: 1 << 20 },
+                                { name: 'Speak (Voice)', flag: 1 << 21 },
+                                { name: 'Stream', flag: 1 << 9 },
+                                { name: 'View Audit Log', flag: 1 << 7 },
+                                { name: 'Create Invite', flag: 1 << 0 },
+                                { name: 'Change Nickname', flag: 1 << 26 },
+                              ].map((perm) => (
+                                <label key={perm.name} className="flex items-center gap-2 cursor-pointer rounded-lg px-2 py-1.5 hover:bg-bg-mod-subtle transition-colors">
+                                  <input
+                                    type="checkbox"
+                                    checked={(editingRolePermissions & perm.flag) !== 0}
+                                    onChange={() => togglePermission(perm.flag)}
+                                    className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                                  />
+                                  <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>{perm.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="settings-action-row">
+                            <button className="btn-primary" onClick={() => void saveRoleEdits()}>Save Changes</button>
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                              onClick={cancelRoleEditing}
+                            >
+                              Cancel
+                            </button>
                           </div>
                         </div>
-                        <div className="settings-action-row">
-                          <button className="btn-primary" onClick={() => void saveRoleEdits()}>Save Changes</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {canManageRoleSettings && (
+                <div className="settings-action-row">
+                  <input className="input-field flex-1" placeholder="New role name" value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} />
+                  <input
+                    type="color"
+                    value={newRoleColor}
+                    onChange={(e) => setNewRoleColor(e.target.value)}
+                    className="h-10 w-10 cursor-pointer rounded-lg border border-border-subtle bg-transparent"
+                    title="Role color"
+                  />
+                  <button className="btn-primary" onClick={() => void createRole()}>Create Role</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeSection === 'members' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Members</h2>
+              <input type="text" placeholder="Search members" className="input-field" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+              <div className="card-stack">
+                {filteredMembers.map((member) => (
+                  <div key={member.user.id}>
+                    <div className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ backgroundColor: 'var(--accent-primary)' }}>
+                        {member.user.username.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm block" style={{ color: 'var(--text-primary)' }}>
+                          {member.nick || member.user.username}
+                        </span>
+                        {member.nick && (
+                          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                            {member.user.username}
+                          </span>
+                        )}
+                      </div>
+                      <div className="ml-auto flex items-center gap-1">
+                        {member.roles && member.roles.length > 0 && (
+                          <div className="hidden sm:flex items-center gap-1 mr-2">
+                            {member.roles
+                              .filter((roleId) => roleId !== memberRoleId)
+                              .slice(0, 3)
+                              .map((roleId) => {
+                                const role = roles.find((r) => r.id === roleId);
+                                if (!role) return null;
+                                const rColor = roleColorHex(role);
+                                return (
+                                  <span key={roleId} className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-0.5 text-[11px] font-medium" style={{ color: rColor }}>
+                                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: rColor }} />
+                                    {role.name}
+                                  </span>
+                                );
+                              })}
+                          </div>
+                        )}
+                        {canManageRoleSettings && (
                           <button
                             className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                            onClick={cancelRoleEditing}
+                            onClick={() => {
+                              if (editingMemberRoleUserId === member.user.id) {
+                                setEditingMemberRoleUserId(null);
+                                setDraftMemberRoleIds([]);
+                                return;
+                              }
+                              startEditingMemberRoles(member);
+                            }}
+                          >
+                            {editingMemberRoleUserId === member.user.id ? 'Close Roles' : 'Roles'}
+                          </button>
+                        )}
+                        <button className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary" onClick={() => void kickMember(member.user.id)}>Kick</button>
+                        <button
+                          className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15"
+                          onClick={() => {
+                            setBanConfirmUserId(member.user.id);
+                            setBanReasonInput('');
+                          }}
+                        >
+                          Ban
+                        </button>
+                      </div>
+                    </div>
+                    {banConfirmUserId === member.user.id && (
+                      <div className="card-surface ml-10 mt-2 rounded-xl border border-accent-danger/30 bg-accent-danger/5 p-3 space-y-2">
+                        <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                          Ban {member.user.username}?
+                        </p>
+                        <input
+                          type="text"
+                          placeholder="Reason for ban (optional)"
+                          value={banReasonInput}
+                          onChange={(e) => setBanReasonInput(e.target.value)}
+                          className="input-field w-full"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void banMember(member.user.id, banReasonInput);
+                            if (e.key === 'Escape') setBanConfirmUserId(null);
+                          }}
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors"
+                            style={{ backgroundColor: 'var(--accent-danger)', color: '#fff' }}
+                            onClick={() => void banMember(member.user.id, banReasonInput)}
+                          >
+                            Confirm Ban
+                          </button>
+                          <button
+                            className="rounded-lg px-3 py-1.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-subtle"
+                            onClick={() => setBanConfirmUserId(null)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {canManageRoleSettings && editingMemberRoleUserId === member.user.id && (
+                      <div className="card-surface ml-10 mt-2 rounded-xl border border-border-subtle bg-bg-primary/60 p-3 space-y-3">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                          Extra Access Roles (Member role is always included)
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          {assignableRoles.map((role) => {
+                            const checked = draftMemberRoleIds.includes(role.id);
+                            return (
+                              <label
+                                key={role.id}
+                                className="card-surface flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle/60 px-2.5 py-2 text-sm text-text-secondary"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() =>
+                                    setDraftMemberRoleIds((prev) => toggleRoleId(prev, role.id))
+                                  }
+                                  className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                                />
+                                <span
+                                  className="inline-block h-2.5 w-2.5 rounded-full"
+                                  style={{ backgroundColor: roleColorHex(role) }}
+                                />
+                                <span className="truncate">{role.name}</span>
+                              </label>
+                            );
+                          })}
+                          {assignableRoles.length === 0 && (
+                            <p className="text-sm text-text-muted">No assignable roles yet.</p>
+                          )}
+                        </div>
+                        <div className="settings-action-row">
+                          <button
+                            className="btn-primary"
+                            onClick={() => void saveMemberRoles(member.user.id)}
+                          >
+                            Save Roles
+                          </button>
+                          <button
+                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                            onClick={() => {
+                              setEditingMemberRoleUserId(null);
+                              setDraftMemberRoleIds([]);
+                            }}
                           >
                             Cancel
                           </button>
@@ -960,422 +1151,224 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                       </div>
                     )}
                   </div>
-                );
-              })}
-            </div>
-            {canManageRoleSettings && (
-              <div className="settings-action-row">
-                <input className="input-field flex-1" placeholder="New role name" value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} />
-                <input
-                  type="color"
-                  value={newRoleColor}
-                  onChange={(e) => setNewRoleColor(e.target.value)}
-                  className="h-10 w-10 cursor-pointer rounded-lg border border-border-subtle bg-transparent"
-                  title="Role color"
-                />
-                <button className="btn-primary" onClick={() => void createRole()}>Create Role</button>
+                ))}
+                {filteredMembers.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No members found.</p>}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          )}
 
-        {activeSection === 'members' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Members</h2>
-            <input type="text" placeholder="Search members" className="input-field" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
-            <div className="card-stack">
-              {filteredMembers.map((member) => (
-                <div key={member.user.id}>
-                  <div className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold" style={{ backgroundColor: 'var(--accent-primary)' }}>
-                      {member.user.username.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-sm block" style={{ color: 'var(--text-primary)' }}>
-                        {member.nick || member.user.username}
-                      </span>
-                      {member.nick && (
-                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          {member.user.username}
-                        </span>
-                      )}
-                    </div>
-                    <div className="ml-auto flex items-center gap-1">
-                      {member.roles && member.roles.length > 0 && (
-                        <div className="hidden sm:flex items-center gap-1 mr-2">
-                          {member.roles
-                            .filter((roleId) => roleId !== memberRoleId)
-                            .slice(0, 3)
-                            .map((roleId) => {
-                            const role = roles.find((r) => r.id === roleId);
-                            if (!role) return null;
-                            const rColor = roleColorHex(role);
-                            return (
-                              <span key={roleId} className="inline-flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-0.5 text-[11px] font-medium" style={{ color: rColor }}>
-                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: rColor }} />
-                                {role.name}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {canManageRoleSettings && (
-                        <button
-                          className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                          onClick={() => {
-                            if (editingMemberRoleUserId === member.user.id) {
-                              setEditingMemberRoleUserId(null);
-                              setDraftMemberRoleIds([]);
-                              return;
-                            }
-                            startEditingMemberRoles(member);
-                          }}
-                        >
-                          {editingMemberRoleUserId === member.user.id ? 'Close Roles' : 'Roles'}
-                        </button>
-                      )}
-                      <button className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary" onClick={() => void kickMember(member.user.id)}>Kick</button>
-                      <button
-                        className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15"
-                        onClick={() => {
-                          setBanConfirmUserId(member.user.id);
-                          setBanReasonInput('');
-                        }}
-                      >
-                        Ban
-                      </button>
-                    </div>
+          {activeSection === 'channels' && (
+            <ChannelManager
+              guildId={guildId}
+              channels={channels}
+              roles={roles}
+              canManageRoles={canManageRoleSettings}
+              onRefresh={refreshAll}
+            />
+          )}
+
+          {activeSection === 'invites' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Invites</h2>
+              <div className="settings-action-row">
+                <button className="btn-primary text-sm" onClick={() => void createInvite()}>
+                  Create Invite
+                </button>
+              </div>
+              <div className="overflow-hidden rounded-xl border border-border-subtle">
+                <div className="hidden items-center bg-bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-text-muted sm:flex">
+                  <span className="flex-1">Code</span>
+                  <span className="w-24">Uses</span>
+                  <span className="w-24">Expires</span>
+                  <span className="w-16"></span>
+                </div>
+                {invites.map((invite) => (
+                  <div key={invite.code} className="flex flex-col items-start gap-1.5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-2" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <span className="flex-1 font-semibold sm:font-normal" style={{ color: 'var(--text-primary)' }}>{invite.code}</span>
+                    <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Uses: {invite.uses}/{invite.max_uses || 'inf'}</span>
+                    <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Expires: {invite.max_age || 'never'}</span>
+                    <button
+                      className="inline-flex h-9 items-center justify-center rounded-lg border border-transparent px-3 text-sm font-semibold text-accent-danger transition-colors hover:border-accent-danger/35 hover:bg-accent-danger/12"
+                      onClick={() => void revokeInvite(invite.code)}
+                    >
+                      Revoke
+                    </button>
                   </div>
-                  {banConfirmUserId === member.user.id && (
-                    <div className="card-surface ml-10 mt-2 rounded-xl border border-accent-danger/30 bg-accent-danger/5 p-3 space-y-2">
-                      <p className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        Ban {member.user.username}?
-                      </p>
+                ))}
+                {invites.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-8">
+                    <Link size={24} style={{ color: 'var(--text-muted)' }} className="mb-2" />
+                    <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active invites.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'emojis' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Emojis</h2>
+              {!canManageEmojis && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                  You can view server emojis, but Manage Emojis permission is required to add, rename, or delete.
+                </div>
+              )}
+
+              {canManageEmojis && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                    <input
+                      className="input-field"
+                      placeholder="emoji_name"
+                      value={newEmojiName}
+                      maxLength={32}
+                      onChange={(e) => setNewEmojiName(e.target.value)}
+                    />
+                    <label className="inline-flex h-[2.9rem] cursor-pointer items-center justify-center rounded-lg border border-border-subtle bg-bg-primary/50 px-3.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary">
                       <input
-                        type="text"
-                        placeholder="Reason for ban (optional)"
-                        value={banReasonInput}
-                        onChange={(e) => setBanReasonInput(e.target.value)}
-                        className="input-field w-full"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') void banMember(member.user.id, banReasonInput);
-                          if (e.key === 'Escape') setBanConfirmUserId(null);
+                        type="file"
+                        accept="image/png,image/gif"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] ?? null;
+                          if (!file) {
+                            setNewEmojiFile(null);
+                            return;
+                          }
+                          if (file.type !== 'image/png' && file.type !== 'image/gif') {
+                            setError('Only PNG and GIF emoji files are supported.');
+                            e.currentTarget.value = '';
+                            return;
+                          }
+                          if (file.size > 256 * 1024) {
+                            setError('Emoji image must be 256 KB or less.');
+                            e.currentTarget.value = '';
+                            return;
+                          }
+                          setError(null);
+                          setNewEmojiFile(file);
                         }}
-                        autoFocus
                       />
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors"
-                          style={{ backgroundColor: 'var(--accent-danger)', color: '#fff' }}
-                          onClick={() => void banMember(member.user.id, banReasonInput)}
-                        >
-                          Confirm Ban
-                        </button>
-                        <button
-                          className="rounded-lg px-3 py-1.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-subtle"
-                          onClick={() => setBanConfirmUserId(null)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {canManageRoleSettings && editingMemberRoleUserId === member.user.id && (
-                    <div className="card-surface ml-10 mt-2 rounded-xl border border-border-subtle bg-bg-primary/60 p-3 space-y-3">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-                        Extra Access Roles (Member role is always included)
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {assignableRoles.map((role) => {
-                          const checked = draftMemberRoleIds.includes(role.id);
-                          return (
-                            <label
-                              key={role.id}
-                              className="card-surface flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle/60 px-2.5 py-2 text-sm text-text-secondary"
-                            >
+                      <span className="truncate">
+                        {newEmojiFile ? newEmojiFile.name : 'Select PNG/GIF (256 KB max)'}
+                      </span>
+                    </label>
+                    <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createEmoji()}>
+                      Upload
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs text-text-muted">
+                    Emoji names support letters, numbers, and underscores. Uploaded files are validated client and server side.
+                  </p>
+                </div>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {emojis
+                  .slice()
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((emoji) => {
+                    const editing = editingEmojiId === emoji.id;
+                    return (
+                      <div
+                        key={emoji.id}
+                        className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
+                      >
+                        <div className="flex items-start gap-3">
+                          <img
+                            src={buildGuildEmojiImageUrl(guildId, emoji.id)}
+                            alt={emoji.name}
+                            className="h-11 w-11 shrink-0 rounded-lg border border-border-subtle bg-bg-primary/50 object-contain p-1"
+                            loading="lazy"
+                          />
+                          <div className="min-w-0 flex-1">
+                            {editing ? (
                               <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  setDraftMemberRoleIds((prev) => toggleRoleId(prev, role.id))
-                                }
-                                className="h-4 w-4 rounded border-border-subtle accent-accent-primary"
+                                className="input-field"
+                                value={editingEmojiName}
+                                maxLength={32}
+                                onChange={(e) => setEditingEmojiName(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') void saveEmojiName(emoji.id);
+                                  if (e.key === 'Escape') {
+                                    setEditingEmojiId(null);
+                                    setEditingEmojiName('');
+                                  }
+                                }}
+                                autoFocus
                               />
-                              <span
-                                className="inline-block h-2.5 w-2.5 rounded-full"
-                                style={{ backgroundColor: roleColorHex(role) }}
-                              />
-                              <span className="truncate">{role.name}</span>
-                            </label>
-                          );
-                        })}
-                        {assignableRoles.length === 0 && (
-                          <p className="text-sm text-text-muted">No assignable roles yet.</p>
+                            ) : (
+                              <p className="truncate text-sm font-semibold text-text-primary">{emoji.name}</p>
+                            )}
+                            <p className="mt-1 truncate text-xs text-text-muted">
+                              &lt;{emoji.animated ? 'a' : ''}:{emoji.name}:{emoji.id}&gt;
+                            </p>
+                          </div>
+                        </div>
+                        {canManageEmojis && (
+                          <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
+                            {editing ? (
+                              <>
+                                <button className="btn-primary" onClick={() => void saveEmojiName(emoji.id)}>
+                                  Save
+                                </button>
+                                <button
+                                  className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                  onClick={() => {
+                                    setEditingEmojiId(null);
+                                    setEditingEmojiName('');
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                onClick={() => startEditingEmoji(emoji)}
+                              >
+                                Rename
+                              </button>
+                            )}
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
+                              onClick={() => void deleteEmoji(emoji.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         )}
                       </div>
-                      <div className="settings-action-row">
-                        <button
-                          className="btn-primary"
-                          onClick={() => void saveMemberRoles(member.user.id)}
-                        >
-                          Save Roles
-                        </button>
-                        <button
-                          className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                          onClick={() => {
-                            setEditingMemberRoleUserId(null);
-                            setDraftMemberRoleIds([]);
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {filteredMembers.length === 0 && <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No members found.</p>}
-            </div>
-          </div>
-        )}
-
-        {activeSection === 'channels' && (
-          <ChannelManager
-            guildId={guildId}
-            channels={channels}
-            roles={roles}
-            canManageRoles={canManageRoleSettings}
-            onRefresh={refreshAll}
-          />
-        )}
-
-        {activeSection === 'invites' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Invites</h2>
-            <div className="settings-action-row">
-              <button className="btn-primary text-sm" onClick={() => void createInvite()}>
-                Create Invite
-              </button>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-border-subtle">
-              <div className="hidden items-center bg-bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-text-muted sm:flex">
-                <span className="flex-1">Code</span>
-                <span className="w-24">Uses</span>
-                <span className="w-24">Expires</span>
-                <span className="w-16"></span>
+                    );
+                  })}
               </div>
-              {invites.map((invite) => (
-                <div key={invite.code} className="flex flex-col items-start gap-1.5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-2" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  <span className="flex-1 font-semibold sm:font-normal" style={{ color: 'var(--text-primary)' }}>{invite.code}</span>
-                  <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Uses: {invite.uses}/{invite.max_uses || 'inf'}</span>
-                  <span className="text-xs sm:w-24 sm:text-sm" style={{ color: 'var(--text-muted)' }}>Expires: {invite.max_age || 'never'}</span>
-                  <button
-                    className="inline-flex h-9 items-center justify-center rounded-lg border border-transparent px-3 text-sm font-semibold text-accent-danger transition-colors hover:border-accent-danger/35 hover:bg-accent-danger/12"
-                    onClick={() => void revokeInvite(invite.code)}
-                  >
-                    Revoke
-                  </button>
-                </div>
-              ))}
-              {invites.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-8">
-                  <Link size={24} style={{ color: 'var(--text-muted)' }} className="mb-2" />
-                  <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No active invites.</p>
+
+              {emojis.length === 0 && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                  <p className="text-sm text-text-muted">No custom emojis uploaded yet.</p>
                 </div>
               )}
             </div>
-          </div>
-        )}
+          )}
 
-        {activeSection === 'emojis' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Emojis</h2>
-            {!canManageEmojis && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
-                You can view server emojis, but Manage Emojis permission is required to add, rename, or delete.
-              </div>
-            )}
-
-            {canManageEmojis && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
-                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                  <input
-                    className="input-field"
-                    placeholder="emoji_name"
-                    value={newEmojiName}
-                    maxLength={32}
-                    onChange={(e) => setNewEmojiName(e.target.value)}
-                  />
-                  <label className="inline-flex h-[2.9rem] cursor-pointer items-center justify-center rounded-lg border border-border-subtle bg-bg-primary/50 px-3.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary">
-                    <input
-                      type="file"
-                      accept="image/png,image/gif"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0] ?? null;
-                        if (!file) {
-                          setNewEmojiFile(null);
-                          return;
-                        }
-                        if (file.type !== 'image/png' && file.type !== 'image/gif') {
-                          setError('Only PNG and GIF emoji files are supported.');
-                          e.currentTarget.value = '';
-                          return;
-                        }
-                        if (file.size > 256 * 1024) {
-                          setError('Emoji image must be 256 KB or less.');
-                          e.currentTarget.value = '';
-                          return;
-                        }
-                        setError(null);
-                        setNewEmojiFile(file);
-                      }}
-                    />
-                    <span className="truncate">
-                      {newEmojiFile ? newEmojiFile.name : 'Select PNG/GIF (256 KB max)'}
-                    </span>
-                  </label>
-                  <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createEmoji()}>
-                    Upload
-                  </button>
+          {activeSection === 'webhooks' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Webhooks</h2>
+              {!canManageWebhooks && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                  You need the Manage Webhooks permission to create, edit, or delete webhooks.
                 </div>
-                <p className="mt-3 text-xs text-text-muted">
-                  Emoji names support letters, numbers, and underscores. Uploaded files are validated client and server side.
-                </p>
-              </div>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              {emojis
-                .slice()
-                .sort((a, b) => a.name.localeCompare(b.name))
-                .map((emoji) => {
-                  const editing = editingEmojiId === emoji.id;
-                  return (
-                    <div
-                      key={emoji.id}
-                      className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
-                    >
-                      <div className="flex items-start gap-3">
-                        <img
-                          src={buildGuildEmojiImageUrl(guildId, emoji.id)}
-                          alt={emoji.name}
-                          className="h-11 w-11 shrink-0 rounded-lg border border-border-subtle bg-bg-primary/50 object-contain p-1"
-                          loading="lazy"
-                        />
-                        <div className="min-w-0 flex-1">
-                          {editing ? (
-                            <input
-                              className="input-field"
-                              value={editingEmojiName}
-                              maxLength={32}
-                              onChange={(e) => setEditingEmojiName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') void saveEmojiName(emoji.id);
-                                if (e.key === 'Escape') {
-                                  setEditingEmojiId(null);
-                                  setEditingEmojiName('');
-                                }
-                              }}
-                              autoFocus
-                            />
-                          ) : (
-                            <p className="truncate text-sm font-semibold text-text-primary">{emoji.name}</p>
-                          )}
-                          <p className="mt-1 truncate text-xs text-text-muted">
-                            &lt;{emoji.animated ? 'a' : ''}:{emoji.name}:{emoji.id}&gt;
-                          </p>
-                        </div>
-                      </div>
-                      {canManageEmojis && (
-                        <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
-                          {editing ? (
-                            <>
-                              <button className="btn-primary" onClick={() => void saveEmojiName(emoji.id)}>
-                                Save
-                              </button>
-                              <button
-                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                                onClick={() => {
-                                  setEditingEmojiId(null);
-                                  setEditingEmojiName('');
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                              onClick={() => startEditingEmoji(emoji)}
-                            >
-                              Rename
-                            </button>
-                          )}
-                          <button
-                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
-                            onClick={() => void deleteEmoji(emoji.id)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-            </div>
-
-            {emojis.length === 0 && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
-                <p className="text-sm text-text-muted">No custom emojis uploaded yet.</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {activeSection === 'webhooks' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Webhooks</h2>
-            {!canManageWebhooks && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
-                You need the Manage Webhooks permission to create, edit, or delete webhooks.
-              </div>
-            )}
-            {canManageWebhooks && (
-              <>
-                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
-                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Filter</div>
-                  <select
-                    className="select-field"
-                    value={webhookFilterChannelId}
-                    onChange={(e) => setWebhookFilterChannelId(e.target.value)}
-                  >
-                    <option value="all">All channels</option>
-                    {channels
-                      .filter((channel) => channel.type === 0 || channel.channel_type === 0)
-                      .sort((a, b) => a.position - b.position)
-                      .map((channel) => (
-                        <option key={channel.id} value={channel.id}>
-                          #{channel.name || 'unnamed'}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-
-                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
-                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem_auto]">
-                    <input
-                      className="input-field"
-                      placeholder="Webhook name"
-                      value={newWebhookName}
-                      maxLength={80}
-                      onChange={(e) => setNewWebhookName(e.target.value)}
-                    />
+              )}
+              {canManageWebhooks && (
+                <>
+                  <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                    <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">Filter</div>
                     <select
                       className="select-field"
-                      value={newWebhookChannelId}
-                      onChange={(e) => setNewWebhookChannelId(e.target.value)}
+                      value={webhookFilterChannelId}
+                      onChange={(e) => setWebhookFilterChannelId(e.target.value)}
                     >
+                      <option value="all">All channels</option>
                       {channels
                         .filter((channel) => channel.type === 0 || channel.channel_type === 0)
                         .sort((a, b) => a.position - b.position)
@@ -1385,338 +1378,374 @@ export function GuildSettings({ guildId, guildName, onClose }: GuildSettingsProp
                           </option>
                         ))}
                     </select>
-                    <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createWebhook()}>
-                      Create
-                    </button>
                   </div>
-                  <p className="mt-3 text-xs text-text-muted">
-                    Webhook execute URLs are shown only when the webhook is created in this session.
-                  </p>
-                </div>
-              </>
-            )}
 
-            <div className="card-stack">
-              {webhooks
-                .slice()
-                .sort((a, b) => a.created_at.localeCompare(b.created_at))
-                .map((webhook) => {
-                  const editing = editingWebhookId === webhook.id;
-                  const issuedToken = issuedWebhookTokens[webhook.id];
-                  const testMessage = webhookTestMessages[webhook.id] ?? '';
-                  const createdLabel = new Date(webhook.created_at).toLocaleString();
-                  return (
-                    <div
-                      key={webhook.id}
-                      className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3 sm:px-5 sm:py-4"
-                    >
-                      <div className="flex flex-col gap-3">
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          {editing ? (
-                            <input
-                              className="input-field min-w-[14rem] flex-1"
-                              value={editingWebhookName}
-                              maxLength={80}
-                              onChange={(e) => setEditingWebhookName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') void saveWebhookName(webhook.id);
-                                if (e.key === 'Escape') {
-                                  setEditingWebhookId(null);
-                                  setEditingWebhookName('');
-                                }
-                              }}
-                              autoFocus
-                            />
-                          ) : (
-                            <span className="text-sm font-semibold text-text-primary">{webhook.name}</span>
-                          )}
-                          <span className="rounded-lg border border-border-subtle px-2 py-1 text-[11px] font-semibold text-text-secondary">
-                            #{channelNameById.get(webhook.channel_id) || 'unknown'}
-                          </span>
-                          <span className="text-xs text-text-muted">Created {createdLabel}</span>
-                        </div>
+                  <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_13rem_auto]">
+                      <input
+                        className="input-field"
+                        placeholder="Webhook name"
+                        value={newWebhookName}
+                        maxLength={80}
+                        onChange={(e) => setNewWebhookName(e.target.value)}
+                      />
+                      <select
+                        className="select-field"
+                        value={newWebhookChannelId}
+                        onChange={(e) => setNewWebhookChannelId(e.target.value)}
+                      >
+                        {channels
+                          .filter((channel) => channel.type === 0 || channel.channel_type === 0)
+                          .sort((a, b) => a.position - b.position)
+                          .map((channel) => (
+                            <option key={channel.id} value={channel.id}>
+                              #{channel.name || 'unnamed'}
+                            </option>
+                          ))}
+                      </select>
+                      <button className="btn-primary h-[2.9rem] min-w-[8rem]" onClick={() => void createWebhook()}>
+                        Create
+                      </button>
+                    </div>
+                    <p className="mt-3 text-xs text-text-muted">
+                      Webhook execute URLs are shown only when the webhook is created in this session.
+                    </p>
+                  </div>
+                </>
+              )}
 
-                        <div className="rounded-lg border border-border-subtle bg-bg-primary/55 px-3 py-2 text-xs">
-                          {issuedToken ? (
-                            <div className="flex flex-wrap items-center gap-2.5">
-                              <span className="font-mono text-text-secondary">
-                                {buildWebhookExecuteUrl(webhook.id, issuedToken)}
-                              </span>
-                              <button
-                                className="rounded-lg border border-border-subtle px-2.5 py-1 font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                                onClick={() => void copyWebhookUrl(webhook.id)}
-                              >
-                                {copiedWebhookId === webhook.id ? 'Copied' : 'Copy URL'}
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-text-muted">
-                              Token not displayed. Create a new webhook to capture its execute URL.
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          {editing ? (
-                            <>
-                              <button className="btn-primary" onClick={() => void saveWebhookName(webhook.id)}>
-                                Save
-                              </button>
-                              <button
-                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                                onClick={() => {
-                                  setEditingWebhookId(null);
-                                  setEditingWebhookName('');
-                                }}
-                              >
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
-                              onClick={() => startEditingWebhook(webhook)}
-                            >
-                              Rename
-                            </button>
-                          )}
-                          <button
-                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary disabled:opacity-60"
-                            onClick={() => void inspectWebhook(webhook.id)}
-                            disabled={webhookInspectingId === webhook.id}
-                          >
-                            {webhookInspectingId === webhook.id ? 'Refreshing...' : 'Refresh'}
-                          </button>
-                          <button
-                            className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
-                            onClick={() => void deleteWebhook(webhook.id)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-
-                        {issuedToken && (
-                          <div className="rounded-lg border border-border-subtle bg-bg-primary/45 px-3 py-2.5">
-                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-                              Test Execute
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2">
+              <div className="card-stack">
+                {webhooks
+                  .slice()
+                  .sort((a, b) => a.created_at.localeCompare(b.created_at))
+                  .map((webhook) => {
+                    const editing = editingWebhookId === webhook.id;
+                    const issuedToken = issuedWebhookTokens[webhook.id];
+                    const testMessage = webhookTestMessages[webhook.id] ?? '';
+                    const createdLabel = new Date(webhook.created_at).toLocaleString();
+                    return (
+                      <div
+                        key={webhook.id}
+                        className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3 sm:px-5 sm:py-4"
+                      >
+                        <div className="flex flex-col gap-3">
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            {editing ? (
                               <input
                                 className="input-field min-w-[14rem] flex-1"
-                                placeholder="Send a test webhook message"
-                                value={testMessage}
-                                maxLength={2000}
-                                onChange={(e) =>
-                                  setWebhookTestMessages((prev) => ({ ...prev, [webhook.id]: e.target.value }))
-                                }
+                                value={editingWebhookName}
+                                maxLength={80}
+                                onChange={(e) => setEditingWebhookName(e.target.value)}
                                 onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    void executeWebhookTest(webhook.id);
+                                  if (e.key === 'Enter') void saveWebhookName(webhook.id);
+                                  if (e.key === 'Escape') {
+                                    setEditingWebhookId(null);
+                                    setEditingWebhookName('');
                                   }
                                 }}
+                                autoFocus
                               />
-                              <button
-                                className="btn-primary"
-                                onClick={() => void executeWebhookTest(webhook.id)}
-                                disabled={webhookExecutingId === webhook.id || !testMessage.trim()}
-                              >
-                                {webhookExecutingId === webhook.id ? 'Sending...' : 'Send Test'}
-                              </button>
-                            </div>
+                            ) : (
+                              <span className="text-sm font-semibold text-text-primary">{webhook.name}</span>
+                            )}
+                            <span className="rounded-lg border border-border-subtle px-2 py-1 text-[11px] font-semibold text-text-secondary">
+                              #{channelNameById.get(webhook.channel_id) || 'unknown'}
+                            </span>
+                            <span className="text-xs text-text-muted">Created {createdLabel}</span>
                           </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
 
-              {webhooks.length === 0 && (
-                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
-                  <p className="text-sm text-text-muted">No webhooks configured.</p>
+                          <div className="rounded-lg border border-border-subtle bg-bg-primary/55 px-3 py-2 text-xs">
+                            {issuedToken ? (
+                              <div className="flex flex-wrap items-center gap-2.5">
+                                <span className="font-mono text-text-secondary">
+                                  {buildWebhookExecuteUrl(webhook.id, issuedToken)}
+                                </span>
+                                <button
+                                  className="rounded-lg border border-border-subtle px-2.5 py-1 font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                  onClick={() => void copyWebhookUrl(webhook.id)}
+                                >
+                                  {copiedWebhookId === webhook.id ? 'Copied' : 'Copy URL'}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-text-muted">
+                                Token not displayed. Create a new webhook to capture its execute URL.
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            {editing ? (
+                              <>
+                                <button className="btn-primary" onClick={() => void saveWebhookName(webhook.id)}>
+                                  Save
+                                </button>
+                                <button
+                                  className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                  onClick={() => {
+                                    setEditingWebhookId(null);
+                                    setEditingWebhookName('');
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+                                onClick={() => startEditingWebhook(webhook)}
+                              >
+                                Rename
+                              </button>
+                            )}
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary disabled:opacity-60"
+                              onClick={() => void inspectWebhook(webhook.id)}
+                              disabled={webhookInspectingId === webhook.id}
+                            >
+                              {webhookInspectingId === webhook.id ? 'Refreshing...' : 'Refresh'}
+                            </button>
+                            <button
+                              className="rounded-lg px-3.5 py-2 text-sm font-semibold text-accent-danger transition-colors hover:bg-accent-danger/12"
+                              onClick={() => void deleteWebhook(webhook.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+
+                          {issuedToken && (
+                            <div className="rounded-lg border border-border-subtle bg-bg-primary/45 px-3 py-2.5">
+                              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                                Test Execute
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  className="input-field min-w-[14rem] flex-1"
+                                  placeholder="Send a test webhook message"
+                                  value={testMessage}
+                                  maxLength={2000}
+                                  onChange={(e) =>
+                                    setWebhookTestMessages((prev) => ({ ...prev, [webhook.id]: e.target.value }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                      e.preventDefault();
+                                      void executeWebhookTest(webhook.id);
+                                    }
+                                  }}
+                                />
+                                <button
+                                  className="btn-primary"
+                                  onClick={() => void executeWebhookTest(webhook.id)}
+                                  disabled={webhookExecutingId === webhook.id || !testMessage.trim()}
+                                >
+                                  {webhookExecutingId === webhook.id ? 'Sending...' : 'Send Test'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                {webhooks.length === 0 && (
+                  <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                    <p className="text-sm text-text-muted">No webhooks configured.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeSection === 'bots' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Bots</h2>
+              {!canManageRoleSettings && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
+                  You need Manage Server permission to add or remove bots.
                 </div>
               )}
-            </div>
-          </div>
-        )}
+              {canManageRoleSettings && (
+                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
+                  <div className="space-y-3.5">
+                    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                      <select
+                        className="select-field"
+                        value={selectedOwnBotId}
+                        onChange={(e) => setSelectedOwnBotId(e.target.value)}
+                      >
+                        {userBotApps.length === 0 && (
+                          <option value="">No developer apps found</option>
+                        )}
+                        {userBotApps.map((app) => (
+                          <option key={app.id} value={app.id}>
+                            {app.name} ({app.id})
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="btn-primary h-[2.9rem] min-w-[8rem]"
+                        onClick={() => {
+                          if (!selectedOwnBotId) return;
+                          void runAction(async () => {
+                            await botApi.addBotToGuild(guildId, { application_id: selectedOwnBotId });
+                            await refreshAll();
+                          }, 'Failed to add bot');
+                        }}
+                        disabled={!selectedOwnBotId}
+                      >
+                        Add Owned Bot
+                      </button>
+                    </div>
 
-        {activeSection === 'bots' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Bots</h2>
-            {!canManageRoleSettings && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-3 text-sm text-text-secondary">
-                You need Manage Server permission to add or remove bots.
-              </div>
-            )}
-            {canManageRoleSettings && (
-              <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/65 p-4 sm:p-5">
-                <div className="space-y-3.5">
-                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-                    <select
-                      className="select-field"
-                      value={selectedOwnBotId}
-                      onChange={(e) => setSelectedOwnBotId(e.target.value)}
-                    >
-                      {userBotApps.length === 0 && (
-                        <option value="">No developer apps found</option>
-                      )}
-                      {userBotApps.map((app) => (
-                        <option key={app.id} value={app.id}>
-                          {app.name} ({app.id})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      className="btn-primary h-[2.9rem] min-w-[8rem]"
-                      onClick={() => {
-                        if (!selectedOwnBotId) return;
-                        void runAction(async () => {
-                          await botApi.addBotToGuild(guildId, { application_id: selectedOwnBotId });
-                          await refreshAll();
-                        }, 'Failed to add bot');
-                      }}
-                      disabled={!selectedOwnBotId}
-                    >
-                      Add Owned Bot
-                    </button>
-                  </div>
-
-                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-                    <input
-                      className="input-field"
-                      placeholder="Third-party Bot Application ID"
-                      value={addBotId}
-                      onChange={(e) => setAddBotId(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && addBotId.trim()) {
+                    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                      <input
+                        className="input-field"
+                        placeholder="Third-party Bot Application ID"
+                        value={addBotId}
+                        onChange={(e) => setAddBotId(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && addBotId.trim()) {
+                            void runAction(async () => {
+                              await botApi.addBotToGuild(guildId, { application_id: addBotId.trim() });
+                              setAddBotId('');
+                              await refreshAll();
+                            }, 'Failed to add bot');
+                          }
+                        }}
+                      />
+                      <button
+                        className="btn-primary h-[2.9rem] min-w-[8rem]"
+                        onClick={() => {
+                          if (!addBotId.trim()) return;
                           void runAction(async () => {
                             await botApi.addBotToGuild(guildId, { application_id: addBotId.trim() });
                             setAddBotId('');
                             await refreshAll();
                           }, 'Failed to add bot');
-                        }
-                      }}
-                    />
-                    <button
-                      className="btn-primary h-[2.9rem] min-w-[8rem]"
-                      onClick={() => {
-                        if (!addBotId.trim()) return;
-                        void runAction(async () => {
-                          await botApi.addBotToGuild(guildId, { application_id: addBotId.trim() });
-                          setAddBotId('');
-                          await refreshAll();
-                        }, 'Failed to add bot');
-                      }}
-                    >
-                      Add by ID
-                    </button>
+                        }}
+                      >
+                        Add by ID
+                      </button>
+                    </div>
                   </div>
+                  <p className="mt-3 text-xs text-text-muted">
+                    Add your own apps quickly from the dropdown, or paste a third-party application ID.
+                  </p>
                 </div>
-                <p className="mt-3 text-xs text-text-muted">
-                  Add your own apps quickly from the dropdown, or paste a third-party application ID.
-                </p>
+              )}
+
+              <div className="card-stack">
+                {guildBots.map((entry) => (
+                  <div
+                    key={entry.application.id}
+                    className="card-surface flex flex-wrap items-center gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-primary/15 text-accent-primary">
+                      <Bot size={18} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-text-primary">{entry.application.name}</p>
+                      {entry.application.description && (
+                        <p className="text-xs text-text-muted">{entry.application.description}</p>
+                      )}
+                      <p className="mt-0.5 text-xs text-text-muted">
+                        Added {new Date(entry.install.created_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    {canManageRoleSettings && (
+                      <button
+                        className="rounded-lg px-3 py-1.5 text-sm font-semibold text-accent-danger hover:bg-accent-danger/12"
+                        onClick={() => {
+                          void runAction(async () => {
+                            await botApi.removeBotFromGuild(guildId, entry.application.id);
+                            await refreshAll();
+                          }, 'Failed to remove bot');
+                        }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {guildBots.length === 0 && (
+                  <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
+                    <Bot size={36} className="mx-auto mb-2 text-text-muted" />
+                    <p className="text-sm text-text-muted">No bots installed in this server.</p>
+                  </div>
+                )}
               </div>
-            )}
-
-            <div className="card-stack">
-              {guildBots.map((entry) => (
-                <div
-                  key={entry.application.id}
-                  className="card-surface flex flex-wrap items-center gap-3 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-3.5"
-                >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-primary/15 text-accent-primary">
-                    <Bot size={18} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-text-primary">{entry.application.name}</p>
-                    {entry.application.description && (
-                      <p className="text-xs text-text-muted">{entry.application.description}</p>
-                    )}
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      Added {new Date(entry.install.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  {canManageRoleSettings && (
-                    <button
-                      className="rounded-lg px-3 py-1.5 text-sm font-semibold text-accent-danger hover:bg-accent-danger/12"
-                      onClick={() => {
-                        void runAction(async () => {
-                          await botApi.removeBotFromGuild(guildId, entry.application.id);
-                          await refreshAll();
-                        }, 'Failed to remove bot');
-                      }}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              ))}
-              {guildBots.length === 0 && (
-                <div className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-4 py-8 text-center">
-                  <Bot size={36} className="mx-auto mb-2 text-text-muted" />
-                  <p className="text-sm text-text-muted">No bots installed in this server.</p>
-                </div>
-              )}
             </div>
-          </div>
-        )}
+          )}
 
-        {activeSection === 'bans' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Bans</h2>
-            <div className="card-stack">
-              {bans.map((ban) => (
-                <div key={ban.user.id} className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
-                  <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0" style={{ backgroundColor: 'var(--accent-danger)' }}>
-                    {ban.user.username.charAt(0).toUpperCase()}
+          {activeSection === 'bot-store' && (
+            <BotStoreSection guildId={guildId} canManage={canManageRoleSettings} />
+          )}
+
+          {activeSection === 'file-storage' && (
+            <FileStorageSection
+              guildId={guildId}
+              canManage={canManageRoleSettings}
+            />
+          )}
+
+          {activeSection === 'bans' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Bans</h2>
+              <div className="card-stack">
+                {bans.map((ban) => (
+                  <div key={ban.user.id} className="card-surface flex flex-wrap items-center gap-2.5 rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0" style={{ backgroundColor: 'var(--accent-danger)' }}>
+                      {ban.user.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm block" style={{ color: 'var(--text-primary)' }}>{ban.user.username}</span>
+                      {ban.reason && (
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Reason: {ban.reason}</span>
+                      )}
+                    </div>
+                    <button className="rounded-lg px-3 py-1.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary" onClick={() => void unban(ban.user.id)}>Unban</button>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm block" style={{ color: 'var(--text-primary)' }}>{ban.user.username}</span>
-                    {ban.reason && (
-                      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Reason: {ban.reason}</span>
-                    )}
+                ))}
+                {bans.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-8">
+                    <Gavel size={36} style={{ color: 'var(--text-muted)' }} className="mb-2" />
+                    <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No banned users.</p>
                   </div>
-                  <button className="rounded-lg px-3 py-1.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary" onClick={() => void unban(ban.user.id)}>Unban</button>
-                </div>
-              ))}
-              {bans.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-8">
-                  <Gavel size={36} style={{ color: 'var(--text-muted)' }} className="mb-2" />
-                  <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No banned users.</p>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {activeSection === 'events' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-0 max-sm:!p-0">
-            <EventList guildId={guildId} />
-          </div>
-        )}
-
-        {activeSection === 'audit-log' && (
-          <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
-            <h2 className="settings-section-title !mb-0">Audit Log</h2>
-            <div className="card-stack">
-              {auditEntries.map((entry) => (
-                <div key={entry.id} className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
-                  <div className="text-sm" style={{ color: 'var(--text-primary)' }}>Action {entry.action_type} on {entry.target_id || 'n/a'}</div>
-                  <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                    by {entry.user_id} at {new Date(entry.created_at).toLocaleString()}
-                  </div>
-                  {entry.reason && <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Reason: {entry.reason}</div>}
-                </div>
-              ))}
-              {auditEntries.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-8">
-                  <ScrollText size={36} style={{ color: 'var(--text-muted)' }} className="mb-2" />
-                  <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No audit log entries.</p>
-                </div>
-              )}
+          {activeSection === 'events' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-0 max-sm:!p-0">
+              <EventList guildId={guildId} />
             </div>
-          </div>
-        )}
+          )}
+
+          {activeSection === 'audit-log' && (
+            <div className="settings-surface-card min-h-[calc(100dvh-13.5rem)] !p-8 max-sm:!p-6 card-stack">
+              <h2 className="settings-section-title !mb-0">Audit Log</h2>
+              <div className="card-stack">
+                {auditEntries.map((entry) => (
+                  <div key={entry.id} className="card-surface rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-3.5 py-3">
+                    <div className="text-sm" style={{ color: 'var(--text-primary)' }}>Action {entry.action_type} on {entry.target_id || 'n/a'}</div>
+                    <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+                      by {entry.user_id} at {new Date(entry.created_at).toLocaleString()}
+                    </div>
+                    {entry.reason && <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>Reason: {entry.reason}</div>}
+                  </div>
+                ))}
+                {auditEntries.length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-8">
+                    <ScrollText size={36} style={{ color: 'var(--text-muted)' }} className="mb-2" />
+                    <p className="text-sm" style={{ color: 'var(--text-muted)' }}>No audit log entries.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

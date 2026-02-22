@@ -79,14 +79,8 @@ export function Sidebar() {
     selectGuild(guild.id);
     await useChannelStore.getState().selectGuild(guild.id);
     await useChannelStore.getState().fetchChannels(guild.id);
-    const channels = useChannelStore.getState().channelsByGuild[guild.id] || [];
-    const firstChannel = channels.find(c => c.type === 0) || channels.find(c => c.type !== 4) || channels[0];
-    if (firstChannel) {
-      useChannelStore.getState().selectChannel(firstChannel.id);
-      navigate(`/app/guilds/${guild.id}/channels/${firstChannel.id}`);
-    } else {
-      navigate(`/app/guilds/${guild.id}/settings`);
-    }
+    // Route to the new Server Hub layout instead of auto-selecting the first text channel
+    navigate(`/app/guilds/${guild.id}`);
   };
 
   const handleContextMenu = (e: React.MouseEvent, guildId: string) => {
@@ -182,7 +176,7 @@ export function Sidebar() {
           aria-label="Server dock"
           aria-expanded={dockExpanded}
           className={cn(
-            'dock-surface relative z-30 flex h-full max-h-[780px] flex-col items-center gap-3 px-1.5 py-3 transition-[width,transform] duration-200',
+            'dock-surface relative z-30 flex h-full max-h-[780px] flex-col items-center gap-4 px-2 py-4 transition-[width,transform] duration-200',
             dockExpanded ? 'w-[60px]' : 'w-[18px] translate-x-1'
           )}
         >
@@ -191,97 +185,97 @@ export function Sidebar() {
           )}
           {dockExpanded && (
             <>
-          {/* Home Button */}
-          <Tooltip side="right" content="Home">
-            <button
-              onClick={() => {
-                selectGuild(null);
-                useChannelStore.getState().selectGuild(null);
-                navigate('/app');
-              }}
-              className={cn(
-                'group flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-all duration-200',
-                isHome
-                  ? 'bg-accent-primary text-white shadow-[0_10px_24px_rgba(var(--accent-primary-rgb),0.35)]'
-                  : 'bg-white/10 text-white/75 hover:-translate-y-0.5 hover:bg-white/20 hover:text-white'
-              )}
-            >
-              <Home size={20} className={cn('transition-transform duration-200', isHome ? 'scale-100' : 'group-hover:scale-105')} />
-            </button>
-          </Tooltip>
-
-          <div className="h-px w-6 shrink-0 bg-white/20" />
-
-          {/* Guild List */}
-          <div className="flex w-full flex-1 flex-col items-center gap-2 overflow-x-visible overflow-y-auto pb-1 pt-1.5 scrollbar-none">
-            {serverGroups ? (
-              // Multi-server: group guilds under server labels
-              serverGroups.map((group, gi) => (
-                <div key={group.url} className="flex w-full flex-col items-center gap-2">
-                  {gi > 0 && <div className="h-px w-6 shrink-0 bg-white/15" />}
-                  <Tooltip side="right" content={group.label}>
-                    <div className="w-10 truncate text-center text-[9px] font-bold uppercase tracking-wider text-white/40">
-                      {group.label}
-                    </div>
-                  </Tooltip>
-                  {group.guilds.map((guild) => renderGuildIcon(guild))}
-                </div>
-              ))
-            ) : (
-              // Single server: flat list
-              guilds.map((guild) => renderGuildIcon(guild))
-            )}
-
-            <div className="mt-auto flex flex-col items-center gap-2 pt-1">
-              {/* Multi-server count indicator */}
-              {serverGroups && serverGroups.length > 1 && (
-                <Tooltip side="right" content={`Connected to ${serverGroups.length} servers`}>
-                  <div className="flex items-center justify-center rounded-lg bg-white/8 px-2 py-1">
-                    <span className="text-[9px] font-bold uppercase tracking-wider text-white/50">
-                      {serverGroups.length} srv
-                    </span>
-                  </div>
-                </Tooltip>
-              )}
-
-              <Tooltip side="right" content="Add a Server">
+              {/* Home Button */}
+              <Tooltip side="right" content="Home">
                 <button
-                  onClick={() => setShowCreateModal(true)}
-                  className="group flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-dashed border-white/35 bg-white/5 text-white/75 transition-all duration-200 hover:-translate-y-0.5 hover:border-white hover:bg-white/20 hover:text-white"
-                >
-                  <Plus size={19} className="transition-transform duration-200 group-hover:rotate-90" />
-                </button>
-              </Tooltip>
-
-              <Tooltip side="right" content="User Settings">
-                <button
-                  onClick={() => navigate('/app/settings')}
-                  className="group relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/10 transition-all duration-200 hover:-translate-y-0.5 hover:bg-white"
-                >
-                  {user?.username ? (
-                    <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-accent-primary to-accent-primary-hover text-sm font-bold text-white">
-                      {user.username.charAt(0).toUpperCase()}
-                    </div>
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-bg-mod-strong text-sm font-bold text-text-muted">U</div>
-                  )}
-                </button>
-              </Tooltip>
-
-              <Tooltip side="right" content={dockPinned ? 'Unpin server dock (hover to reveal)' : 'Pin server dock'}>
-                <button
-                  onClick={toggleDockPinned}
+                  onClick={() => {
+                    selectGuild(null);
+                    useChannelStore.getState().selectGuild(null);
+                    navigate('/app');
+                  }}
                   className={cn(
-                    'mt-1 flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-white/45 transition-all duration-200 hover:bg-white/12 hover:text-white/85',
-                    dockPinned && 'bg-white/12 text-white/80'
+                    'group flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl transition-all duration-200',
+                    isHome
+                      ? 'bg-accent-primary text-white shadow-[0_10px_24px_rgba(var(--accent-primary-rgb),0.35)]'
+                      : 'bg-white/10 text-white/75 hover:-translate-y-0.5 hover:bg-white/20 hover:text-white'
                   )}
                 >
-                  {dockPinned ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+                  <Home size={20} className={cn('transition-transform duration-200', isHome ? 'scale-100' : 'group-hover:scale-105')} />
                 </button>
               </Tooltip>
-            </div>
-          </div>
-          </>
+
+              <div className="h-px w-6 shrink-0 bg-white/20" />
+
+              {/* Guild List */}
+              <div className="flex w-full flex-1 flex-col items-center gap-2 overflow-x-visible overflow-y-auto pb-1 pt-1.5 scrollbar-none">
+                {serverGroups ? (
+                  // Multi-server: group guilds under server labels
+                  serverGroups.map((group, gi) => (
+                    <div key={group.url} className="flex w-full flex-col items-center gap-2">
+                      {gi > 0 && <div className="h-px w-6 shrink-0 bg-white/15" />}
+                      <Tooltip side="right" content={group.label}>
+                        <div className="w-10 truncate text-center text-[9px] font-bold uppercase tracking-wider text-white/40">
+                          {group.label}
+                        </div>
+                      </Tooltip>
+                      {group.guilds.map((guild) => renderGuildIcon(guild))}
+                    </div>
+                  ))
+                ) : (
+                  // Single server: flat list
+                  guilds.map((guild) => renderGuildIcon(guild))
+                )}
+
+                <div className="mt-auto flex flex-col items-center gap-2 pt-1">
+                  {/* Multi-server count indicator */}
+                  {serverGroups && serverGroups.length > 1 && (
+                    <Tooltip side="right" content={`Connected to ${serverGroups.length} servers`}>
+                      <div className="flex items-center justify-center rounded-lg bg-white/8 px-2 py-1">
+                        <span className="text-[9px] font-bold uppercase tracking-wider text-white/50">
+                          {serverGroups.length} srv
+                        </span>
+                      </div>
+                    </Tooltip>
+                  )}
+
+                  <Tooltip side="right" content="Add a Server">
+                    <button
+                      onClick={() => setShowCreateModal(true)}
+                      className="group flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-dashed border-white/35 bg-white/5 text-white/75 transition-all duration-200 hover:-translate-y-0.5 hover:border-white hover:bg-white/20 hover:text-white"
+                    >
+                      <Plus size={19} className="transition-transform duration-200 group-hover:rotate-90" />
+                    </button>
+                  </Tooltip>
+
+                  <Tooltip side="right" content="User Settings">
+                    <button
+                      onClick={() => useUIStore.getState().setUserSettingsOpen(true)}
+                      className="group relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white/10 transition-all duration-200 hover:-translate-y-0.5 hover:bg-white"
+                    >
+                      {user?.username ? (
+                        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-accent-primary to-accent-primary-hover text-sm font-bold text-white">
+                          {user.username.charAt(0).toUpperCase()}
+                        </div>
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-bg-mod-strong text-sm font-bold text-text-muted">U</div>
+                      )}
+                    </button>
+                  </Tooltip>
+
+                  <Tooltip side="right" content={dockPinned ? 'Unpin server dock (hover to reveal)' : 'Pin server dock'}>
+                    <button
+                      onClick={toggleDockPinned}
+                      className={cn(
+                        'mt-1 flex h-7 w-7 items-center justify-center rounded-lg border border-transparent text-white/45 transition-all duration-200 hover:bg-white/12 hover:text-white/85',
+                        dockPinned && 'bg-white/12 text-white/80'
+                      )}
+                    >
+                      {dockPinned ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+                    </button>
+                  </Tooltip>
+                </div>
+              </div>
+            </>
           )}
         </nav>
       </div>

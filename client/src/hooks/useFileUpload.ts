@@ -26,11 +26,11 @@ export function useFileUpload(channelId: string | null) {
 
       setState({ uploading: true, progress: 0, error: null });
       try {
-        const { data } = await fileApi.upload(channelId, file, (percent) => {
+        const result = await fileApi.upload(channelId, file, (percent) => {
           setState((s) => ({ ...s, progress: percent }));
         });
         setState({ uploading: false, progress: 100, error: null });
-        return data;
+        return result;
       } catch {
         setState({ uploading: false, progress: 0, error: 'Upload failed' });
         return null;

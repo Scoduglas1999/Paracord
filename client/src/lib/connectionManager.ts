@@ -10,6 +10,7 @@ import {
 } from './accountSession';
 import { setAccessToken } from './authToken';
 import { getCurrentOriginServerUrl, getStoredServerUrl } from './apiBaseUrl';
+import { inflateSync } from 'fflate';
 import type { Activity, GatewayPayload } from '../types';
 import { GatewayEvents } from '../gateway/events';
 import { dispatchGatewayEvent } from '../gateway/dispatch';
@@ -46,6 +47,9 @@ class ConnectionManager {
   private readonly useRealtimeV2 =
     import.meta.env.VITE_RT_V2 !== '0' && import.meta.env.VITE_RT_V2 !== 'false';
   private offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  /** Timer for automatic recovery when the gateway lands in 'disconnected'. */
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryAttempts = 0;
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -72,21 +76,15 @@ class ConnectionManager {
   /** Keep the global status bar aligned with aggregate per-server socket state. */
   private syncUiConnectionStatus(): void {
     const all = Array.from(this.connections.values());
-    if (all.length === 0) {
-      useUIStore.getState().setConnectionStatus('disconnected');
-      return;
-    }
-    if (this.offline) {
-      useUIStore.getState().setConnectionStatus('disconnected');
-      return;
-    }
 
-    if (all.some((conn) => conn.connected)) {
-      useUIStore.getState().setConnectionStatus('connected');
-      return;
-    }
+    type Status = 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
+    let status: Status = 'disconnected';
 
-    if (
+    if (all.length === 0 || this.offline) {
+      status = 'disconnected';
+    } else if (all.some((conn) => conn.connected)) {
+      status = 'connected';
+    } else if (
       all.some(
         (conn) =>
           conn.ws?.readyState === WebSocket.CONNECTING ||
@@ -94,16 +92,34 @@ class ConnectionManager {
           conn.eventSource !== null
       )
     ) {
-      useUIStore.getState().setConnectionStatus('connecting');
-      return;
+      status = 'connecting';
+    } else if (all.some((conn) => conn.reconnectTimer !== null)) {
+      status = 'reconnecting';
     }
 
-    if (all.some((conn) => conn.reconnectTimer !== null)) {
-      useUIStore.getState().setConnectionStatus('reconnecting');
-      return;
-    }
+    useUIStore.getState().setConnectionStatus(status);
 
-    useUIStore.getState().setConnectionStatus('disconnected');
+    // Auto-recovery: when we land on 'disconnected' but servers should be
+    // connected, schedule a `connectAll()` with exponential back-off so the
+    // gateway doesn't stay permanently dead after e.g. a token refresh failure.
+    if (status === 'connected') {
+      this.recoveryAttempts = 0;
+      if (this.recoveryTimer) {
+        clearTimeout(this.recoveryTimer);
+        this.recoveryTimer = null;
+      }
+    } else if (status === 'disconnected' && !this.offline && !this.recoveryTimer) {
+      const servers = useServerListStore.getState().servers;
+      const localToken = useAuthStore.getState().token;
+      if (servers.length > 0 || localToken) {
+        const delay = Math.min(5000 * Math.pow(2, this.recoveryAttempts), 60_000);
+        this.recoveryAttempts++;
+        this.recoveryTimer = setTimeout(() => {
+          this.recoveryTimer = null;
+          void this.connectAll();
+        }, delay);
+      }
+    }
   }
 
   /** Get or create a connection for a server */
@@ -387,6 +403,12 @@ class ConnectionManager {
         conn.ws.close();
         conn.ws = null;
       }
+      // Close stale EventSource before opening a new one to avoid
+      // overlapping SSE connections (which can cause ERR_CONNECTION_RESET).
+      if (conn.eventSource) {
+        conn.eventSource.close();
+        conn.eventSource = null;
+      }
       this.connectRealtimeSse(conn);
       return;
     }
@@ -521,10 +543,11 @@ class ConnectionManager {
     }
 
     const wsBase = conn.serverUrl.replace(/\/+$/, '').replace(/^http/, 'ws');
-    const wsUrl = `${wsBase}/gateway`;
+    const wsUrl = `${wsBase}/gateway?compress=zlib-stream`;
 
     conn.connecting = true;
     conn.ws = new WebSocket(wsUrl);
+    conn.ws.binaryType = 'arraybuffer';
     this.syncUiConnectionStatus();
     conn.allowReconnect = true;
     const activeWs = conn.ws;
@@ -549,7 +572,25 @@ class ConnectionManager {
     activeWs.onmessage = (event) => {
       if (!this.isCurrentConnection(conn) || conn.ws !== activeWs) return;
       try {
-        const payload: GatewayPayload = JSON.parse(event.data);
+        let text: string;
+        if (event.data instanceof ArrayBuffer) {
+          // Compressed binary frame — strip Z_SYNC_FLUSH suffix and inflate
+          const raw = new Uint8Array(event.data);
+          // Strip trailing 0x00 0x00 0xFF 0xFF (Z_SYNC_FLUSH marker)
+          const end = raw.length >= 4
+            && raw[raw.length - 4] === 0x00
+            && raw[raw.length - 3] === 0x00
+            && raw[raw.length - 2] === 0xFF
+            && raw[raw.length - 1] === 0xFF
+            ? raw.length - 4
+            : raw.length;
+          const decompressed = inflateSync(raw.subarray(0, end));
+          text = new TextDecoder().decode(decompressed);
+        } else {
+          // Uncompressed text frame (fallback)
+          text = event.data;
+        }
+        const payload: GatewayPayload = JSON.parse(text);
         this.handlePayload(conn, payload);
       } catch {
         /* ignore malformed payloads */
@@ -785,14 +826,29 @@ class ConnectionManager {
       this.syncUiConnectionStatus();
       return;
     }
-    const delay = Math.min(1000 * Math.pow(2, Math.min(conn.reconnectAttempts, 5)), 30000);
+    // First retry is immediate (0ms) so intermittent TLS/SSE resets
+    // are invisible to the user.  Subsequent retries use exponential
+    // backoff starting at 1s up to 30s.
+    const attempt = conn.reconnectAttempts;
     conn.reconnectAttempts++;
-    conn.reconnectTimer = setTimeout(() => {
-      conn.reconnectTimer = null;
-      if (!conn.allowReconnect) return;
-      if (!this.isCurrentConnection(conn)) return;
-      this.connectRealtime(conn);
-    }, delay);
+    if (attempt === 0) {
+      // Immediate retry — use setTimeout(0) so the call stack unwinds
+      // but there is essentially no delay.
+      conn.reconnectTimer = setTimeout(() => {
+        conn.reconnectTimer = null;
+        if (!conn.allowReconnect) return;
+        if (!this.isCurrentConnection(conn)) return;
+        this.connectRealtime(conn);
+      }, 0);
+    } else {
+      const delay = Math.min(1000 * Math.pow(2, Math.min(attempt - 1, 5)), 30000);
+      conn.reconnectTimer = setTimeout(() => {
+        conn.reconnectTimer = null;
+        if (!conn.allowReconnect) return;
+        if (!this.isCurrentConnection(conn)) return;
+        this.connectRealtime(conn);
+      }, delay);
+    }
     this.syncUiConnectionStatus();
   }
 
@@ -862,6 +918,11 @@ class ConnectionManager {
 
   /** Disconnect from all servers */
   disconnectAll(): void {
+    if (this.recoveryTimer) {
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+    this.recoveryAttempts = 0;
     for (const serverId of Array.from(this.connections.keys())) {
       this.disconnectServer(serverId);
     }

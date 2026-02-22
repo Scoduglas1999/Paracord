@@ -1,13 +1,16 @@
 use axum::{
     extract::{Multipart, Path, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     Json,
 };
 use chrono::{Duration, Utc};
+use jsonwebtoken::{Algorithm, EncodingKey, Header as JwtHeader};
 use paracord_core::AppState;
 use paracord_models::permissions::Permissions;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
 use crate::middleware::AuthUser;
@@ -345,6 +348,90 @@ async fn scan_upload_with_malware_hook(
     }
 }
 
+fn mime_matches_pattern(content_type: &str, pattern: &str) -> bool {
+    if pattern == "*" || pattern == "*/*" {
+        return true;
+    }
+    if pattern.ends_with("/*") {
+        let prefix = &pattern[..pattern.len() - 1];
+        return content_type.starts_with(prefix);
+    }
+    content_type == pattern
+}
+
+async fn check_guild_upload_policy(
+    state: &AppState,
+    channel_id: i64,
+    file_size: u64,
+    content_type: &str,
+) -> Result<(), ApiError> {
+    let channel = paracord_db::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let guild_id = match channel.as_ref().and_then(|c| c.guild_id()) {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+
+    let policy =
+        paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let Some(policy) = policy else {
+        return Ok(());
+    };
+
+    if let Some(max_file_size) = policy.max_file_size {
+        if file_size > max_file_size as u64 {
+            return Err(ApiError::BadRequest(
+                "File exceeds guild maximum file size limit".into(),
+            ));
+        }
+    }
+
+    if let Some(storage_quota) = policy.storage_quota {
+        let current_usage =
+            paracord_db::guild_storage_policies::get_guild_storage_usage(&state.db, guild_id)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+        if (current_usage as u64).saturating_add(file_size) > storage_quota as u64 {
+            return Err(ApiError::BadRequest(
+                "Upload would exceed guild storage quota".into(),
+            ));
+        }
+    }
+
+    if let Some(ref allowed_json) = policy.allowed_types {
+        if let Ok(allowed) = serde_json::from_str::<Vec<String>>(allowed_json) {
+            if !allowed.is_empty()
+                && !allowed
+                    .iter()
+                    .any(|pattern| mime_matches_pattern(content_type, pattern))
+            {
+                return Err(ApiError::BadRequest(
+                    "File type not allowed by guild policy".into(),
+                ));
+            }
+        }
+    }
+
+    if let Some(ref blocked_json) = policy.blocked_types {
+        if let Ok(blocked) = serde_json::from_str::<Vec<String>>(blocked_json) {
+            if blocked
+                .iter()
+                .any(|pattern| mime_matches_pattern(content_type, pattern))
+            {
+                return Err(ApiError::BadRequest(
+                    "File type blocked by guild policy".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn cleanup_expired_pending_attachments(state: &AppState) {
     let now = Utc::now();
     let expired = match paracord_db::attachments::get_expired_pending_attachments(
@@ -443,6 +530,15 @@ pub async fn upload_file(
     }
     let db_size = i32::try_from(size).map_err(|_| ApiError::BadRequest("File too large".into()))?;
 
+    // Compute SHA-256 content hash
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    let content_hash = format!("{:x}", hasher.finalize());
+
+    // Check guild-level upload policy (file size, quota, type restrictions)
+    let resolved_ct = normalized_content_type(&filename, claimed_content_type.as_deref());
+    check_guild_upload_policy(&state, channel_id, size, &resolved_ct).await?;
+
     // Store file via storage backend
     let attachment_id = paracord_util::snowflake::generate(1);
     scan_upload_with_malware_hook(&data, &filename, &state.config.storage_path, attachment_id)
@@ -487,6 +583,7 @@ pub async fn upload_file(
         Some(auth.user_id),
         Some(channel_id),
         Some(expires_at),
+        Some(&content_hash),
     )
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
@@ -656,6 +753,445 @@ pub async fn delete_file(
     let _ = state.storage_backend.delete(&storage_key).await;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── Shared file processing functions (used by both HTTP and QUIC paths) ──────
+
+/// Validate that a user has permission to upload files to a channel.
+pub async fn validate_upload_permissions(
+    state: &AppState,
+    channel_id: i64,
+    user_id: i64,
+) -> Result<(), ApiError> {
+    let channel = paracord_db::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    if let Some(guild_id) = channel.guild_id() {
+        paracord_core::permissions::ensure_guild_member(&state.db, guild_id, user_id).await?;
+        let guild = paracord_db::guilds::get_guild(&state.db, guild_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+            .ok_or(ApiError::NotFound)?;
+        let perms = paracord_core::permissions::compute_channel_permissions(
+            &state.db,
+            guild_id,
+            channel_id,
+            guild.owner_id,
+            user_id,
+        )
+        .await?;
+        paracord_core::permissions::require_permission(perms, Permissions::VIEW_CHANNEL)?;
+        paracord_core::permissions::require_permission(perms, Permissions::ATTACH_FILES)?;
+    } else if !paracord_db::dms::is_dm_recipient(&state.db, channel_id, user_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+    {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
+}
+
+/// Process an uploaded file: malware scan, encrypt, store, and create DB record.
+///
+/// Returns the attachment JSON value on success.
+pub async fn process_uploaded_file(
+    state: &AppState,
+    data: &[u8],
+    filename: &str,
+    claimed_content_type: Option<&str>,
+    channel_id: i64,
+    user_id: i64,
+) -> Result<Value, ApiError> {
+    let size =
+        u64::try_from(data.len()).map_err(|_| ApiError::BadRequest("File too large".into()))?;
+    if size == 0 {
+        return Err(ApiError::BadRequest("Empty file".into()));
+    }
+    if size > state.config.max_upload_size {
+        return Err(ApiError::BadRequest("File too large".into()));
+    }
+    let db_size =
+        i32::try_from(size).map_err(|_| ApiError::BadRequest("File too large".into()))?;
+
+    // Compute SHA-256 content hash
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let content_hash = format!("{:x}", hasher.finalize());
+
+    // Check guild-level upload policy
+    let resolved_ct = normalized_content_type(filename, claimed_content_type);
+    check_guild_upload_policy(state, channel_id, size, &resolved_ct).await?;
+
+    let attachment_id = paracord_util::snowflake::generate(1);
+    scan_upload_with_malware_hook(data, filename, &state.config.storage_path, attachment_id)
+        .await?;
+
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let storage_key = format!("attachments/{}.{}", attachment_id, ext);
+
+    let stored_payload = if let Some(cryptor) = state.config.file_cryptor.as_ref() {
+        let aad = attachment_aad(attachment_id);
+        cryptor
+            .encrypt_with_aad(data, aad.as_bytes())
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?
+    } else {
+        data.to_vec()
+    };
+
+    state
+        .storage_backend
+        .store(&storage_key, &stored_payload)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let url = format!("/api/v1/attachments/{}", attachment_id);
+    let content_type = resolve_stored_content_type(filename, claimed_content_type, data);
+    let expires_at = Utc::now() + Duration::minutes(PENDING_ATTACHMENT_TTL_MINUTES);
+
+    let attachment = paracord_db::attachments::create_attachment(
+        &state.db,
+        attachment_id,
+        None,
+        filename,
+        Some(&content_type),
+        db_size,
+        &url,
+        None,
+        None,
+        Some(user_id),
+        Some(channel_id),
+        Some(expires_at),
+        Some(&content_hash),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    Ok(json!({
+        "id": attachment.id.to_string(),
+        "filename": attachment.filename,
+        "size": attachment.size,
+        "content_type": attachment.content_type,
+        "url": attachment.url,
+    }))
+}
+
+// ── Upload token endpoint (QUIC pre-authorization) ──────────────────────────
+
+#[derive(Deserialize)]
+pub struct UploadTokenRequest {
+    pub filename: String,
+    pub size: u64,
+    #[serde(default = "default_content_type")]
+    pub content_type: String,
+}
+
+fn default_content_type() -> String {
+    "application/octet-stream".to_string()
+}
+
+#[derive(Serialize)]
+struct FileTransferClaims {
+    sub: i64,
+    tid: String,
+    cid: i64,
+    fname: String,
+    fsize: u64,
+    exp: usize,
+    iat: usize,
+}
+
+pub async fn upload_token(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    headers: HeaderMap,
+    Path(channel_id): Path<i64>,
+    Json(req): Json<UploadTokenRequest>,
+) -> Result<Json<Value>, ApiError> {
+    // 1. Validate permissions
+    validate_upload_permissions(&state, channel_id, auth.user_id).await?;
+
+    // 2. Validate file size
+    if req.size == 0 {
+        return Err(ApiError::BadRequest("Empty file".into()));
+    }
+    if req.size > state.config.max_upload_size {
+        return Err(ApiError::BadRequest("File too large".into()));
+    }
+
+    // 2b. Check guild-level upload policy (size, quota, type restrictions)
+    let resolved_ct = normalized_content_type(&req.filename, Some(&req.content_type));
+    check_guild_upload_policy(&state, channel_id, req.size, &resolved_ct).await?;
+
+    // 3. Generate transfer ID
+    let transfer_id = paracord_util::snowflake::generate(1).to_string();
+
+    // 4. Mint upload JWT (15 min expiry)
+    let now = Utc::now();
+    let claims = FileTransferClaims {
+        sub: auth.user_id,
+        tid: transfer_id.clone(),
+        cid: channel_id,
+        fname: req.filename.clone(),
+        fsize: req.size,
+        exp: (now.timestamp() + 900) as usize,
+        iat: now.timestamp() as usize,
+    };
+
+    let upload_token = jsonwebtoken::encode(
+        &JwtHeader::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+    )
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("JWT encode error: {}", e)))?;
+
+    // 5. Determine QUIC endpoint availability
+    let quic_available = state.config.native_media_enabled;
+    let quic_endpoint = if quic_available {
+        let host = headers
+            .get("x-forwarded-host")
+            .or_else(|| headers.get("host"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|raw| raw.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("localhost");
+        let host_no_port = host.split(':').next().unwrap_or(host);
+        let proto = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("https");
+        format!(
+            "{}://{}:{}/media",
+            proto, host_no_port, state.config.native_media_port
+        )
+    } else {
+        String::new()
+    };
+
+    Ok(Json(json!({
+        "transfer_id": transfer_id,
+        "upload_token": upload_token,
+        "quic_endpoint": quic_endpoint,
+        "quic_available": quic_available,
+    })))
+}
+
+// ── Federated file proxy ────────────────────────────────────────────────────
+
+pub async fn download_federated_file(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((origin_server, attachment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Check that the user is a member of at least one guild federated with origin_server
+    let space_mappings =
+        paracord_db::federation::list_space_mappings_by_origin(&state.db, &origin_server)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let mut has_access = false;
+    for mapping in &space_mappings {
+        let member = paracord_db::members::get_member(
+            &state.db,
+            auth.user_id,
+            mapping.local_guild_id,
+        )
+        .await
+        .ok()
+        .flatten();
+        if member.is_some() {
+            has_access = true;
+            break;
+        }
+    }
+    if !has_access {
+        return Err(ApiError::Forbidden);
+    }
+
+    // Check federation file cache for a cached copy
+    if let Ok(Some(cached)) =
+        paracord_db::federation_file_cache::get_cached_file(
+            &state.db,
+            &origin_server,
+            &attachment_id,
+        )
+        .await
+    {
+        let now_str = chrono::Utc::now()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let is_expired = cached
+            .expires_at
+            .as_deref()
+            .is_some_and(|exp| exp < now_str.as_str());
+        if !is_expired {
+            let _ = paracord_db::federation_file_cache::update_cache_access_time(
+                &state.db, cached.id,
+            )
+            .await;
+
+            let data = state
+                .storage_backend
+                .retrieve(&cached.storage_key)
+                .await
+                .map_err(|_| ApiError::NotFound)?;
+
+            let content_type = cached
+                .content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let safe_filename: String = cached
+                .filename
+                .chars()
+                .filter(|ch| *ch != '"' && *ch != '\\' && *ch != '\r' && *ch != '\n')
+                .collect();
+            let disposition = format!("attachment; filename=\"{}\"", safe_filename);
+
+            return Ok((
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_str(&content_type)
+                            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+                    ),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        HeaderValue::from_str(&disposition)
+                            .unwrap_or(HeaderValue::from_static("attachment")),
+                    ),
+                    (
+                        header::X_CONTENT_TYPE_OPTIONS,
+                        HeaderValue::from_static("nosniff"),
+                    ),
+                ],
+                data,
+            ));
+        }
+    }
+
+    // Not cached -- look up origin server's federation endpoint
+    let server = paracord_db::federation::get_federated_server(&state.db, &origin_server)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+
+    let service = crate::routes::federation::build_federation_service();
+    let client = crate::routes::federation::build_signed_federation_client(&service)
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("federation client unavailable")))?;
+
+    let room_id = space_mappings
+        .first()
+        .map(|m| format!("!{}:{}", m.remote_space_id, m.origin_server))
+        .unwrap_or_default();
+    let user = paracord_db::users::get_user_by_id(&state.db, auth.user_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    let user_id = format!("@{}:{}", user.username, service.domain());
+
+    let token_resp = client
+        .request_file_token(
+            &server.federation_endpoint,
+            &paracord_federation::client::FederationFileTokenRequest {
+                origin_server: service.server_name().to_string(),
+                attachment_id: attachment_id.clone(),
+                room_id,
+                user_id,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to get file token: {}", e)))?;
+
+    // Download the file from origin
+    let full_download_url = if token_resp.download_url.starts_with("http") {
+        token_resp.download_url.clone()
+    } else {
+        format!(
+            "{}{}",
+            server
+                .federation_endpoint
+                .trim_end_matches('/')
+                .trim_end_matches("/v1"),
+            token_resp.download_url
+        )
+    };
+
+    let (file_data, resp_content_type, resp_filename) = client
+        .download_federated_file(&full_download_url)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to download file: {}", e)))?;
+
+    let content_type =
+        resp_content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let filename = resp_filename.unwrap_or_else(|| format!("federated_{}", attachment_id));
+
+    // Optionally cache the file
+    if state.config.federation_file_cache_enabled {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&file_data);
+        let hash = format!("{:x}", hasher.finalize());
+
+        let cache_key = format!("fed-cache/{}/{}", origin_server, attachment_id);
+        let cache_size = paracord_db::federation_file_cache::get_total_cache_size(&state.db)
+            .await
+            .unwrap_or(0);
+        if cache_size + file_data.len() as i64
+            <= state.config.federation_file_cache_max_size as i64
+        {
+            if state
+                .storage_backend
+                .store(&cache_key, &file_data)
+                .await
+                .is_ok()
+            {
+                let expires = chrono::Utc::now()
+                    + chrono::Duration::hours(state.config.federation_file_cache_ttl_hours as i64);
+                let expires_str = expires.format("%Y-%m-%d %H:%M:%S").to_string();
+                let _ = paracord_db::federation_file_cache::insert_cached_file(
+                    &state.db,
+                    &origin_server,
+                    &attachment_id,
+                    &hash,
+                    &filename,
+                    Some(&content_type),
+                    file_data.len() as i64,
+                    &cache_key,
+                    Some(&expires_str),
+                )
+                .await;
+            }
+        }
+    }
+
+    let safe_filename: String = filename
+        .chars()
+        .filter(|ch| *ch != '"' && *ch != '\\' && *ch != '\r' && *ch != '\n')
+        .collect();
+    let disposition = format!("attachment; filename=\"{}\"", safe_filename);
+
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&content_type)
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disposition)
+                    .unwrap_or(HeaderValue::from_static("attachment")),
+            ),
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+        ],
+        file_data,
+    ))
 }
 
 #[cfg(test)]

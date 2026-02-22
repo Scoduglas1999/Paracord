@@ -4,6 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use rand::RngCore;
 use serde::Serialize;
+use std::io::Write;
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
@@ -174,6 +175,47 @@ fn load_or_create_secure_store_fallback_key(app: &tauri::AppHandle) -> Result<[u
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(key)
+}
+
+fn diagnostics_log_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let mut dir = if cfg!(windows) {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            std::path::PathBuf::from(local_app_data)
+        } else {
+            app.path()
+                .app_data_dir()
+                .map_err(|e| format!("failed to resolve diagnostics log dir: {e}"))?
+        }
+    } else {
+        app.path()
+            .app_log_dir()
+            .or_else(|_| app.path().app_data_dir())
+            .map_err(|e| format!("failed to resolve diagnostics log dir: {e}"))?
+    };
+    dir.push("Paracord");
+    dir.push("logs");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create diagnostics log dir: {e}"))?;
+    dir.push("client-voice.log");
+    Ok(dir)
+}
+
+#[tauri::command]
+pub fn append_client_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    eprintln!("[client-diag] {line}");
+    let path = diagnostics_log_path(&app)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("failed to open diagnostics log file: {e}"))?;
+    writeln!(file, "{line}").map_err(|e| format!("failed to write diagnostics log line: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_client_log_path(app: tauri::AppHandle) -> Result<String, String> {
+    diagnostics_log_path(&app).map(|p| p.display().to_string())
 }
 
 #[tauri::command]
@@ -494,3 +536,4 @@ pub fn get_foreground_application() -> Option<ForegroundApplication> {
         None
     }
 }
+

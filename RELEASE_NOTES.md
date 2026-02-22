@@ -1,142 +1,151 @@
-## What's New in v0.7.0
+## What's New in v0.8.0
 
-### UI Overhaul
+### Native QUIC Media Engine
 
-The entire client layout has been rebuilt from scratch. The old monolithic `UnifiedSidebar` has been replaced with a new multi-panel architecture that separates the server dock, channel sidebar, content area, and member list into distinct glass-morphic surfaces.
+A custom media transport layer built on QUIC (via `quinn`) has been added alongside the existing LiveKit integration. LiveKit code is untouched and remains fully functional.
 
-- **New layout system**: Workspace canvas with separated dock rail, channel panel, content stage, and member panel -- each independently scrollable and collapsible
-- **Glass-morphic panels**: Panels use layered gradients, subtle noise texture overlay, and backdrop blur for a modern frosted-glass look with soft 24px rounded corners and inset highlight borders
-- **Server dock**: Dedicated dark dock rail (72px, down from 84px) with pill-shaped server icons and animated active indicators
-- **Channel sidebar**: Fully rewritten with collapsible channel categories (click a category header to collapse/expand), inline channel creation (click the **+** next to a category), unread count badges, and guild member presence
-- **Refined typography**: Tighter font scale (11/13/15/17/20px), tabular numbers via `font-feature-settings`, and subpixel anti-aliasing across platforms
-- **AMOLED dark theme**: True-black theme option for OLED displays, alongside improved light/dark contrast ratios. Switch between Dark, Light, and AMOLED under **Settings > Appearance > Theme**
-- **Accent color presets**: 10 built-in palettes (Red, Blue, Emerald, Amber, Rose, Violet, Cyan, Lime, Orange, Slate) with dynamic shade generation for hover/active states. Pick one under **Settings > Appearance > Accent Color**
-- **Mobile-first responsive**: Swipe right from the left edge to open the channel sidebar; swipe left from the right edge to open the member list. Bottom tab bar provides quick navigation on small screens
-- **Lazy-loaded pages**: Settings, GuildSettings, Admin, Discovery, and Developer pages are code-split for faster initial load
-- **Accessibility**: Skip-to-content link, improved focus styles, WCAG contrast improvements on interactive elements
+**Server-side architecture:**
 
-New components shipping with this release: **ConnectionStatusBar** (live connection health), **MobileBottomNav** (bottom tabs), **MiniVoiceBar** (persistent voice indicator when navigating away from voice channel), **ConfirmDialog**, **ChannelManager** (create/edit channels inline), **GuildWelcomeScreen** (onboarding), **MessageEmbed** (rich link previews), and **GitHubEventEmbed** (commit/PR cards from webhooks).
+When `native_media = true`, the server starts two listeners:
+- A raw QUIC endpoint (for desktop clients) that authenticates via JWT in a control stream
+- A WebTransport/HTTP3 endpoint (for browser clients) that authenticates via a JSON auth message on the first bidi stream
 
-### Progressive Web App (PWA) Support
+Both endpoints feed into a shared relay that routes encrypted datagrams between participants in the same room. The relay includes room management, participant tracking, and voice activity (speaker) detection.
 
-The web client now ships with a service worker and web app manifest, so browsers that support PWA installation can add Paracord to the home screen or desktop. In Chrome/Edge, look for the install icon in the address bar or go to **Menu > Install app**. On mobile Safari, use **Share > Add to Home Screen**. This is browser-native behavior -- there's no custom install button in the app itself.
+**New server crates:**
+- `paracord-transport` -- QUIC endpoint, WebTransport server, datagram bridge, file transfer protocol
+- `paracord-relay` -- Media room management, relay forwarder, participant tracking, speaker detection
+- `paracord-codec` -- Opus audio encoding/decoding, VP9 video encoding/decoding (behind `vpx` feature), RNNoise noise suppression, jitter buffering, audio capture/playback via cpal
+- `paracord-media-dev` -- Development utility for testing the media server independently
 
-- **Service worker**: Auto-updating Workbox worker caches app assets for faster repeat loads
-- **Web app manifest**: Proper metadata, theme color, and icons (64px through 512px + maskable)
-- **Font caching**: Inter and JetBrains Mono font files cached so they don't re-download on every visit
+**New client media library** (`client/src/lib/media/`):
+- Abstract `MediaEngine` interface with two implementations:
+  - `BrowserMediaEngine` -- Full WebTransport + WebCodecs implementation (~1000 lines). Handles audio capture/playback, Opus encode/decode, VP9 video, E2EE encryption, jitter buffering, and canvas rendering entirely in the browser.
+  - `TauriMediaEngine` -- Thin IPC wrapper that delegates to the native Rust audio pipeline in the Tauri binary.
+- Transport layer: WebTransport client, datagram bridge with QSID framing, file transfer protocol
+- E2EE sender key exchange with epoch rotation
 
-### Signal Protocol End-to-End Encryption (E2EE v2)
+**Desktop native audio pipeline (Tauri):**
 
-DM encryption has been upgraded from static ECDH to the full Signal Protocol, providing forward secrecy and post-compromise security. This is transparent to users -- when both sides of a DM conversation are on v0.7.0+, sessions automatically upgrade to Signal Protocol the next time a message is sent. No manual setup required; existing v1 conversations continue to work.
+The Tauri binary includes a fully functional native audio pipeline:
+- Microphone capture via cpal → RNNoise noise suppression → Opus encoding → AES-GCM encryption → QUIC datagram transmission
+- Receive path: QUIC datagram → AES-GCM decryption → Opus decoding → jitter buffer → cpal speaker output with multi-source mixing
+- Mute/deaf toggling via atomic flags, input device switching at runtime
+- E2EE sender key announcement over QUIC control stream
+- VP9 video encoding/decoding available when built with the `vpx` feature flag
 
-- **X3DH key agreement**: Extended Triple Diffie-Hellman for initial key exchange
-- **Double Ratchet**: Symmetric-key ratcheting for per-message forward secrecy
-- **HKDF key derivation**: Standards-compliant key derivation chain
-- **Session persistence**: Encrypted session state stored via Tauri secure storage (OS keychain) with fallback to encrypted localStorage on web
-- **Prekey management**: Upload, rotate, and fetch prekey bundles via new API endpoints
-- Full crypto library in `client/src/lib/crypto/` with comprehensive test suite
+**What is not yet complete on the desktop path:**
+- Output device switching (returns an error; input device switching works)
+- Video subscription negotiation (subscribe control message is a no-op)
+- Video decode on receive (frames are decrypted but not yet routed to per-SSRC decoders)
 
-### Gateway Protocol Rewrite (Realtime v2)
+**Server configuration:**
+```toml
+[voice]
+native_media = true    # Enable native QUIC media server (default: false)
+port = 8443            # UDP port for raw QUIC endpoint (desktop clients)
+wt_port = 8444         # UDP port for WebTransport/HTTP3 endpoint (browser clients)
+max_participants_per_room = 50
+audio_bitrate = 96000
+e2ee_required = true
+```
 
-New modular gateway architecture with an alternative **SSE + HTTP command bus** transport alongside the existing WebSocket gateway. Controlled by the `VITE_RT_V2` env var (defaults to SSE on).
-
-- **Modular design**: Separated into protocol, manager, client, dispatch, queue, and transport layers -- replaces the old monolithic `gateway/connection.ts`
-- **Server-Sent Events**: `POST /api/v2/rt/session`, `GET /api/v2/rt/events`, `POST /api/v2/rt/commands` -- handles 20+ event types including presence, voice state, and typing
-- **Automatic reconnection**: EventSource with smart retry and session resumption
-- **Message queue**: Backpressure-aware outbound queue buffers messages during reconnection (up to 200 pending)
-- **WebSocket still available**: Set `VITE_RT_V2=false` to use the classic WebSocket gateway instead
-
-### Enhanced Message Composer
-
-- **@mention autocomplete**: Type `@` followed by a username to search guild members. Use Arrow Up/Down to navigate the popup, then Tab or Enter to insert the mention
-- **Draft persistence**: Drafts auto-save as you type and restore when you switch back to that channel -- no lost messages
-- **Paste-to-attach**: Copy an image to your clipboard and Ctrl+V (Cmd+V) directly into the message box to attach it
-- **Formatting toolbar**: Click the formatting button next to the input to access markdown shortcuts (bold, italic, code, etc.)
-
-### Code Syntax Highlighting
-
-Code blocks now render with full syntax highlighting. Wrap code in triple backticks with an optional language tag:
-
-~~~
-```rust
-fn main() {
-    println!("Hello, Paracord!");
+The voice join endpoint returns native media connection details when `native_media` is enabled:
+```json
+{
+  "native_media": true,
+  "media_endpoint": "https://host:8444/media",
+  "media_token": "<jwt>",
+  "cert_hash": "<sha256>",
+  "room_name": "guild_id:channel_id",
+  "session_id": "<uuid>"
 }
 ```
-~~~
+The `cert_hash` field provides the SHA-256 fingerprint of the server's self-signed TLS certificate for WebTransport certificate pinning. When LiveKit is also available, its fields are returned alongside (purely additive). Clients can request explicit LiveKit fallback via `?fallback=livekit`.
 
-Supported languages: `js`, `ts`, `rust`, `python`, `go`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `sql`, `bash`, `json`, `yaml`, `toml`, `html`, `css`, `markdown`, `diff`, and more. If you omit the language tag, the highlighter will auto-detect where it can. Every code block has a **Copy** button in the top-right corner.
+### Guild File Storage Management
 
-### Voice v2 & LiveKit Improvements
+Server administrators and guild owners can now manage file storage policies per guild.
 
-- **New voice endpoints**: `POST /api/v2/voice/{channel_id}/join`, `/leave`, `/state`, `/recover`
-- **Multi-candidate URLs**: Server provides multiple LiveKit connection candidates with intelligent fallback (direct -> proxied -> fallback)
-- **Environment overrides**: `PARACORD_LIVEKIT_DIRECT_PUBLIC_URL` and `PARACORD_FORCE_LIVEKIT_PUBLIC_URL` for deployment flexibility
-- **Race condition fixes**: In-flight room tracking prevents simultaneous connection attempts
-- Background room cleanup to avoid client timeouts
+**New API endpoints:**
+- `GET /api/v1/guilds/{id}/storage` -- View storage usage and policy
+- `PATCH /api/v1/guilds/{id}/storage` -- Update storage policy (quotas, retention period, MIME type restrictions)
+- `GET /api/v1/guilds/{id}/files` -- List attachments with pagination
+- `DELETE /api/v1/guilds/{id}/files` -- Bulk delete attachments (up to 100)
 
-### API Observability (Wire Tracing)
+**New admin settings:**
+- `max_guild_storage_quota` -- Server-wide limit on per-guild storage
+- `federation_file_cache_enabled`, `federation_file_cache_max_size`, `federation_file_cache_ttl_hours` -- Control federated file caching behavior
 
-New wire-level tracing infrastructure for debugging production deployments. Enable it by setting environment variables before starting the server:
+**Database migrations** add `guild_storage_policies` table, `content_hash` column on attachments (SHA-256), and `federation_file_cache` table. Uploads are now validated against guild policies (max file size, allowed/blocked MIME types, storage quota) before being stored.
 
-```bash
-PARACORD_WIRE_TRACE=1                         # turn on wire logging
-PARACORD_WIRE_TRACE_PAYLOADS=1                # include request/response bodies
-PARACORD_WIRE_TRACE_PAYLOAD_MAX_BYTES=2048    # max bytes per payload preview (default 1024)
-```
+### Federation File Sharing
 
-Logs appear on the `wire` tracing target and include HTTP method/path/latency/status and WebSocket opcode/frame size per message.
+Files can now be accessed across federated servers. When a user views a message from a remote server that includes attachments, the local server proxies the file download with token-based authentication and optional local caching.
 
-### Database Improvements
+**New federation endpoints:**
+- `POST /_paracord/federation/v1/file/token` -- Request a download token for a remote file
+- `GET /_paracord/federation/v1/file/{attachment_id}?token=...` -- Download a federated file
 
-- **Message deduplication**: Nonce-based dedup at the database level prevents duplicate messages on retry
-- **Snowflake ID type safety**: Fixed critical `INTEGER -> BIGINT` migration for channels, polls, events, and prekey tables (prevents i32 overflow)
-- Migrations for both SQLite and PostgreSQL tracks
+**New client endpoint:**
+- `GET /api/v1/federated-files/{origin_server}/{attachment_id}` -- Proxy endpoint for clients to download federated files through their local server
 
-### Bug Fixes
+### Gateway Media Signaling
 
-- **TLS configuration** (PR #11, @SweetLiberty92): Fixed HTTP and HTTPS binding on different ports -- TLS address now correctly uses the configured host
-- **TLS env var respected** (PR #14): `PARACORD_TLS_ENABLED` is now properly assigned into the config when running behind a reverse proxy
-- **Vite dev proxy**: Added `secure: false` and updated default target to `https://localhost:8443` for self-signed backend certs
-- **Voice connection leaks**: Graceful cleanup of old rooms before new joins; AbortError handling for transient failures
-- **Draft race condition**: Fixed autosave cleanup during channel switches
-- **Config validation**: Improved placeholder secret detection (catches "replace_with" patterns)
+Six new WebSocket opcodes support native media session negotiation:
 
-### Community Contributions
+| Opcode | Name | Direction | Purpose |
+|--------|------|-----------|---------|
+| 12 | `MEDIA_CONNECT` | Client → Server | Initiate media session |
+| 15 | `MEDIA_SESSION_DESC` | Server → Client | Relay endpoint and peer list |
+| 14 | `MEDIA_KEY_ANNOUNCE` | Client → Server | Announce E2EE sender keys |
+| 16 | `MEDIA_KEY_DELIVER` | Server → Client | Deliver sender keys to peers |
+| 13 | `MEDIA_SUBSCRIBE` | Client → Server | Subscribe to peer media tracks |
+| 17 | `MEDIA_SPEAKER_UPDATE` | Server → Client | Broadcast active speaker changes |
 
-- **@SweetLiberty92** -- PR #11: Refactored TLS address binding to use the configured host, fixing a critical port-binding bug
-- **@SweetLiberty92** -- PR #14: Ensured `PARACORD_TLS_ENABLED` is respected and correctly assigned into the server config
+### Desktop App (Tauri) Improvements
 
-### New API Endpoints
+- **Native audio pipeline**: Full mic capture → Opus encode → E2EE → QUIC send pipeline, plus the reverse receive path with jitter buffering and speaker mixing
+- **Screen capture infobar suppressed**: The Chromium "is sharing a window" bar is now auto-hidden using the WebView2 `ICoreWebView2_27` ScreenCaptureStarting API
+- **Production-ready packaging**: Dev console no longer opens on launch; `console.log`/`console.info` calls are stripped from production builds
+- **Diagnostics logging**: Voice session events are logged to `%LOCALAPPDATA%/Paracord/logs/client-voice.log` for troubleshooting
+- **QUIC file transfer**: Upload and download files over QUIC datagrams via Tauri IPC commands
+- **NSIS installer**: Windows `.exe` installer via NSIS bundler
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/v2/rt/session` | POST | Create realtime SSE session |
-| `/api/v2/rt/events` | GET | Stream server-sent events |
-| `/api/v2/rt/commands` | POST | Send gateway commands over HTTP |
-| `/api/v1/users/@me/keys` | PUT | Upload Signal prekey bundle |
-| `/api/v1/users/@me/keys/count` | GET | Get remaining prekey count |
-| `/api/v1/users/{user_id}/keys` | GET | Fetch peer's public prekey bundle |
-| `/api/v2/voice/{channel_id}/join` | POST | Join voice with URL candidates |
-| `/api/v2/voice/{channel_id}/leave` | POST | Clean voice disconnect |
-| `/api/v2/voice/state` | POST | Update voice state |
-| `/api/v2/voice/recover` | POST | Recover voice without re-join |
+### Stream Viewer Fixes
 
-### Auth Middleware Enhancement
+- **LIVE badge in sidebar**: Starting a stream now immediately shows the LIVE indicator next to your name in the voice channel participant list (previously required waiting for a gateway event)
+- **Stream stop reliability**: Stopping a stream no longer hangs for 15 seconds; re-entrancy guard prevents duplicate stop calls
+- **Auto-watch on stream start**: Starting a stream automatically sets you as the watched streamer so the StreamViewer renders immediately
+- **Voice channel navigation**: Clicking a voice channel you're already in navigates back to it instead of disconnecting
 
-Token authentication now supports three formats for broader client compatibility:
-- `Authorization: Bearer <token>` (header -- existing)
-- `Cookie: paracord_access=<token>` (cookie -- new)
-- `?token=<token>` (query parameter -- new, for SSE/EventSource)
+### PostgreSQL Support
+
+Six missing PostgreSQL migrations have been added to bring `migrations_pg/` in sync with SQLite:
+- `messages_nonce_dedup` -- Nonce deduplication unique index
+- `guild_storage_policies` -- Storage policy table
+- `attachment_content_hash` -- SHA-256 hash column
+- `federation_file_cache` -- Federation file cache (uses `BIGSERIAL` for PG)
+- `storage_settings_seed` -- Default storage settings
+- `hub_settings` -- Hub settings column on spaces table
+
+### Build Configuration
+
+- **esbuild optimizations**: `debugger` statements dropped and `console.log`/`console.info` marked as pure (tree-shaken) in production builds
+- **CSP relaxed**: `img-src` and `media-src` allow `https:` and `http:` for remote media content
+- **PWA service worker cleanup**: Tauri builds automatically unregister stale service workers to prevent cached asset issues
+
+### New Workspace Dependencies
+
+- `quinn` 0.11 -- QUIC protocol implementation
+- `h3` 0.0.8 / `h3-quinn` 0.0.10 -- HTTP/3 and WebTransport support
+- `audiopus` 0.3.0-rc.0 -- Opus codec bindings
+- `nnnoiseless` 0.5 -- RNNoise-based noise suppression
+- `cpal` 0.15 -- Cross-platform audio I/O
+- `rubato` 0.15 -- Audio sample rate conversion
 
 ### Breaking Changes
 
-- **Sidebar width**: Reduced from 84px to 72px -- may affect custom CSS overrides
-- **Voice join response**: v1 endpoint now also returns `url_candidates` array alongside the existing `url` field
-- **E2EE payload**: `MessageE2eePayload` includes optional `header` field for Signal Protocol; v1 payloads still work
-
-### Migration Guide
-
-1. **Database**: Migrations run automatically on startup. Two new migrations fix Snowflake ID types and add message nonce dedup
-2. **TLS**: If using TLS, verify both HTTP redirect and HTTPS use the expected ports (both now respect `host` from config)
-3. **Environment**: New optional env vars for observability (`PARACORD_WIRE_TRACE`) and voice (`PARACORD_LIVEKIT_DIRECT_PUBLIC_URL`)
+- Voice join response may now include `native_media`, `media_endpoint`, `media_token`, `cert_hash` fields alongside existing LiveKit fields
+- Desktop app defaults to native media path instead of LiveKit (browser is unaffected)
+- Tauri installer targets changed from `all` to `nsis` + `msi` (Windows `.exe` and `.msi`)

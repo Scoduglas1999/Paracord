@@ -274,7 +274,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isForum, isDM, reci
   );
 
   return (
-    <div className="z-10 flex min-h-[80px] w-full shrink-0 items-start justify-between border-b border-border-subtle/50 px-4 pb-3 pt-4 sm:px-5 sm:pb-3.5 sm:pt-4.5 md:px-6">
+    <div className="z-10 flex min-h-[80px] w-full shrink-0 items-start justify-between px-4 pb-3 pt-4 sm:px-5 sm:pb-3.5 sm:pt-4.5 md:px-6">
       {/* Left: channel info */}
       <div className="mr-2 flex min-w-0 flex-1 items-start overflow-hidden sm:mr-3">
         {!isMobile && (
@@ -345,7 +345,7 @@ export function TopBar({ channelName, channelTopic, isVoice, isForum, isDM, reci
         {systemAudioCaptureActive && (
           <TopBarIcon
             icon={AlertTriangle}
-            onClick={() => {}}
+            onClick={() => { }}
             active
             tooltip="System audio capture is active"
             disabled

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -34,6 +34,8 @@ pub struct UpdateGuildRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub icon: Option<String>,
+    pub hub_settings: Option<Value>,
+    pub bot_settings: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +73,8 @@ pub async fn create_guild(
         "owner_id": guild.owner_id.to_string(),
         "member_count": 1,
         "created_at": guild.created_at.to_rfc3339(),
+        "hub_settings": guild.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": guild.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     });
 
     state.member_index.add_member(guild_id, auth.user_id);
@@ -99,6 +103,8 @@ pub async fn list_guilds(
                 "icon_hash": g.icon_hash,
                 "owner_id": g.owner_id.to_string(),
                 "created_at": g.created_at.to_rfc3339(),
+                "hub_settings": g.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+                "bot_settings": g.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
             })
         })
         .collect();
@@ -130,6 +136,8 @@ pub async fn get_guild(
         "owner_id": guild.owner_id.to_string(),
         "member_count": member_count,
         "created_at": guild.created_at.to_rfc3339(),
+        "hub_settings": guild.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": guild.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     })))
 }
 
@@ -150,6 +158,16 @@ pub async fn update_guild(
         }
     }
 
+    let hub_settings_str = body
+        .hub_settings
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
+
+    let bot_settings_str = body
+        .bot_settings
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
+
     let updated = paracord_core::guild::update_guild(
         &state.db,
         guild_id,
@@ -157,6 +175,8 @@ pub async fn update_guild(
         body.name.as_deref(),
         body.description.as_deref(),
         body.icon.as_deref(),
+        hub_settings_str.as_deref(),
+        bot_settings_str.as_deref(),
     )
     .await?;
 
@@ -167,6 +187,8 @@ pub async fn update_guild(
         "icon_hash": updated.icon_hash,
         "owner_id": updated.owner_id.to_string(),
         "created_at": updated.created_at.to_rfc3339(),
+        "hub_settings": updated.hub_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "bot_settings": updated.bot_settings.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
     });
 
     state
@@ -388,4 +410,257 @@ pub async fn get_channels(
     }
 
     Ok(Json(json!(result)))
+}
+
+// ── Guild Storage ────────────────────────────────────────────────────────
+
+async fn require_manage_guild(
+    state: &AppState,
+    guild_id: i64,
+    user_id: i64,
+) -> Result<(), ApiError> {
+    paracord_core::permissions::ensure_guild_member(&state.db, guild_id, user_id).await?;
+    let guild = paracord_db::guilds::get_guild(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    let roles = paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let perms = paracord_core::permissions::compute_permissions_from_roles(
+        &roles,
+        guild.owner_id,
+        user_id,
+    );
+    paracord_core::permissions::require_permission(perms, Permissions::MANAGE_GUILD)?;
+    Ok(())
+}
+
+pub async fn get_storage(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    require_manage_guild(&state, guild_id, auth.user_id).await?;
+
+    let usage = paracord_db::guild_storage_policies::get_guild_storage_usage(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let policy =
+        paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let server_quota = state.config.max_guild_storage_quota;
+    let quota = policy
+        .as_ref()
+        .and_then(|p| p.storage_quota)
+        .map(|q| (q as u64).min(server_quota))
+        .unwrap_or(server_quota);
+
+    let policy_json = policy.map(|p| {
+        json!({
+            "max_file_size": p.max_file_size,
+            "storage_quota": p.storage_quota,
+            "retention_days": p.retention_days,
+            "allowed_types": p.allowed_types.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+            "blocked_types": p.blocked_types.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+            "updated_at": p.updated_at,
+        })
+    });
+
+    Ok(Json(json!({
+        "usage": usage,
+        "quota": quota,
+        "policy": policy_json,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateStorageRequest {
+    pub max_file_size: Option<i64>,
+    pub storage_quota: Option<i64>,
+    pub retention_days: Option<i32>,
+    pub allowed_types: Option<Vec<String>>,
+    pub blocked_types: Option<Vec<String>>,
+}
+
+pub async fn update_storage(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<i64>,
+    Json(body): Json<UpdateStorageRequest>,
+) -> Result<Json<Value>, ApiError> {
+    require_manage_guild(&state, guild_id, auth.user_id).await?;
+
+    let server_quota = state.config.max_guild_storage_quota;
+
+    if let Some(quota) = body.storage_quota {
+        if quota < 0 {
+            return Err(ApiError::BadRequest(
+                "storage_quota must be non-negative".into(),
+            ));
+        }
+        if (quota as u64) > server_quota {
+            return Err(ApiError::BadRequest(format!(
+                "storage_quota cannot exceed server limit of {} bytes",
+                server_quota
+            )));
+        }
+    }
+    if let Some(size) = body.max_file_size {
+        if size < 0 {
+            return Err(ApiError::BadRequest(
+                "max_file_size must be non-negative".into(),
+            ));
+        }
+    }
+    if let Some(days) = body.retention_days {
+        if days < 0 {
+            return Err(ApiError::BadRequest(
+                "retention_days must be non-negative".into(),
+            ));
+        }
+    }
+
+    let allowed_types_json = body
+        .allowed_types
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()));
+    let blocked_types_json = body
+        .blocked_types
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()));
+
+    let policy = paracord_db::guild_storage_policies::upsert_guild_storage_policy(
+        &state.db,
+        guild_id,
+        body.max_file_size,
+        body.storage_quota,
+        body.retention_days,
+        allowed_types_json.as_deref(),
+        blocked_types_json.as_deref(),
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    Ok(Json(json!({
+        "guild_id": policy.guild_id.to_string(),
+        "max_file_size": policy.max_file_size,
+        "storage_quota": policy.storage_quota,
+        "retention_days": policy.retention_days,
+        "allowed_types": policy.allowed_types.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "blocked_types": policy.blocked_types.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()),
+        "updated_at": policy.updated_at,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ListFilesParams {
+    pub before: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+pub async fn list_files(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<i64>,
+    Query(params): Query<ListFilesParams>,
+) -> Result<Json<Value>, ApiError> {
+    require_manage_guild(&state, guild_id, auth.user_id).await?;
+
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let attachments = paracord_db::guild_storage_policies::get_guild_attachments(
+        &state.db,
+        guild_id,
+        params.before,
+        limit,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+    let files: Vec<Value> = attachments
+        .iter()
+        .map(|a| {
+            json!({
+                "id": a.id.to_string(),
+                "filename": a.filename,
+                "size": a.size,
+                "content_type": a.content_type,
+                "url": a.url,
+                "message_id": a.message_id.map(|id| id.to_string()),
+                "uploader_id": a.uploader_id.map(|id| id.to_string()),
+                "upload_channel_id": a.upload_channel_id.map(|id| id.to_string()),
+                "content_hash": a.content_hash,
+                "created_at": a.upload_created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(Json(json!(files)))
+}
+
+#[derive(Deserialize)]
+pub struct DeleteFilesRequest {
+    pub attachment_ids: Vec<String>,
+}
+
+pub async fn delete_files(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(guild_id): Path<i64>,
+    Json(body): Json<DeleteFilesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    require_manage_guild(&state, guild_id, auth.user_id).await?;
+
+    if body.attachment_ids.is_empty() {
+        return Err(ApiError::BadRequest(
+            "attachment_ids must not be empty".into(),
+        ));
+    }
+    if body.attachment_ids.len() > 100 {
+        return Err(ApiError::BadRequest(
+            "cannot delete more than 100 attachments at once".into(),
+        ));
+    }
+
+    let mut deleted = 0_u64;
+    for id_str in &body.attachment_ids {
+        let attachment_id = id_str
+            .parse::<i64>()
+            .map_err(|_| ApiError::BadRequest(format!("invalid attachment id: {}", id_str)))?;
+
+        let attachment =
+            match paracord_db::attachments::get_attachment(&state.db, attachment_id).await {
+                Ok(Some(a)) => a,
+                _ => continue,
+            };
+
+        // Verify the attachment belongs to this guild
+        if let Some(channel_id) = attachment.upload_channel_id {
+            let channel = paracord_db::channels::get_channel(&state.db, channel_id)
+                .await
+                .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+            if channel.as_ref().and_then(|c| c.guild_id()) != Some(guild_id) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        if paracord_db::attachments::delete_attachment(&state.db, attachment_id)
+            .await
+            .is_ok()
+        {
+            let ext = std::path::Path::new(&attachment.filename)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bin");
+            let storage_key = format!("attachments/{}.{}", attachment.id, ext);
+            let _ = state.storage_backend.delete(&storage_key).await;
+            deleted += 1;
+        }
+    }
+
+    Ok(Json(json!({ "deleted": deleted })))
 }

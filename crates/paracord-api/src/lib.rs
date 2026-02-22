@@ -75,6 +75,14 @@ pub fn build_router() -> Router<AppState> {
             "/_paracord/federation/v1/media/relay",
             post(routes::federation::media_relay),
         )
+        .route(
+            "/_paracord/federation/v1/file/token",
+            post(routes::federation::file_token),
+        )
+        .route(
+            "/_paracord/federation/v1/file/{attachment_id}",
+            get(routes::federation::file_download),
+        )
         // Federation server management (admin)
         .route(
             "/_paracord/federation/v1/servers",
@@ -229,6 +237,14 @@ pub fn build_router() -> Router<AppState> {
         .route(
             "/api/v1/guilds/{guild_id}/bots/{bot_app_id}",
             delete(routes::bots::remove_guild_bot),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/storage",
+            get(routes::guilds::get_storage).patch(routes::guilds::update_storage),
+        )
+        .route(
+            "/api/v1/guilds/{guild_id}/files",
+            get(routes::guilds::list_files).delete(routes::guilds::delete_files),
         )
         .route(
             "/api/v1/guilds/{guild_id}/audit-logs",
@@ -441,6 +457,16 @@ pub fn build_router() -> Router<AppState> {
         .route(
             "/api/v1/attachments/{id}",
             get(routes::files::download_file).delete(routes::files::delete_file),
+        )
+        // QUIC file transfer pre-authorization
+        .route(
+            "/api/v2/channels/{channel_id}/upload-token",
+            post(routes::files::upload_token),
+        )
+        // Federated file proxy
+        .route(
+            "/api/v1/federated-files/{origin_server}/{attachment_id}",
+            get(routes::files::download_federated_file),
         )
         // Relationships
         .route(
@@ -1036,7 +1062,7 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
         headers.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
-                "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss: http: https:; media-src 'self' data: blob:",
+                "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self' ws: wss: http: https:; media-src 'self' data: blob: https: http:",
             ),
         );
     }

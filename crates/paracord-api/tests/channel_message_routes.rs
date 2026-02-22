@@ -69,6 +69,14 @@ impl TestContext {
                 database_url: "sqlite::memory:".to_string(),
                 federation_max_events_per_peer_per_minute: None,
                 federation_max_user_creates_per_peer_per_hour: None,
+                native_media_enabled: false,
+                native_media_port: 8443,
+                native_media_max_participants: 50,
+                native_media_e2ee_required: false,
+                max_guild_storage_quota: 0,
+                federation_file_cache_enabled: false,
+                federation_file_cache_max_size: 0,
+                federation_file_cache_ttl_hours: 0,
             },
             runtime: Arc::new(RwLock::new(RuntimeSettings::default())),
             voice: Arc::new(VoiceManager::new(livekit)),
@@ -85,6 +93,7 @@ impl TestContext {
             permission_cache: build_permission_cache(),
             federation_service: None,
             member_index: Arc::new(paracord_core::member_index::MemberIndex::empty()),
+            native_media: None,
         };
 
         paracord_api::install_http_rate_limiter();

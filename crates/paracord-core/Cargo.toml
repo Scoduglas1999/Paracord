@@ -11,6 +11,8 @@ paracord-db = { workspace = true }
 paracord-util = { workspace = true }
 paracord-media = { workspace = true }
 paracord-federation = { workspace = true }
+paracord-relay = { path = "../paracord-relay" }
+paracord-transport = { path = "../paracord-transport" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

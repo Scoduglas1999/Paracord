@@ -13,7 +13,7 @@ mod config;
 mod embedded_ui;
 mod livekit_proc;
 mod tls;
-mod upnp;
+mod bots;
 
 #[derive(Clone, Default)]
 struct AtRestRuntimeProfile {
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = cli::Args::parse();
-    let mut config = config::Config::load(&args.config)?;
+    let config = config::Config::load(&args.config)?;
     if config.tls.acme.enabled && !config.tls.enabled {
         tracing::warn!(
             "tls.acme.enabled is true while tls.enabled is false; ACME automation will be inactive"
@@ -177,81 +177,20 @@ async fn main() -> Result<()> {
     // media join times out" failures when only HTTPS is reachable.
     let public_signal_port = if tls_preferred { tls_port } else { bind_port };
 
-    // UPnP auto port forwarding + public IP detection
-    let mut upnp_server_port = public_signal_port;
-    let mut upnp_livekit_port = livekit_port;
-    let mut upnp_status = "Disabled".to_string();
-    let mut needs_manual_forwarding = false;
+    // Manual port forwarding status (automatic router mapping removed).
+    let server_public_port = public_signal_port;
+    let bind_is_loopback = config.server.bind_address.starts_with("127.0.0.1:")
+        || config.server.bind_address.starts_with("localhost:")
+        || config.server.bind_address.starts_with("[::1]:");
+    let port_forwarding_status = if bind_is_loopback {
+        "N/A (loopback-only bind)".to_string()
+    } else {
+        "Manual (configure router/firewall for WAN access)".to_string()
+    };
+    let needs_manual_forwarding = !bind_is_loopback;
     let mut detected_external_ip: Option<String> = None;
-    if config.network.upnp && !config.network.upnp_confirm_exposure {
-        tracing::warn!(
-            "UPnP is configured but disabled until network.upnp_confirm_exposure=true is set explicitly."
-        );
-    }
 
-    if config.network.upnp && config.network.upnp_confirm_exposure {
-        match upnp::setup_upnp(
-            public_signal_port,
-            livekit_port,
-            config.network.upnp_lease_seconds,
-        )
-        .await
-        {
-            Ok(result) => {
-                upnp_server_port = result.server_port;
-                upnp_livekit_port = result.livekit_port;
-                let ip = result.external_ip;
-
-                // Auto-configure public URLs if not explicitly set
-                if config.server.public_url.is_none() {
-                    let scheme = if tls_preferred { "https" } else { "http" };
-                    let public_port = if tls_preferred {
-                        config.tls.port
-                    } else {
-                        upnp_server_port
-                    };
-                    let url = format!("{scheme}://{}:{}", ip, public_port);
-                    config.server.public_url = Some(url);
-                }
-                if config.livekit.public_url.is_none() {
-                    // Route LiveKit through the main server's /livekit proxy
-                    // so only one port needs to be exposed.
-                    let ws_scheme = if tls_preferred { "wss" } else { "ws" };
-                    let proxy_port = if tls_preferred {
-                        config.tls.port
-                    } else {
-                        upnp_server_port
-                    };
-                    let url = format!("{ws_scheme}://{}:{}/livekit", ip, proxy_port);
-                    config.livekit.public_url = Some(url);
-                }
-
-                detected_external_ip = Some(ip.to_string());
-
-                if result.method.contains("manual") {
-                    needs_manual_forwarding = true;
-                    upnp_status = format!("Manual (external IP: {})", ip);
-                } else {
-                    upnp_status = format!("{} (external IP: {})", result.method, ip);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("{}", e);
-                upnp_status = "Failed (could not detect external IP)".to_string();
-            }
-        }
-    }
-
-    // Forward HTTPS port via UPnP if TLS is enabled
-    if config.network.upnp
-        && config.tls.enabled
-        && detected_external_ip.is_some()
-        && upnp_server_port != tls_port
-    {
-        upnp::forward_extra_port(tls_port, config.network.upnp_lease_seconds).await;
-    }
-
-    // If we still don't have an external IP (UPnP failed or disabled) but
+    // If we don't yet have an external IP but
     // LiveKit is local, detect the public IP via HTTP so we can configure
     // LiveKit's ICE candidates correctly for remote users.
     if detected_external_ip.is_none()
@@ -290,7 +229,7 @@ async fn main() -> Result<()> {
             &config.livekit.api_key,
             &config.livekit.api_secret,
             livekit_port,
-            upnp_server_port,
+            server_public_port,
             detected_external_ip.as_deref(),
             detected_local_ip.as_deref(),
         )
@@ -438,7 +377,7 @@ async fn main() -> Result<()> {
         let proxy_port = if tls_preferred {
             config.tls.port
         } else {
-            upnp_server_port
+            server_public_port
         };
         let local_candidate_url = format!("{ws_scheme}://{local_ip}:{proxy_port}/livekit");
         std::env::set_var("PARACORD_LIVEKIT_LOCAL_CANDIDATE_URL", &local_candidate_url);
@@ -481,7 +420,7 @@ async fn main() -> Result<()> {
         .context("failed to load memberships for member index")?;
     let member_index = paracord_core::member_index::MemberIndex::from_memberships(memberships);
 
-    let state = paracord_core::AppState {
+    let mut state = paracord_core::AppState {
         db,
         event_bus: paracord_core::events::EventBus::default(),
         runtime,
@@ -516,6 +455,14 @@ async fn main() -> Result<()> {
             federation_max_user_creates_per_peer_per_hour: config
                 .federation
                 .max_user_creates_per_peer_per_hour,
+            native_media_enabled: config.voice.native_media,
+            native_media_port: config.voice.port,
+            native_media_max_participants: config.voice.max_participants_per_room,
+            native_media_e2ee_required: config.voice.e2ee_required,
+            max_guild_storage_quota: config.storage.max_guild_storage_quota,
+            federation_file_cache_enabled: config.federation.file_cache_enabled,
+            federation_file_cache_max_size: config.federation.file_cache_max_size,
+            federation_file_cache_ttl_hours: config.federation.file_cache_ttl_hours,
         },
         voice,
         storage,
@@ -525,7 +472,95 @@ async fn main() -> Result<()> {
         permission_cache: paracord_core::build_permission_cache(),
         federation_service,
         member_index: Arc::new(member_index),
+        presence_manager: Arc::new(paracord_core::presence_manager::PresenceManager::new()),
+        native_media: None,
     };
+
+    // ── Native QUIC media server ─────────────────────────────────────────────
+    // Uses a single UDP port (defaults to 8443, same as TLS) with ALPN-based
+    // routing: `h3` → WebTransport (browsers), anything else → raw QUIC
+    // (desktop/federation). Admins only need to forward one port (TCP + UDP).
+    if config.voice.native_media {
+        use paracord_transport::endpoint::{generate_self_signed_cert, MediaEndpoint};
+
+        let media_port = config.voice.port;
+        let media_addr: std::net::SocketAddr =
+            format!("0.0.0.0:{}", media_port).parse()?;
+        match generate_self_signed_cert() {
+            Ok(tls) => {
+                // Compute SHA-256 hash of the DER certificate for WebTransport
+                // `serverCertificateHashes`. Browsers need this to trust
+                // self-signed certs.
+                let cert_hash = {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(tls.cert_chain[0].as_ref());
+                    let digest = hasher.finalize();
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.encode(digest)
+                };
+
+                // Single unified endpoint: ALPN `h3` for WebTransport browsers,
+                // `paracord-media` for raw QUIC desktop/federation clients.
+                // Clients that send no ALPN are also accepted (routed to raw QUIC).
+                match MediaEndpoint::bind_unified(
+                    media_addr,
+                    tls,
+                    vec![b"h3".to_vec(), b"paracord-media".to_vec()],
+                ) {
+                    Ok(endpoint) => {
+                        let rooms = Arc::new(paracord_relay::room::MediaRoomManager::new());
+                        let speaker = Arc::new(paracord_relay::speaker::SpeakerDetector::new());
+                        let relay_forwarder = Arc::new(paracord_relay::relay::RelayForwarder::new(
+                            Arc::clone(&rooms),
+                            Arc::clone(&speaker),
+                        ));
+                        let endpoint = Arc::new(endpoint);
+                        let native_state = paracord_core::NativeMediaState {
+                            rooms: Arc::clone(&rooms),
+                            speaker_detector: Arc::clone(&speaker),
+                            endpoint: Arc::clone(&endpoint),
+                            relay_forwarder: Arc::clone(&relay_forwarder),
+                            cert_hash: cert_hash.clone(),
+                        };
+                        state.native_media = Some(native_state);
+                        tracing::info!(
+                            "Native QUIC media server listening on UDP port {} (unified: raw QUIC + WebTransport)",
+                            media_port
+                        );
+
+                        // Spawn unified accept loop — inspects ALPN to route
+                        // each connection to the appropriate handler.
+                        {
+                            let relay = Arc::clone(&relay_forwarder);
+                            let jwt_secret = config.auth.jwt_secret.clone();
+                            let db = state.db.clone();
+                            tokio::spawn(async move {
+                                unified_media_accept_loop(endpoint, relay, jwt_secret, db).await;
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to start native QUIC media server: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to generate self-signed cert for media: {}", e);
+            }
+        }
+    }
+
+    // ── QUIC file transfer partial upload cleanup ─────────────────────────────
+    if config.voice.native_media {
+        let partial_dir =
+            std::path::Path::new(&config.storage.path).join("partial");
+        paracord_transport::file_transfer::PartialUploadManager::spawn_cleanup_task(
+            partial_dir,
+            shutdown_notify.clone(),
+        );
+        tracing::info!("QUIC file transfer enabled (sharing native media QUIC endpoint)");
+    }
 
     paracord_api::install_http_rate_limiter();
     paracord_api::spawn_http_rate_limiter_cleanup(shutdown_notify.clone());
@@ -549,6 +584,7 @@ async fn main() -> Result<()> {
         shutdown_notify.clone(),
     );
     spawn_federation_delivery_worker(state.clone(), shutdown_notify.clone());
+    bots::spawn_bot_manager(state.clone(), shutdown_notify.clone());
 
     let router = paracord_api::build_router()
         .merge(paracord_ws::gateway_router())
@@ -622,22 +658,32 @@ async fn main() -> Result<()> {
     }
 
     // ── Startup banner ───────────────────────────────────────────────────────
+    let voice_status = if config.voice.native_media && livekit_reachable {
+        "Native QUIC (LiveKit fallback)".to_string()
+    } else if config.voice.native_media {
+        "Native QUIC".to_string()
+    } else if livekit_reachable {
+        livekit_status.clone()
+    } else {
+        "Not available".to_string()
+    };
+
     print_startup_banner(
         &config.server.bind_address,
         &config.server.public_url,
         &livekit_status,
         &config.database.url,
-        &upnp_status,
+        &port_forwarding_status,
         &web_ui_status,
         &tls_status,
         tls_rustls_config.is_some(),
         tls_port,
         needs_manual_forwarding,
-        upnp_server_port,
+        server_public_port,
+        &voice_status,
     );
 
-    // Graceful shutdown: clean up UPnP on ctrl-c or API-triggered restart
-    let upnp_enabled = config.network.upnp;
+    // Graceful shutdown on ctrl-c or API-triggered restart
     let shutdown_notify_http = shutdown_notify.clone();
     let shutdown_signal_http = async move {
         tokio::select! {
@@ -651,12 +697,6 @@ async fn main() -> Result<()> {
         }
         if let Some(mut lk) = managed_livekit {
             lk.kill().await;
-        }
-        if upnp_enabled {
-            upnp::cleanup_upnp(upnp_server_port, upnp_livekit_port).await;
-            if tls_enabled && upnp_server_port != tls_port {
-                upnp::cleanup_extra_port(tls_port).await;
-            }
         }
     };
 
@@ -1237,6 +1277,119 @@ async fn run_retention_once(
         }
     }
 
+    // Per-guild file retention: purge attachments older than each guild's retention_days.
+    if let Ok(guild_policies) =
+        paracord_db::guild_storage_policies::list_guilds_with_retention_policies(db).await
+    {
+        for (guild_id, retention_days) in guild_policies {
+            let cutoff = now - chrono::Duration::days(retention_days as i64);
+            let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+            let mut guild_deleted = 0_u64;
+            loop {
+                let attachments =
+                    match paracord_db::guild_storage_policies::get_guild_attachments_older_than(
+                        db,
+                        guild_id,
+                        &cutoff_str,
+                        batch_size,
+                    )
+                    .await
+                    {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            tracing::warn!(
+                                "Guild {} retention query failed: {}",
+                                guild_id,
+                                err
+                            );
+                            break;
+                        }
+                    };
+                if attachments.is_empty() {
+                    break;
+                }
+                let batch_len = attachments.len();
+                for attachment in &attachments {
+                    let _ = paracord_db::attachments::delete_attachment(db, attachment.id).await;
+                    remove_attachment_file(backend, attachment).await;
+                    guild_deleted += 1;
+                }
+                if (batch_len as i64) < batch_size {
+                    break;
+                }
+            }
+            if guild_deleted > 0 {
+                tracing::info!(
+                    "Guild {} retention removed {} attachment(s)",
+                    guild_id,
+                    guild_deleted
+                );
+            }
+        }
+    }
+
+    // Federation file cache cleanup: delete expired entries, then LRU evict if over size limit.
+    {
+        let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        if let Ok(expired) =
+            paracord_db::federation_file_cache::get_expired_cache_entries(db, &now_str, batch_size)
+                .await
+        {
+            let mut cache_deleted = 0_u64;
+            for entry in &expired {
+                let _ = backend.delete(&entry.storage_key).await;
+                let _ = paracord_db::federation_file_cache::delete_cache_entry(db, entry.id).await;
+                cache_deleted += 1;
+            }
+            if cache_deleted > 0 {
+                tracing::info!(
+                    "Federation cache cleanup removed {} expired entrie(s)",
+                    cache_deleted
+                );
+            }
+        }
+
+        // LRU eviction if total cache size exceeds the configured maximum.
+        // We read the limit from server_settings DB, falling back to a 1GB default.
+        let cache_max_size: u64 = paracord_db::server_settings::get_setting(
+            db,
+            "federation_file_cache_max_size",
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1_073_741_824);
+
+        if let Ok(total_size) = paracord_db::federation_file_cache::get_total_cache_size(db).await {
+            if (total_size as u64) > cache_max_size {
+                if let Ok(lru_entries) =
+                    paracord_db::federation_file_cache::get_lru_cache_entries(db, batch_size).await
+                {
+                    let mut evicted = 0_u64;
+                    let mut running_size = total_size as u64;
+                    for entry in &lru_entries {
+                        if running_size <= cache_max_size {
+                            break;
+                        }
+                        let _ = backend.delete(&entry.storage_key).await;
+                        let _ =
+                            paracord_db::federation_file_cache::delete_cache_entry(db, entry.id)
+                                .await;
+                        running_size = running_size.saturating_sub(entry.size as u64);
+                        evicted += 1;
+                    }
+                    if evicted > 0 {
+                        tracing::info!(
+                            "Federation cache LRU evicted {} entrie(s)",
+                            evicted
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1392,13 +1545,14 @@ fn print_startup_banner(
     public_url: &Option<String>,
     livekit_status: &str,
     db_url: &str,
-    upnp_status: &str,
+    port_forwarding_status: &str,
     web_ui: &str,
     tls_status: &str,
     tls_active: bool,
     tls_port: u16,
     needs_manual_forwarding: bool,
     server_port: u16,
+    voice_status: &str,
 ) {
     println!();
     println!("  ____                                     _");
@@ -1428,8 +1582,9 @@ fn print_startup_banner(
     }
     println!();
     println!("  Database:    {}", db_url);
+    println!("  Voice:       {}", voice_status);
     println!("  LiveKit:     {}", livekit_status);
-    println!("  Port Fwd:    {}", upnp_status);
+    println!("  Port Fwd:    {}", port_forwarding_status);
     println!("  Web UI:      {}", web_ui);
     println!("  TLS/HTTPS:   {}", tls_status);
 
@@ -1459,8 +1614,6 @@ fn print_startup_banner(
         }
         println!("  ║  Settings > Firewall > Port Forwarding           ║");
         println!("  ║                                                  ║");
-        println!("  ║  Tip: Enable UPnP in your router settings       ║");
-        println!("  ║  to skip this step next time.                    ║");
         println!("  ╚══════════════════════════════════════════════════╝");
     }
     println!();
@@ -1533,6 +1686,300 @@ fn spawn_auto_backup(
     });
 }
 
+// ── Unified media accept loop ────────────────────────────────────────────
+
+/// Accept incoming QUIC connections on the unified media endpoint,
+/// inspect the negotiated ALPN, and route to the appropriate handler:
+/// - `h3` → WebTransport (browser clients)
+/// - anything else (or no ALPN) → raw QUIC (desktop/federation)
+async fn unified_media_accept_loop(
+    endpoint: Arc<paracord_transport::endpoint::MediaEndpoint>,
+    relay: Arc<paracord_relay::relay::RelayForwarder>,
+    jwt_secret: String,
+    db: paracord_db::DbPool,
+) {
+    tracing::info!("Unified media accept loop started (ALPN routing: h3 → WebTransport, other → raw QUIC)");
+    loop {
+        let incoming = match endpoint.accept().await {
+            Some(i) => i,
+            None => {
+                tracing::info!("Media endpoint closed");
+                break;
+            }
+        };
+
+        let relay = Arc::clone(&relay);
+        let jwt_secret = jwt_secret.clone();
+        let db = db.clone();
+        tokio::spawn(async move {
+            let conn = match incoming.accept() {
+                Ok(connecting) => match connecting.await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        tracing::debug!("Media connection failed: {}", e);
+                        return;
+                    }
+                },
+                Err(e) => {
+                    tracing::debug!("Media incoming accept failed: {}", e);
+                    return;
+                }
+            };
+
+            // Inspect the negotiated ALPN to determine connection type.
+            let alpn = conn
+                .handshake_data()
+                .and_then(|data| {
+                    data.downcast::<quinn::crypto::rustls::HandshakeData>()
+                        .ok()
+                })
+                .and_then(|hs| hs.protocol.clone());
+
+            let is_h3 = alpn.as_deref() == Some(b"h3");
+
+            if is_h3 {
+                handle_webtransport_connection(conn, relay, jwt_secret, db).await;
+            } else {
+                handle_raw_quic_connection(conn, relay, jwt_secret, db).await;
+            }
+        });
+    }
+}
+
+/// Handle a raw QUIC media connection (desktop Tauri clients, federation).
+async fn handle_raw_quic_connection(
+    conn: quinn::Connection,
+    relay: Arc<paracord_relay::relay::RelayForwarder>,
+    jwt_secret: String,
+    db: paracord_db::DbPool,
+) {
+    let remote_addr = conn.remote_address();
+    tracing::info!(addr = %remote_addr, "QUIC: new raw media connection");
+
+    let media_conn = match paracord_transport::connection::MediaConnection::accept_and_auth(
+        conn.clone(),
+        &jwt_secret,
+        paracord_transport::connection::ConnectionMode::Relay,
+    )
+    .await
+    {
+        Ok(mc) => mc,
+        Err(e) => {
+            tracing::warn!(addr = %remote_addr, "QUIC: auth failed: {}", e);
+            return;
+        }
+    };
+
+    let user_id = media_conn.meta().user_id;
+    tracing::info!(user_id, addr = %remote_addr, "QUIC: authenticated");
+
+    // Look up user's voice state to determine room
+    let room_id = match paracord_db::voice_states::get_all_user_voice_states(&db, user_id).await {
+        Ok(states) if !states.is_empty() => {
+            let vs = &states[0];
+            let guild_id = vs.guild_id().unwrap_or(0);
+            format!("{}:{}", guild_id, vs.channel_id)
+        }
+        _ => {
+            tracing::warn!(user_id, "QUIC: user not in any voice channel");
+            return;
+        }
+    };
+
+    let handle = paracord_relay::relay::ConnectionHandle::new(user_id, room_id.clone(), conn);
+    relay.add_connection(handle.clone());
+    relay.spawn_forwarding_task(handle);
+    tracing::info!(user_id, room_id = %room_id, "QUIC: relay forwarding started");
+}
+
+/// Handle an HTTP/3 WebTransport connection from a browser client.
+async fn handle_webtransport_connection(
+    conn: quinn::Connection,
+    relay: Arc<paracord_relay::relay::RelayForwarder>,
+    jwt_secret: String,
+    db: paracord_db::DbPool,
+) {
+    let remote_addr = conn.remote_address();
+    tracing::info!(addr = %remote_addr, "WebTransport: new HTTP/3 connection");
+
+    // Handle as HTTP/3 and accept WebTransport session
+    let mut h3_session =
+        match paracord_transport::webtransport::WebTransportServer::handle_connection(conn.clone())
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(addr = %remote_addr, "WebTransport: HTTP/3 setup failed: {}", e);
+                return;
+            }
+        };
+
+    let wt_session = match h3_session.accept_session().await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            tracing::debug!(addr = %remote_addr, "WebTransport: no session received");
+            return;
+        }
+        Err(e) => {
+            tracing::debug!(addr = %remote_addr, "WebTransport: session accept failed: {}", e);
+            return;
+        }
+    };
+
+    tracing::info!(
+        addr = %remote_addr,
+        path = %wt_session.path(),
+        "WebTransport: session established"
+    );
+
+    // Authenticate: read first bidi stream message (newline-delimited
+    // JSON `{ "type": "auth", "token": "..." }`).
+    let (mut send, mut recv) = match wt_session.accept_bi().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::warn!(addr = %remote_addr, "WebTransport: no bidi stream for auth: {}", e);
+            return;
+        }
+    };
+
+    // Read up to 8KB for the auth message
+    let mut buf = vec![0u8; 8192];
+    let mut total = 0usize;
+    let user_id: i64;
+    let room_id: String;
+
+    loop {
+        match recv.read(&mut buf[total..]).await {
+            Ok(Some(n)) => {
+                total += n;
+                // Look for newline delimiter
+                if let Some(nl_pos) = buf[..total].iter().position(|&b| b == b'\n') {
+                    let line = &buf[..nl_pos];
+                    let msg: serde_json::Value = match serde_json::from_slice(line) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!(addr = %remote_addr, "WebTransport: invalid auth JSON: {}", e);
+                            return;
+                        }
+                    };
+
+                    if msg.get("type").and_then(|t| t.as_str()) != Some("auth") {
+                        tracing::warn!(addr = %remote_addr, "WebTransport: first message not auth");
+                        return;
+                    }
+
+                    let token = match msg.get("token").and_then(|t| t.as_str()) {
+                        Some(t) => t,
+                        None => {
+                            tracing::warn!(addr = %remote_addr, "WebTransport: auth message missing token");
+                            return;
+                        }
+                    };
+
+                    // Validate JWT
+                    let validation =
+                        jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+                    let token_data = match jsonwebtoken::decode::<serde_json::Value>(
+                        token,
+                        &jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes()),
+                        &validation,
+                    ) {
+                        Ok(td) => td,
+                        Err(e) => {
+                            tracing::warn!(addr = %remote_addr, "WebTransport: JWT validation failed: {}", e);
+                            return;
+                        }
+                    };
+
+                    let claims = token_data.claims;
+                    user_id = claims
+                        .get("sub")
+                        .and_then(|s| s.as_str())
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(0);
+
+                    if user_id == 0 {
+                        tracing::warn!(addr = %remote_addr, "WebTransport: invalid user_id in JWT");
+                        return;
+                    }
+
+                    // Try to get room from JWT claims first, fall back
+                    // to DB voice state lookup.
+                    room_id = if let Some(room) = claims.get("room").and_then(|r| r.as_str()) {
+                        room.to_string()
+                    } else {
+                        match paracord_db::voice_states::get_all_user_voice_states(&db, user_id)
+                            .await
+                        {
+                            Ok(states) if !states.is_empty() => {
+                                let vs = &states[0];
+                                let guild_id = vs.guild_id().unwrap_or(0);
+                                format!("{}:{}", guild_id, vs.channel_id)
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    user_id,
+                                    "WebTransport: user not in any voice channel"
+                                );
+                                return;
+                            }
+                        }
+                    };
+
+                    // Send ack
+                    let ack = b"{\"type\":\"auth_ok\"}\n";
+                    let _ = send.write_all(ack).await;
+
+                    break;
+                }
+
+                if total >= buf.len() {
+                    tracing::warn!(addr = %remote_addr, "WebTransport: auth message too large");
+                    return;
+                }
+            }
+            Ok(None) => {
+                tracing::warn!(addr = %remote_addr, "WebTransport: stream closed before auth");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(addr = %remote_addr, "WebTransport: read error during auth: {}", e);
+                return;
+            }
+        }
+    }
+
+    tracing::info!(
+        user_id,
+        room_id = %room_id,
+        addr = %remote_addr,
+        "WebTransport: authenticated"
+    );
+
+    // Spawn datagram bridge (handles QSID framing).
+    // The first WebTransport session on a fresh connection has QSID = 0.
+    let (outbound_tx, inbound_rx) =
+        paracord_transport::webtransport::spawn_webtransport_bridge(
+            wt_session.quinn_conn().clone(),
+            0,
+        );
+
+    // Create bridged connection handle and start forwarding
+    let handle = paracord_relay::relay::ConnectionHandle::new_bridged(
+        user_id,
+        room_id.clone(),
+        outbound_tx,
+        inbound_rx,
+    );
+    relay.add_connection(handle.clone());
+    relay.spawn_forwarding_task(handle);
+    tracing::info!(
+        user_id,
+        room_id = %room_id,
+        "WebTransport: relay forwarding started"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1582,3 +2029,4 @@ mod tests {
             .contains("invalid federation signing key at"));
     }
 }
+

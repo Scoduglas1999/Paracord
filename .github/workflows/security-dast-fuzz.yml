@@ -63,8 +63,7 @@ jobs:
           enabled = false
 
           [network]
-          upnp = false
-          upnp_lease_seconds = 3600
+          windows_firewall_auto_allow = false
 
           [tls]
           enabled = false

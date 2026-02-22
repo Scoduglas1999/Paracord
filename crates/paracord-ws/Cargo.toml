@@ -9,6 +9,7 @@ license.workspace = true
 paracord-core = { workspace = true }
 paracord-models = { workspace = true }
 paracord-db = { workspace = true }
+paracord-relay = { path = "../paracord-relay" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -20,3 +21,5 @@ chrono = { workspace = true }
 futures-util = "0.3"
 moka = { workspace = true }
 dashmap = { workspace = true }
+governor = { workspace = true }
+flate2 = "1"

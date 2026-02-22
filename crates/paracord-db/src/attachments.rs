@@ -16,6 +16,7 @@ pub struct AttachmentRow {
     pub upload_channel_id: Option<i64>,
     pub upload_created_at: DateTime<Utc>,
     pub upload_expires_at: Option<DateTime<Utc>>,
+    pub content_hash: Option<String>,
 }
 
 impl<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> for AttachmentRow {
@@ -38,6 +39,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> for AttachmentRow {
                 .as_deref()
                 .map(datetime_from_db_text)
                 .transpose()?,
+            content_hash: row.try_get("content_hash")?,
         })
     }
 }
@@ -56,16 +58,18 @@ pub async fn create_attachment(
     uploader_id: Option<i64>,
     upload_channel_id: Option<i64>,
     upload_expires_at: Option<DateTime<Utc>>,
+    content_hash: Option<&str>,
 ) -> Result<AttachmentRow, DbError> {
     let row = sqlx::query_as::<_, AttachmentRow>(
         "INSERT INTO attachments (
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_expires_at
+            uploader_id, upload_channel_id, upload_expires_at, content_hash
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at",
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash",
     )
     .bind(id)
     .bind(message_id)
@@ -78,6 +82,7 @@ pub async fn create_attachment(
     .bind(uploader_id)
     .bind(upload_channel_id)
     .bind(upload_expires_at.map(datetime_to_db_text))
+    .bind(content_hash)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -87,7 +92,8 @@ pub async fn get_attachment(pool: &DbPool, id: i64) -> Result<Option<AttachmentR
     let row = sqlx::query_as::<_, AttachmentRow>(
         "SELECT
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash
          FROM attachments WHERE id = $1",
     )
     .bind(id)
@@ -111,7 +117,8 @@ pub async fn get_message_attachments(
     let rows = sqlx::query_as::<_, AttachmentRow>(
         "SELECT
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash
          FROM attachments WHERE message_id = $1",
     )
     .bind(message_id)
@@ -155,7 +162,8 @@ pub async fn get_expired_pending_attachments(
     let rows = sqlx::query_as::<_, AttachmentRow>(
         "SELECT
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash
          FROM attachments
          WHERE message_id IS NULL
            AND upload_expires_at IS NOT NULL
@@ -189,7 +197,8 @@ pub async fn get_attachments_for_message_ids(
     let sql = format!(
         "SELECT
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash
          FROM attachments
          WHERE message_id IN ({})
          ORDER BY upload_created_at ASC
@@ -215,7 +224,8 @@ pub async fn get_unlinked_attachments_older_than(
     let rows = sqlx::query_as::<_, AttachmentRow>(
         "SELECT
             id, message_id, filename, content_type, size, url, width, height,
-            uploader_id, upload_channel_id, upload_created_at, upload_expires_at
+            uploader_id, upload_channel_id, upload_created_at, upload_expires_at,
+            content_hash
          FROM attachments
          WHERE message_id IS NULL
            AND upload_created_at <= $1
@@ -290,6 +300,7 @@ mod tests {
             Some(user_a.id),
             Some(channel_a.id),
             Some(Utc::now() + chrono::Duration::minutes(10)),
+            None,
         )
         .await
         .expect("create attachment");

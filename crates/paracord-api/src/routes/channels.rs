@@ -2366,6 +2366,11 @@ async fn federation_forward_message(
     )
     .await;
 
+    // Query attachment metadata for the message
+    let attachments_meta = paracord_db::attachments::get_message_attachments(&state.db, message_id)
+        .await
+        .unwrap_or_default();
+
     let envelope = if outbound.uses_remote_mapping {
         let mut message_content = serde_json::json!({
             "body": content,
@@ -2388,6 +2393,22 @@ async fn federation_forward_message(
         }
         if let Some(name) = guild_meta.as_ref().map(|guild| guild.name.as_str()) {
             message_content["guild_name"] = Value::String(name.to_string());
+        }
+        if !attachments_meta.is_empty() {
+            let meta: Vec<serde_json::Value> = attachments_meta
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "id": a.id.to_string(),
+                        "filename": a.filename,
+                        "size": a.size,
+                        "content_type": a.content_type,
+                        "content_hash": a.content_hash,
+                        "origin_url": format!("/_paracord/federation/v1/file/{}", a.id),
+                    })
+                })
+                .collect();
+            message_content["attachments"] = serde_json::json!(meta);
         }
         match service.build_custom_envelope(
             "m.message",
@@ -2420,7 +2441,25 @@ async fn federation_forward_message(
             guild_meta.as_ref().map(|guild| guild.name.as_str()),
             timestamp_ms,
         ) {
-            Ok(env) => env,
+            Ok(mut env) => {
+                if !attachments_meta.is_empty() {
+                    let meta: Vec<serde_json::Value> = attachments_meta
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!({
+                                "id": a.id.to_string(),
+                                "filename": a.filename,
+                                "size": a.size,
+                                "content_type": a.content_type,
+                                "content_hash": a.content_hash,
+                                "origin_url": format!("/_paracord/federation/v1/file/{}", a.id),
+                            })
+                        })
+                        .collect();
+                    env.content["attachments"] = serde_json::json!(meta);
+                }
+                env
+            }
             Err(e) => {
                 tracing::warn!(
                     "federation: failed to build envelope for message {message_id}: {e}"

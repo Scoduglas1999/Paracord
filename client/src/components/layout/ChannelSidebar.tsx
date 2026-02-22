@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useRelationshipStore } from '../../stores/relationshipStore';
 import { useVoiceStore } from '../../stores/voiceStore';
 import { usePresenceStore } from '../../stores/presenceStore';
+import { useUIStore } from '../../stores/uiStore';
 import { VoiceControls } from '../voice/VoiceControls';
 import { InviteModal } from '../guild/InviteModal';
 import { Permissions, hasPermission, isAdmin as isGlobalAdmin, type Channel } from '../../types/index';
@@ -63,7 +64,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
   const [showDmPicker, setShowDmPicker] = useState(false);
   const relationships = useRelationshipStore((s) => s.relationships);
   const fetchRelationships = useRelationshipStore((s) => s.fetchRelationships);
-  const { connected, channelId: activeVoiceChannelId, joinChannel, leaveChannel, selfMute, selfDeaf, toggleMute, toggleDeaf } = useVoice();
+  const { connected, channelId: activeVoiceChannelId, joinChannel, selfMute, selfDeaf, toggleMute, toggleDeaf } = useVoice();
   const channelParticipants = useVoiceStore((s) => s.channelParticipants);
   const speakingUsers = useVoiceStore((s) => s.speakingUsers);
 
@@ -150,7 +151,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
     if (gId) {
       if ((channel.type === 2 || channel.channel_type === 2) && gId) {
         if (connected && activeVoiceChannelId === channel.id) {
-          void leaveChannel();
+          // Already in this voice channel — just navigate back to it.
         } else {
           // Do not block navigation on RTC connect attempts, which can take
           // a long time or fail in degraded network environments.
@@ -164,7 +165,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
   if (!currentGuild && collapsed) {
     const compactDms = dmChannels.slice(0, 32);
     return (
-      <div className="flex h-full flex-col items-center px-1.5 py-3">
+      <div className="flex h-full flex-col items-center px-2 py-4">
         <Tooltip content="Home" side="right">
           <button
             onClick={() => navigate('/app')}
@@ -382,7 +383,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
         <Tooltip content={currentGuild.name} side="right">
           <button
             className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-xs font-bold text-text-primary transition-colors hover:bg-bg-mod-strong"
-            onClick={() => navigate(`/app/guilds/${currentGuild.id}/settings`)}
+            onClick={() => useUIStore.getState().setGuildSettingsId(currentGuild.id)}
           >
             {currentGuild.name.slice(0, 2).toUpperCase()}
           </button>
@@ -465,7 +466,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
               )}
               disabled={!canManageGuild}
               title={canManageGuild ? 'Server Settings' : 'You need Manage Server permission'}
-              onClick={() => { setShowGuildMenu(false); navigate(`/app/guilds/${currentGuild.id}/settings`); }}
+              onClick={() => { setShowGuildMenu(false); useUIStore.getState().setGuildSettingsId(currentGuild.id); }}
             >
               Server Settings
               <Settings size={14} className="opacity-0 group-hover:opacity-100" />
@@ -531,6 +532,25 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
       )}
 
       <div className="flex-1 overflow-y-auto px-3 pt-4 scrollbar-thin">
+        {/* Server Hub Direct Link */}
+        <button
+          onClick={() => navigate(`/app/guilds/${currentGuild.id}`)}
+          className={cn(
+            'architect-nav-item group relative mb-4 mt-1 cursor-pointer px-3.5 py-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary rounded-xl',
+            location.pathname === `/app/guilds/${currentGuild.id}`
+              ? 'architect-nav-item-active text-black'
+              : 'text-text-secondary hover:text-text-primary'
+          )}
+        >
+          <Home size={16} className={cn('mr-1.5', location.pathname === `/app/guilds/${currentGuild.id}` ? 'text-black/70' : 'text-text-muted group-hover:text-text-secondary')} />
+          <span className={cn(
+            'truncate text-[15px]',
+            location.pathname === `/app/guilds/${currentGuild.id}` ? 'text-black font-bold' : 'font-semibold text-text-secondary group-hover:text-text-primary'
+          )}>
+            Server Hub
+          </span>
+        </button>
+
         {categoryGroups.map((cat) => (
           <div key={cat.id} className="mb-4">
             {/* Category header — shown for both real and virtual groups (except __uncategorized__) */}
@@ -616,7 +636,7 @@ export function ChannelSidebar({ collapsed = false }: ChannelSidebarProps) {
                       }
                     }}
                     className={cn(
-                      'architect-nav-item group relative mb-1 cursor-pointer px-3 py-2.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary',
+                      'architect-nav-item group relative mb-1.5 cursor-pointer px-3.5 py-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary rounded-xl',
                       isSelected
                         ? 'architect-nav-item-active text-black'
                         : 'text-text-secondary hover:text-text-primary'
@@ -898,7 +918,7 @@ function UserPanel({
             </button>
           </Tooltip>
           <Tooltip content="User Settings">
-            <button onClick={() => navigate('/app/settings')} className="flex h-10 w-10 items-center justify-center rounded-lg border border-transparent text-text-secondary transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary">
+            <button onClick={() => useUIStore.getState().setUserSettingsOpen(true)} className="flex h-10 w-10 items-center justify-center rounded-lg border border-transparent text-text-secondary transition-colors hover:border-border-subtle hover:bg-bg-mod-subtle hover:text-text-primary">
               <Settings size={20} />
             </button>
           </Tooltip>

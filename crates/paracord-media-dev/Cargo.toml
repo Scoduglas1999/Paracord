@@ -1,0 +1,53 @@
+[package]
+name = "paracord-media-dev"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "paracord-media-dev"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+paracord-transport = { path = "../paracord-transport" }
+paracord-relay = { path = "../paracord-relay" }
+paracord-models = { workspace = true }
+
+# QUIC
+quinn = { workspace = true }
+
+# Web framework (minimal signaling server)
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures-util = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Config
+toml = { workspace = true }
+clap = { workspace = true }
+
+# Auth
+jsonwebtoken = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Bytes
+bytes = "1"

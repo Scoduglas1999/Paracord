@@ -139,7 +139,7 @@ export function MemberList({ members: propMembers, roles = [], compact = false }
 
     return (
       <div
-        className="flex h-full flex-col items-center overflow-y-auto px-2 py-5 scrollbar-thin"
+        className="flex h-full flex-col items-center overflow-y-auto px-3 py-6 scrollbar-thin"
         role="complementary"
         aria-label="Member list"
       >
@@ -148,7 +148,7 @@ export function MemberList({ members: propMembers, roles = [], compact = false }
           <div className="mt-1 text-sm font-semibold text-text-primary">{members.length}</div>
         </div>
 
-        <div className="flex w-full flex-1 flex-col items-center gap-2">
+        <div className="flex w-full flex-1 flex-col items-center gap-3">
           {isMemberListLoading ? (
             Array.from({ length: 7 }, (_, i) => (
               <div
@@ -206,7 +206,7 @@ export function MemberList({ members: propMembers, roles = [], compact = false }
   const renderMember = (member: MemberWithUser) => (
     <button
       key={member.user_id}
-      className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 text-left transition-all hover:border-border-subtle hover:bg-bg-mod-subtle"
+      className="group flex w-full items-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left transition-all hover:border-border-subtle hover:bg-bg-mod-subtle"
       onClick={(e) => handleMemberClick(e, member)}
     >
       <div className="relative flex-shrink-0">
@@ -345,7 +345,7 @@ export function MemberList({ members: propMembers, roles = [], compact = false }
                 }}
               >
                 {row.type === 'stats' && (
-                  <div className="mb-6 rounded-xl border border-border-subtle bg-bg-mod-subtle/60 px-3.5 py-3">
+                  <div className="mb-8 rounded-2xl border border-border-subtle bg-bg-mod-subtle/60 px-3.5 py-3">
                     <div className="text-xs font-semibold uppercase tracking-wide text-text-muted">Members</div>
                     <div className="mt-0.5 text-base font-semibold text-text-primary">{members.length}</div>
                   </div>

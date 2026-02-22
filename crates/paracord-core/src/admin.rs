@@ -159,7 +159,7 @@ pub async fn admin_update_guild(
         .await?
         .ok_or(CoreError::NotFound)?;
     let updated =
-        paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash).await?;
+        paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash, None, None).await?;
     Ok(updated)
 }
 

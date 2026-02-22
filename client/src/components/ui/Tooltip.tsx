@@ -108,7 +108,7 @@ export function Tooltip({
                             exit={{ opacity: 0, scale: 0.95 }}
                             transition={{ duration: 0.1 }}
                             className={cn(
-                                "fixed z-[9999] px-2.5 py-1.5 text-xs font-semibold text-text-primary bg-bg-floating rounded shadow-md whitespace-nowrap pointer-events-none",
+                                "fixed z-[9999] px-2.5 py-1.5 text-xs font-semibold text-text-primary bg-bg-floating backdrop-blur-md border border-white/5 rounded-lg shadow-lg whitespace-nowrap pointer-events-none",
                                 className
                             )}
                             style={{

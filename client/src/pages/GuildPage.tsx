@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { AlertTriangle, EyeOff, Headphones, HeadphoneOff, LayoutList, MicOff, Monitor, MonitorOff, PanelLeft, PhoneOff, PictureInPicture2, Users, Video } from 'lucide-react';
+import { EyeOff, Headphones, HeadphoneOff, LayoutList, MicOff, Monitor, PanelLeft, PictureInPicture2, Users, Video, MessageSquare, X } from 'lucide-react';
 import { RoomEvent, Track } from 'livekit-client';
 import { TopBar } from '../components/layout/TopBar';
 import { MessageList } from '../components/message/MessageList';
@@ -10,10 +10,12 @@ import { ForumView } from '../components/channel/ForumView';
 import { StreamViewer } from '../components/voice/StreamViewer';
 import { VideoGrid } from '../components/voice/VideoGrid';
 import { SplitPane } from '../components/voice/SplitPane';
+import { VoiceControlBar } from '../components/voice/VoiceControlBar';
 import type { PaneSource } from '../components/voice/SplitPaneSourcePicker';
 import { useChannelStore } from '../stores/channelStore';
 import { useGuildStore } from '../stores/guildStore';
 import { useMemberStore } from '../stores/memberStore';
+import { cancelMessageFetch } from '../stores/messageStore';
 import { useUIStore } from '../stores/uiStore';
 import { useVoice } from '../hooks/useVoice';
 import { useStream } from '../hooks/useStream';
@@ -27,36 +29,7 @@ import { GuildWelcomeScreen } from '../components/guild/GuildWelcomeScreen';
 import { channelApi } from '../api/channels';
 import type { Message } from '../types';
 
-function getStreamErrorMessage(error: unknown): string {
-  const err = error as { name?: string; message?: string };
-  const name = err?.name || '';
-  const rawMessage = err?.message || '';
-  const message = rawMessage.toLowerCase();
 
-  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-    return 'Screen share permission was denied. Allow screen capture for this app and try again.';
-  }
-  if (name === 'NotReadableError') {
-    return 'Screen capture is blocked by your OS or another app. Close protected content and retry.';
-  }
-  if (name === 'NotFoundError') {
-    return 'No shareable display source was found.';
-  }
-  if (name === 'AbortError') {
-    return 'Screen share prompt was closed before selecting a source.';
-  }
-  if (message.includes('voice connection is not ready')) {
-    return 'Voice connection is not ready yet. Wait a moment and try again.';
-  }
-  if (message.includes('secure') || message.includes('https')) {
-    return 'Screen sharing requires a secure context. Use localhost or HTTPS.';
-  }
-
-  if (name) {
-    return `Unable to start stream (${name}). ${rawMessage || 'Check browser permissions and try again.'}`;
-  }
-  return `Unable to start stream. ${rawMessage || 'Check browser permissions and try again.'}`;
-}
 
 type VideoLayout = 'top' | 'side' | 'pip' | 'hidden';
 
@@ -68,7 +41,7 @@ export function GuildPage() {
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
   const fetchMembers = useMemberStore((s) => s.fetchMembers);
   const isLoading = useChannelStore((s) =>
-    guildId ? (s.isLoading && !s.guildChannelsLoaded[guildId]) : false
+    guildId ? (s.isLoading && !(s.channelsByGuild[guildId]?.length > 0)) : false
   );
   const selectChannel = useChannelStore((s) => s.selectChannel);
   const channel = channels.find(c => c.id === channelId);
@@ -81,20 +54,15 @@ export function GuildPage() {
     channelId: voiceChannelId,
     participants,
     joinChannel,
-    leaveChannel,
     clearConnectionError,
   } = useVoice();
-  const { selfStream, startStream, stopStream } = useStream();
+  const { selfStream, stopStream } = useStream();
   const currentUserId = useAuthStore((s) => s.user?.id ?? null);
   const searchPanelOpen = useUIStore((s) => s.searchPanelOpen);
   const watchedStreamerId = useVoiceStore((s) => s.watchedStreamerId);
   const channelParticipants = useVoiceStore((s) => s.channelParticipants);
   const setWatchedStreamer = useVoiceStore((s) => s.setWatchedStreamer);
   const [replyingTo, setReplyingTo] = useState<{ id: string; author: string; content: string } | null>(null);
-  const [streamError, setStreamError] = useState<string | null>(null);
-  const [streamStarting, setStreamStarting] = useState(false);
-  const [showStreamIssueDetails, setShowStreamIssueDetails] = useState(false);
-  const [captureQuality, setCaptureQuality] = useState('1080p60');
   const [videoLayout, setVideoLayout] = useState<VideoLayout>('top');
   const [activeStreamers, setActiveStreamers] = useState<string[]>([]);
   const [isPhoneLayout, setIsPhoneLayout] = useState(() => {
@@ -120,6 +88,7 @@ export function GuildPage() {
     setShowWelcome(false);
   };
 
+  const [showVoiceChat, setShowVoiceChat] = useState(false);
   // Split-pane state for Side mode
   const [splitState, setSplitState] = useState<{ left: PaneSource; right: PaneSource }>({
     left: { type: 'none' },
@@ -141,7 +110,6 @@ export function GuildPage() {
   const participantCount = Array.from(participants.values()).filter((p) => p.channel_id === channelId).length;
   const activeStreamerSet = useMemo(() => new Set(activeStreamers), [activeStreamers]);
   const ownStreamIssueMessage = selfStream ? streamAudioWarning : null;
-  const streamIssueMessage = streamError || ownStreamIssueMessage;
   const watchedStreamerName = useMemo(() => {
     if (!watchedStreamerId) return undefined;
     if (currentUserId != null && watchedStreamerId === currentUserId) return 'You';
@@ -164,12 +132,19 @@ export function GuildPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [guildId]);
 
+  const prevChannelIdRef = useRef<string | undefined>(channelId);
+
   useEffect(() => {
+    const prevChannelId = prevChannelIdRef.current;
+    prevChannelIdRef.current = channelId;
+
+    if (prevChannelId && prevChannelId !== channelId) {
+      cancelMessageFetch(prevChannelId);
+    }
+
     if (channelId) {
       selectChannel(channelId);
       setReplyingTo(null);
-      setStreamError(null);
-      setShowStreamIssueDetails(false);
       setWatchedStreamer(null);
     }
   }, [channelId, selectChannel, setWatchedStreamer]);
@@ -186,13 +161,30 @@ export function GuildPage() {
       });
   }, [channelId]);
 
-  useEffect(() => {
-    if (!streamIssueMessage) {
-      setShowStreamIssueDetails(false);
-    }
-  }, [streamIssueMessage]);
+
+
+  const mediaEngine = useVoiceStore((s) => s.mediaEngine);
 
   useEffect(() => {
+    // Native media path: derive active streamers from voice state flags
+    // since there is no LiveKit Room to query for track publications.
+    if (mediaEngine && inSelectedVoiceChannel) {
+      const computeFromVoiceState = () => {
+        const next: string[] = [];
+        for (const [userId, vs] of participants) {
+          if (vs.self_stream) next.push(userId);
+        }
+        setActiveStreamers((prev) => {
+          if (prev.length === next.length && prev.every((id) => next.includes(id))) return prev;
+          return next;
+        });
+      };
+      computeFromVoiceState();
+      // Re-check periodically since we don't have track events
+      const interval = setInterval(computeFromVoiceState, 1000);
+      return () => clearInterval(interval);
+    }
+
     if (!room || !inSelectedVoiceChannel) {
       setActiveStreamers([]);
       return;
@@ -265,7 +257,7 @@ export function GuildPage() {
       room.off(RoomEvent.LocalTrackPublished, recomputeActiveStreamers);
       room.off(RoomEvent.LocalTrackUnpublished, recomputeActiveStreamers);
     };
-  }, [room, inSelectedVoiceChannel, currentUserId]);
+  }, [room, mediaEngine, inSelectedVoiceChannel, currentUserId, participants]);
 
   useEffect(() => {
     if (!watchedStreamerId) return;
@@ -454,8 +446,6 @@ export function GuildPage() {
       onStopWatching={() => setWatchedStreamer(null)}
       onStopStream={() => {
         stopStream();
-        setStreamError(null);
-        setShowStreamIssueDetails(false);
       }}
     />
   ) : null;
@@ -477,102 +467,21 @@ export function GuildPage() {
         />
       )}
       {isVoice ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-2 p-2.5 text-text-muted sm:gap-3 sm:p-4 md:gap-4 md:p-5">
-          <div className="glass-panel rounded-2xl border p-3 sm:p-4 md:p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-text-secondary">
-                  <Users size={19} />
+        <div className="flex min-h-0 flex-1 flex-col relative text-text-muted">
+          {inSelectedVoiceChannel && <VoiceControlBar onToggleChat={() => setShowVoiceChat(!showVoiceChat)} isChatOpen={showVoiceChat} />}
+
+          {!inSelectedVoiceChannel && (
+            <div className="p-3 sm:p-4 shrink-0 px-5 pt-5 pb-0">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-mod-subtle text-text-secondary">
+                    <Users size={19} />
+                  </div>
+                  <div>
+                    <div className="text-base font-semibold leading-tight text-text-primary">{channelName}</div>
+                    <div className="text-xs leading-tight text-text-secondary">Participants: {participantCount}</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-base font-semibold leading-tight text-text-primary">{channelName}</div>
-                  <div className="text-xs leading-tight text-text-secondary">Participants: {participantCount}</div>
-                </div>
-              </div>
-              {inSelectedVoiceChannel ? (
-                <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-2.5">
-                  <button
-                    className="control-pill-btn w-full justify-center sm:w-auto"
-                    onClick={() => void leaveChannel()}
-                  >
-                    <PhoneOff size={16} />
-                    Leave Voice
-                  </button>
-                  {!selfStream ? (
-                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-                      <select
-                        value={captureQuality}
-                        onChange={(e) => setCaptureQuality(e.target.value)}
-                        className="h-10 w-full rounded-xl border border-border-subtle bg-bg-mod-subtle px-3.5 text-xs font-medium text-text-secondary outline-none transition-colors hover:bg-bg-mod-strong sm:w-auto sm:text-sm"
-                        title="Capture quality"
-                        disabled={streamStarting}
-                      >
-                        <option value="720p30">720p 30fps</option>
-                        <option value="1080p60">1080p 60fps</option>
-                        <option value="1440p60">1440p 60fps</option>
-                        <option value="4k60">4K 60fps</option>
-                        <option value="movie-50">Movie 4K (50 Mbps)</option>
-                        <option value="movie-100">Movie 4K (100 Mbps)</option>
-                      </select>
-                      <button
-                        className="control-pill-btn w-full justify-center border-accent-primary/50 bg-accent-primary/15 hover:bg-accent-primary/25 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-                        disabled={streamStarting}
-                        onClick={async () => {
-                          setStreamError(null);
-                          setShowStreamIssueDetails(false);
-                          setStreamStarting(true);
-                          try {
-                            await startStream(captureQuality);
-                          } catch (error) {
-                            setStreamError(getStreamErrorMessage(error));
-                          } finally {
-                            setStreamStarting(false);
-                          }
-                        }}
-                      >
-                        <Monitor size={16} />
-                        {streamStarting ? 'Starting...' : 'Start Stream'}
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      className="control-pill-btn w-full justify-center border-accent-primary/50 bg-accent-primary/20 hover:bg-accent-primary/30 sm:w-auto"
-                      onClick={() => {
-                        stopStream();
-                        setStreamError(null);
-                        setShowStreamIssueDetails(false);
-                      }}
-                    >
-                      <MonitorOff size={16} />
-                      Stop Stream
-                    </button>
-                  )}
-                  {streamIssueMessage && (
-                    <div className="relative self-end sm:self-auto">
-                      <button
-                        onClick={() => setShowStreamIssueDetails((prev) => !prev)}
-                        className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-400/60 bg-amber-500/12 text-amber-300 transition-colors hover:bg-amber-500/24"
-                        title="Show stream issue details"
-                        aria-label="Show stream issue details"
-                      >
-                        <AlertTriangle size={16} />
-                      </button>
-                      {showStreamIssueDetails && (
-                        <div
-                          className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border px-3 py-2 text-xs font-medium leading-relaxed shadow-xl"
-                          style={{
-                            borderColor: 'rgba(245, 158, 11, 0.45)',
-                            backgroundColor: 'rgba(17, 24, 39, 0.92)',
-                            color: 'var(--text-primary)',
-                          }}
-                        >
-                          {streamIssueMessage}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
                 <div className="flex w-full flex-col gap-3">
                   {/* Join / error / pending controls */}
                   <div className="flex w-full flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2.5">
@@ -649,116 +558,140 @@ export function GuildPage() {
                     );
                   })()}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
+          )}
           {inSelectedVoiceChannel && (
-            <div className="flex min-h-0 flex-1 flex-col gap-1.5 sm:gap-2">
-              {(watchedStreamerId || videoLayout === 'side') && (
-                <div className="flex items-center gap-1.5 overflow-x-auto px-1 pb-0.5">
-                  <span className="text-xs font-medium text-text-muted">View:</span>
-                  {([
-                    { mode: 'top' as const, icon: LayoutList, label: 'Top' },
-                    { mode: 'side' as const, icon: PanelLeft, label: 'Side' },
-                    { mode: 'pip' as const, icon: PictureInPicture2, label: 'PiP' },
-                    { mode: 'hidden' as const, icon: EyeOff, label: 'Hide' },
-                  ]).map(({ mode, icon: Icon, label }) => (
-                    <button
-                      key={mode}
-                      title={label}
-                      onClick={() => setVideoLayout(mode)}
-                      className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${
-                        videoLayout === mode
-                          ? 'border-accent-primary/50 bg-bg-mod-strong text-text-primary'
-                          : 'border-transparent text-text-muted hover:bg-bg-mod-subtle'
-                      }`}
-                    >
-                      <Icon size={14} />
-                      {!isPhoneLayout && label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {videoLayout === 'side' ? (
-                <div className="flex min-h-0 flex-1 gap-2">
-                  <SplitPane
-                    source={splitState.left}
-                    onSourceChange={(src) => setSplitState((prev) => ({ ...prev, left: src }))}
-                    otherPaneSource={splitState.right}
-                    activeStreamers={activeStreamers}
-                    webcamTiles={webcamTiles}
-                    participantNames={participantNames}
-                    currentUserId={currentUserId}
-                    selfStream={selfStream}
-                    streamIssueMessage={ownStreamIssueMessage}
-                    activeStreamerSet={activeStreamerSet}
-                    onStopStream={() => {
-                      stopStream();
-                      setStreamError(null);
-                      setShowStreamIssueDetails(false);
-                    }}
-                  />
-                  <SplitPane
-                    source={splitState.right}
-                    onSourceChange={(src) => setSplitState((prev) => ({ ...prev, right: src }))}
-                    otherPaneSource={splitState.left}
-                    activeStreamers={activeStreamers}
-                    webcamTiles={webcamTiles}
-                    participantNames={participantNames}
-                    currentUserId={currentUserId}
-                    selfStream={selfStream}
-                    streamIssueMessage={ownStreamIssueMessage}
-                    activeStreamerSet={activeStreamerSet}
-                    onStopStream={() => {
-                      stopStream();
-                      setStreamError(null);
-                      setShowStreamIssueDetails(false);
-                    }}
-                  />
-                </div>
-              ) : watchedStreamerId ? (
-                videoLayout === 'pip' ? (
-                  <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
-                    {streamViewerElement}
-                    <div className="absolute bottom-3 right-3 z-10">
-                      <VideoGrid layout="pip" />
+            <div className="flex min-h-0 flex-1 relative bg-black">
+              {/* Video Area */}
+              <div className="flex min-h-0 flex-1 flex-col relative bg-black/40 group/video">
+                {(watchedStreamerId || videoLayout === 'side') && (
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 rounded-xl bg-bg-primary/80 px-2 py-1.5 shadow-xl backdrop-blur-xl border border-white/5 opacity-0 group-hover/video:opacity-100 transition-opacity">
+                    <span className="pl-1 text-xs font-semibold text-text-muted">View</span>
+                    <div className="h-4 w-px bg-white/10 mx-1" />
+                    {([
+                      { mode: 'top' as const, icon: LayoutList, label: 'Top' },
+                      { mode: 'side' as const, icon: PanelLeft, label: 'Side' },
+                      { mode: 'pip' as const, icon: PictureInPicture2, label: 'PiP' },
+                      { mode: 'hidden' as const, icon: EyeOff, label: 'Hide' },
+                    ]).map(({ mode, icon: Icon, label }) => (
+                      <button
+                        key={mode}
+                        title={label}
+                        onClick={() => setVideoLayout(mode)}
+                        className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors ${videoLayout === mode
+                          ? 'bg-accent-primary text-white shadow-md'
+                          : 'text-text-secondary hover:bg-white/10 hover:text-white'
+                          }`}
+                      >
+                        <Icon size={16} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {videoLayout === 'side' ? (
+                  <div className="flex min-h-0 flex-1 gap-2">
+                    <SplitPane
+                      source={splitState.left}
+                      onSourceChange={(src) => setSplitState((prev) => ({ ...prev, left: src }))}
+                      otherPaneSource={splitState.right}
+                      activeStreamers={activeStreamers}
+                      webcamTiles={webcamTiles}
+                      participantNames={participantNames}
+                      currentUserId={currentUserId}
+                      selfStream={selfStream}
+                      streamIssueMessage={ownStreamIssueMessage}
+                      activeStreamerSet={activeStreamerSet}
+                      onStopStream={() => {
+                        stopStream();
+                      }}
+                    />
+                    <SplitPane
+                      source={splitState.right}
+                      onSourceChange={(src) => setSplitState((prev) => ({ ...prev, right: src }))}
+                      otherPaneSource={splitState.left}
+                      activeStreamers={activeStreamers}
+                      webcamTiles={webcamTiles}
+                      participantNames={participantNames}
+                      currentUserId={currentUserId}
+                      selfStream={selfStream}
+                      streamIssueMessage={ownStreamIssueMessage}
+                      activeStreamerSet={activeStreamerSet}
+                      onStopStream={() => {
+                        stopStream();
+                      }}
+                    />
+                  </div>
+                ) : watchedStreamerId ? (
+                  videoLayout === 'pip' ? (
+                    <div className="relative min-h-0 flex-1 overflow-hidden">
+                      {streamViewerElement}
+                      <div className="absolute bottom-3 right-3 z-10">
+                        <VideoGrid layout="pip" />
+                      </div>
                     </div>
-                  </div>
-                ) : videoLayout === 'hidden' ? (
-                  <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
-                    {streamViewerElement}
-                  </div>
-                ) : (
-                  <>
-                    <VideoGrid layout="compact" />
-                    <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
+                  ) : videoLayout === 'hidden' ? (
+                    <div className="min-h-0 flex-1 overflow-hidden">
                       {streamViewerElement}
                     </div>
-                  </>
-                )
-              ) : (
-                <>
-                  <VideoGrid layout="grid" />
-                  <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border-subtle">
-                    <div className="relative flex h-full min-h-[240px] items-center justify-center overflow-hidden bg-bg-mod-subtle/30 sm:min-h-[300px]">
-                      <div className="pointer-events-none absolute -top-12 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full blur-3xl" style={{ backgroundColor: 'var(--ambient-glow-primary)' }} />
-                      <div className="relative mx-3 flex w-full max-w-md flex-col items-center rounded-2xl border border-border-subtle bg-bg-mod-subtle/70 px-4 py-5 text-center sm:mx-4 sm:px-7 sm:py-7">
-                        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-border-subtle bg-bg-primary/70 text-text-secondary">
-                          <Monitor size={20} />
-                        </div>
-                        <div className="text-base font-semibold text-text-primary">Choose a stream from the sidebar</div>
-                        <div className="mt-1 text-sm text-text-secondary">
-                          Use the red <span className="font-semibold text-accent-danger">LIVE</span> buttons beside voice participants to switch streams.
-                        </div>
-                        <div className="mt-4 text-xs text-text-muted">
-                          {activeStreamers.length > 0
-                            ? `${activeStreamers.length} stream${activeStreamers.length === 1 ? '' : 's'} currently live`
-                            : 'No active streams right now'}
+                  ) : (
+                    <>
+                      <VideoGrid layout="compact" />
+                      <div className="min-h-0 flex-1 overflow-hidden">
+                        {streamViewerElement}
+                      </div>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <VideoGrid layout="grid" />
+                    <div className="min-h-0 flex-1 overflow-hidden">
+                      <div className="relative flex h-full min-h-[240px] items-center justify-center overflow-hidden bg-bg-mod-subtle/30 sm:min-h-[300px]">
+                        <div className="pointer-events-none absolute -top-12 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full blur-3xl" style={{ backgroundColor: 'var(--ambient-glow-primary)' }} />
+                        <div className="relative mx-3 flex w-full max-w-md flex-col items-center rounded-2xl border border-border-subtle bg-bg-mod-subtle/70 px-8 py-10 text-center sm:mx-4 sm:px-12 sm:py-12">
+                          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-border-subtle bg-bg-primary/70 text-text-secondary">
+                            <Monitor size={20} />
+                          </div>
+                          <div className="text-base font-semibold text-text-primary">Choose a stream from the sidebar</div>
+                          <div className="mt-1 text-sm text-text-secondary">
+                            Use the red <span className="font-semibold text-accent-danger">LIVE</span> buttons beside voice participants to switch streams.
+                          </div>
+                          <div className="mt-4 text-xs text-text-muted">
+                            {activeStreamers.length > 0
+                              ? `${activeStreamers.length} stream${activeStreamers.length === 1 ? '' : 's'} currently live`
+                              : 'No active streams right now'}
+                          </div>
                         </div>
                       </div>
                     </div>
+                  </>
+                )}
+              </div>
+
+              {/* Voice Chat Sidebar */}
+              {showVoiceChat && (
+                <div className="flex w-[min(460px,42vw)] max-w-[40rem] shrink-0 flex-col border-l border-border-subtle bg-bg-primary shadow-[-8px_0_32px_rgba(0,0,0,0.5)] z-40 relative">
+                  <div className="flex shrink-0 items-center justify-between border-b border-border-subtle/70 px-4 py-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <MessageSquare size={16} className="text-text-muted" />
+                      Voice Channel Chat
+                    </div>
+                    <button onClick={() => setShowVoiceChat(false)} className="text-text-muted hover:text-text-primary transition-colors">
+                      <X size={18} />
+                    </button>
                   </div>
-                </>
+                  <MessageList
+                    channelId={channelId!}
+                    onReply={(msg: Message) => setReplyingTo({ id: msg.id, author: msg.author.username, content: msg.content || '' })}
+                  />
+                  <MessageInput
+                    channelId={channelId!}
+                    guildId={guildId}
+                    channelName={channelName}
+                    replyingTo={replyingTo}
+                    onCancelReply={() => setReplyingTo(null)}
+                  />
+                </div>
               )}
             </div>
           )}
@@ -825,7 +758,8 @@ export function GuildPage() {
           )}
           {searchPanelOpen && !showThreadSplit && <SearchPanel />}
         </div>
-      )}
-    </div>
+      )
+      }
+    </div >
   );
 }

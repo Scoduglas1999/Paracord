@@ -15,13 +15,13 @@ import { InvitePage } from './pages/InvitePage';
 import { TermsPage } from './pages/TermsPage';
 import { PrivacyPage } from './pages/PrivacyPage';
 import { BotAuthorizePage } from './pages/BotAuthorizePage';
+import { GuildHub } from './pages/GuildHub';
 
 // Lazy-loaded pages (heavy, visited infrequently)
-const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
-const GuildSettingsPage = lazy(() => import('./pages/GuildSettingsPage').then(m => ({ default: m.GuildSettingsPage })));
 const AdminPage = lazy(() => import('./pages/AdminPage').then(m => ({ default: m.AdminPage })));
 const DiscoveryPage = lazy(() => import('./pages/DiscoveryPage').then(m => ({ default: m.DiscoveryPage })));
 const DeveloperPage = lazy(() => import('./pages/DeveloperPage').then(m => ({ default: m.DeveloperPage })));
+const MediaTest = lazy(() => import('./pages/MediaTest'));
 import { useAccountStore } from './stores/accountStore';
 import { useServerListStore } from './stores/serverListStore';
 import { useAuthStore } from './stores/authStore';
@@ -195,17 +195,19 @@ export default function App() {
       {/* Main app */}
       <Route path="/app" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route index element={<HomePage />} />
+        <Route path="guilds/:guildId" element={<GuildHub />} />
         <Route path="guilds/:guildId/channels/:channelId" element={<GuildPage />} />
         <Route path="dms" element={<DMPage />} />
         <Route path="dms/:channelId" element={<DMPage />} />
         <Route path="friends" element={<FriendsPage />} />
-        <Route path="settings" element={<Suspense fallback={<LazyFallback />}><SettingsPage /></Suspense>} />
         <Route path="admin" element={<Suspense fallback={<LazyFallback />}><AdminPage /></Suspense>} />
         <Route path="discovery" element={<Suspense fallback={<LazyFallback />}><DiscoveryPage /></Suspense>} />
         <Route path="oauth2/authorize" element={<BotAuthorizePage />} />
-        <Route path="guilds/:guildId/settings" element={<Suspense fallback={<LazyFallback />}><GuildSettingsPage /></Suspense>} />
         <Route path="developers" element={<Suspense fallback={<LazyFallback />}><DeveloperPage /></Suspense>} />
       </Route>
+
+      {/* Media engine test page (no auth required) */}
+      <Route path="/media-test" element={<Suspense fallback={<LazyFallback />}><MediaTest /></Suspense>} />
 
       {/* Default: send to app (which handles auth redirects) */}
       <Route path="*" element={<Navigate to="/app" />} />

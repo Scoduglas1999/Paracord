@@ -707,6 +707,88 @@ function SettingsPanel() {
           />
         </div>
 
+        {/* ── Guild Storage ─────────────────────────────────── */}
+        <div className="border-t border-border-subtle pt-6">
+          <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-text-secondary">
+            Guild Storage Limits
+          </h3>
+        </div>
+
+        <div>
+          <label className="mb-3 block text-sm font-medium text-text-secondary">
+            Max Guild Storage Quota (MB)
+          </label>
+          <input
+            type="number"
+            value={settings.max_guild_storage_quota || ''}
+            onChange={(e) => update('max_guild_storage_quota', e.target.value)}
+            placeholder="No limit"
+            className="input-field"
+          />
+          <p className="mt-1 text-xs text-text-muted">
+            Upper limit for per-guild storage quotas (in MB). Guild owners cannot set a quota higher than this.
+          </p>
+        </div>
+
+        {/* ── Federation File Cache ─────────────────────────── */}
+        <div className="border-t border-border-subtle pt-6">
+          <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-text-secondary">
+            Federation File Cache
+          </h3>
+        </div>
+
+        <div className="card-surface flex items-center justify-between rounded-xl border border-border-subtle bg-bg-mod-subtle/70 px-6 py-6">
+          <div>
+            <p className="font-medium text-text-primary">Federation File Cache</p>
+            <p className="text-sm text-text-muted">Cache files fetched from federated servers locally</p>
+          </div>
+          <button
+            onClick={() =>
+              update('federation_file_cache_enabled', settings.federation_file_cache_enabled === 'true' ? 'false' : 'true')
+            }
+            className={`relative h-7 w-12 rounded-full transition-colors ${
+              settings.federation_file_cache_enabled === 'true'
+                ? 'bg-accent-success'
+                : 'bg-bg-mod-strong'
+            }`}
+          >
+            <div
+              className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                settings.federation_file_cache_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+
+        <div>
+          <label className="mb-3 block text-sm font-medium text-text-secondary">
+            Federation Cache Max Size (MB)
+          </label>
+          <input
+            type="number"
+            value={settings.federation_file_cache_max_size || ''}
+            onChange={(e) => update('federation_file_cache_max_size', e.target.value)}
+            placeholder="No limit"
+            className="input-field"
+          />
+        </div>
+
+        <div>
+          <label className="mb-3 block text-sm font-medium text-text-secondary">
+            Federation Cache TTL (hours)
+          </label>
+          <input
+            type="number"
+            value={settings.federation_file_cache_ttl_hours || ''}
+            onChange={(e) => update('federation_file_cache_ttl_hours', e.target.value)}
+            placeholder="Default"
+            className="input-field"
+          />
+          <p className="mt-1 text-xs text-text-muted">
+            How long cached federated files are kept before re-fetching from the origin server.
+          </p>
+        </div>
+
         {/* Save button */}
         <div className="settings-action-row">
           <button

@@ -53,10 +53,15 @@ export const useGuildStore = create<GuildState>()((set, _get) => ({
   },
 
   updateGuild: async (id, guildData) => {
-    const { data } = await guildApi.update(id, guildData);
-    set((state) => ({
-      guilds: state.guilds.map((g) => (g.id === id ? data : g)),
-    }));
+    try {
+      const { data } = await guildApi.update(id, guildData);
+      set((state) => ({
+        guilds: state.guilds.map((g) => (g.id === id ? data : g)),
+      }));
+    } catch (err) {
+      toast.error(`Failed to update settings: ${extractApiError(err)}`);
+      throw err;
+    }
   },
 
   deleteGuild: async (id) => {

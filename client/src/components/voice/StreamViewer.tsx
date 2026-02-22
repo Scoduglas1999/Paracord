@@ -56,6 +56,7 @@ export function StreamViewer({
     return window.matchMedia('(max-width: 640px)').matches;
   });
   const room = useVoiceStore((s) => s.room);
+  const mediaEngine = useVoiceStore((s) => s.mediaEngine);
   const selfStream = useVoiceStore((s) => s.selfStream);
   const systemAudioCaptureActive = useVoiceStore((s) => s.systemAudioCaptureActive);
   const showSystemAudioPrivacyWarning = useVoiceStore((s) => s.showSystemAudioPrivacyWarning);
@@ -271,7 +272,7 @@ export function StreamViewer({
         videoEl.muted = true; // video-only — audio plays via separate element
         videoEl.play().catch(() => {
           const resumeOnGesture = () => {
-            videoEl.play().catch(() => {});
+            videoEl.play().catch(() => { });
             document.removeEventListener('click', resumeOnGesture);
             document.removeEventListener('keydown', resumeOnGesture);
           };
@@ -308,7 +309,7 @@ export function StreamViewer({
         audioEl.muted = false;
         audioEl.play().catch(() => {
           const resumeOnGesture = () => {
-            audioEl?.play().catch(() => {});
+            audioEl?.play().catch(() => { });
             document.removeEventListener('click', resumeOnGesture);
             document.removeEventListener('keydown', resumeOnGesture);
           };
@@ -335,6 +336,54 @@ export function StreamViewer({
     setScreenShareSubscriptions,
   ]);
 
+  // Native media path: attach local screen share track from MediaEngine
+  // (no LiveKit room available — we get the raw MediaStreamTrack directly)
+  useEffect(() => {
+    if (room || !mediaEngine) return; // Only when using native media (no LiveKit room)
+    const videoEl = videoRef.current;
+    if (!videoEl) return;
+
+    const watchingSelf = localUserId != null && streamerId === localUserId;
+
+    const attachNativeTrack = () => {
+      if (!watchingSelf) {
+        // Remote stream viewing over QUIC not yet implemented
+        return;
+      }
+      const track = mediaEngine.getLocalScreenShareTrack();
+      if (track && track.readyState === 'live' && !(hideSelfPreview)) {
+        const currentStream = videoEl.srcObject instanceof MediaStream ? videoEl.srcObject : null;
+        const currentTrack = currentStream?.getVideoTracks()[0] ?? null;
+        if (currentTrack !== track) {
+          videoEl.srcObject = new MediaStream([track]);
+          videoEl.muted = true;
+          videoEl.play().catch(() => { });
+        }
+        setHasActiveTrack(true);
+        setActiveStreamerName('You');
+        setIsOwnStream(true);
+      } else if (track && track.readyState === 'live' && hideSelfPreview) {
+        videoEl.srcObject = null;
+        setHasActiveTrack(true);
+        setActiveStreamerName('You');
+        setIsOwnStream(true);
+      } else {
+        videoEl.srcObject = null;
+        setHasActiveTrack(false);
+      }
+    };
+
+    // Attach immediately then poll (track may arrive slightly after state update)
+    attachNativeTrack();
+    const interval = setInterval(attachNativeTrack, 500);
+    return () => {
+      clearInterval(interval);
+      if (videoRef.current) videoRef.current.srcObject = null;
+      setHasActiveTrack(false);
+    };
+  }, [room, mediaEngine, streamerId, localUserId, hideSelfPreview]);
+
+  // LiveKit room path: subscribe to room events for track attachment
   useEffect(() => {
     if (!room) return;
 
@@ -383,12 +432,10 @@ export function StreamViewer({
   return (
     <div
       ref={containerRef}
-      className={
-        isMaximized
-          ? 'fixed inset-0 z-50 flex flex-col overflow-hidden'
-          : 'relative flex h-full w-full flex-col overflow-hidden'
-      }
-      style={{ backgroundColor: 'var(--bg-tertiary)' }}
+      className={`group ${isMaximized
+          ? 'fixed inset-0 z-50 flex flex-col overflow-hidden bg-black'
+          : 'relative flex h-full w-full flex-col overflow-hidden rounded-2xl bg-black'
+        }`}
     >
       {issueMessage && (
         <div className="absolute left-3 top-3 z-30">
@@ -436,14 +483,9 @@ export function StreamViewer({
         </div>
       )}
       <div
-        className="relative z-10 flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:gap-3 sm:px-5 sm:py-3"
-        style={{
-          backgroundColor: 'var(--bg-floating)',
-          backdropFilter: 'blur(12px)',
-          borderBottom: '1px solid var(--border-subtle)',
-        }}
+        className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 p-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
       >
-        <div className="min-w-0 flex items-center gap-2 sm:gap-3">
+        <div className="min-w-0 flex items-center gap-2 sm:gap-3 pointer-events-none">
           <div className="flex items-center gap-1.5 rounded-full px-3 py-1.5"
             style={{
               backgroundColor: 'color-mix(in srgb, var(--accent-danger) 24%, transparent)',
@@ -478,7 +520,7 @@ export function StreamViewer({
                   e.target.value as 'auto' | 'low' | 'medium' | 'high' | 'source'
                 )
               }
-              className="h-9 rounded-lg border border-border-subtle bg-bg-mod-subtle px-3 text-sm font-medium text-text-secondary outline-none transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+              className="h-9 rounded-lg bg-black/40 px-3 text-sm font-medium text-white/80 outline-none transition-colors hover:bg-black/60 hover:text-white backdrop-blur-md"
               title="Viewing quality"
             >
               <option value="auto">Auto</option>
@@ -508,7 +550,7 @@ export function StreamViewer({
                 const videoEl = videoRef.current;
                 if (videoEl) videoEl.volume = newVol;
               }}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/40 text-white/80 transition-colors hover:bg-black/60 hover:text-white backdrop-blur-md"
               title={isMuted ? 'Unmute' : 'Mute'}
             >
               {isMuted ? <VolumeX size={16} /> : volume < 0.5 ? <Volume1 size={16} /> : <Volume2 size={16} />}
@@ -546,7 +588,7 @@ export function StreamViewer({
           {isOwnStream && (
             <button
               onClick={() => setHideSelfPreview((prev) => !prev)}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/40 text-white/80 transition-colors hover:bg-black/60 hover:text-white backdrop-blur-md"
               title={hideSelfPreview ? 'Show your stream preview' : 'Hide your stream preview (saves resources)'}
             >
               {hideSelfPreview ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -555,7 +597,7 @@ export function StreamViewer({
 
           <button
             onClick={toggleMaximized}
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+            className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/40 text-white/80 transition-colors hover:bg-black/60 hover:text-white backdrop-blur-md"
             title={isMaximized ? 'Restore' : 'Maximize'}
           >
             {isMaximized ? <Minimize size={16} /> : <Maximize size={16} />}
@@ -564,7 +606,7 @@ export function StreamViewer({
           {onStopWatching && (
             <button
               onClick={onStopWatching}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border-subtle bg-bg-mod-subtle text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/40 text-white/80 transition-colors hover:bg-black/60 hover:text-white backdrop-blur-md"
               title="Stop watching"
             >
               <X size={16} />
@@ -588,7 +630,7 @@ export function StreamViewer({
         </div>
       </div>
 
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+      <div className="relative flex min-h-0 h-full w-full items-center justify-center overflow-hidden">
         <video
           ref={videoRef}
           className="h-full w-full object-contain"
@@ -680,6 +722,6 @@ export function StreamViewer({
           </div>
         )}
       </div>
-    </div>
+    </div >
   );
 }

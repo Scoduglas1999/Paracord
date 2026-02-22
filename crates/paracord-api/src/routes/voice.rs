@@ -1,6 +1,6 @@
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     Json,
 };
@@ -178,6 +178,11 @@ fn verify_livekit_webhook_auth(
     Ok(())
 }
 
+#[derive(Deserialize, Default)]
+pub struct VoiceJoinQuery {
+    pub fallback: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct StartStreamRequest {
     pub title: Option<String>,
@@ -206,8 +211,9 @@ pub async fn join_voice(
     auth: AuthUser,
     headers: HeaderMap,
     Path(channel_id): Path<i64>,
+    Query(query): Query<VoiceJoinQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available && !paracord_federation::is_enabled() {
+    if !state.config.livekit_available && !state.config.native_media_enabled && !paracord_federation::is_enabled() {
         return Err(ApiError::ServiceUnavailable(
             "Voice chat is not available — LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
         ));
@@ -384,6 +390,87 @@ pub async fn join_voice(
         }
     }
 
+    // ── Native media path ──────────────────────────────────────────────
+    // When native media is enabled, use it by default unless the client
+    // explicitly requests LiveKit as a fallback (after a native failure).
+    let requesting_livekit_fallback = query.fallback.as_deref() == Some("livekit");
+    if state.config.native_media_enabled && !requesting_livekit_fallback {
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let _ = paracord_db::voice_states::upsert_voice_state(
+            &state.db,
+            auth.user_id,
+            channel.guild_id(),
+            channel_id,
+            &session_id,
+        )
+        .await;
+
+        state.event_bus.dispatch(
+            "VOICE_STATE_UPDATE",
+            json!({
+                "user_id": auth.user_id.to_string(),
+                "channel_id": channel_id.to_string(),
+                "guild_id": channel.guild_id().map(|id| id.to_string()),
+                "session_id": &session_id,
+                "self_mute": false,
+                "self_deaf": false,
+                "self_stream": false,
+                "self_video": false,
+                "suppress": false,
+                "mute": false,
+                "deaf": false,
+                "username": &user.username,
+                "avatar_hash": user.avatar_hash,
+            }),
+            channel.guild_id(),
+        );
+
+        let media_port = state.config.native_media_port;
+        let host = first_forwarded_value(&headers, "x-forwarded-host")
+            .or_else(|| first_forwarded_value(&headers, "host"))
+            .unwrap_or_else(|| format!("localhost:{}", media_port));
+        let host_no_port = host.split(':').next().unwrap_or(&host);
+        // Browser clients connect via WebTransport (HTTPS/HTTP3) on the
+        // unified media port (same UDP port as raw QUIC, ALPN-routed).
+        let media_endpoint = format!("https://{}:{}/media", host_no_port, media_port);
+        let room_name = format!("{}:{}", guild_id, channel_id);
+
+        let media_claims = json!({
+            "sub": auth.user_id.to_string(),
+            "session_id": &session_id,
+            "room": &room_name,
+            "exp": chrono::Utc::now().timestamp() + 86400,
+        });
+        let media_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(Algorithm::HS256),
+            &media_claims,
+            &jsonwebtoken::EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+        )
+        .unwrap_or_default();
+
+        // Include the cert hash so browsers can trust self-signed certs
+        let cert_hash = state
+            .native_media
+            .as_ref()
+            .map(|nm| nm.cert_hash.clone());
+
+        tracing::info!(
+            "Native media voice join issued for user={} channel={}",
+            auth.user_id,
+            channel_id
+        );
+
+        return Ok(Json(json!({
+            "native_media": true,
+            "media_endpoint": media_endpoint,
+            "media_token": media_token,
+            "cert_hash": cert_hash,
+            "room_name": room_name,
+            "session_id": session_id,
+            "livekit_available": state.config.livekit_available,
+        })));
+    }
+
     if !state.config.livekit_available {
         return Err(ApiError::ServiceUnavailable(
             "Voice chat is not available - LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
@@ -460,9 +547,10 @@ pub async fn start_stream(
     auth: AuthUser,
     headers: HeaderMap,
     Path(channel_id): Path<i64>,
+    Query(query): Query<VoiceJoinQuery>,
     body: Option<Json<StartStreamRequest>>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available && !paracord_federation::is_enabled() {
+    if !state.config.livekit_available && !state.config.native_media_enabled && !paracord_federation::is_enabled() {
         return Err(ApiError::ServiceUnavailable(
             "Streaming is not available — LiveKit server binary not found.".into(),
         ));
@@ -630,6 +718,53 @@ pub async fn start_stream(
                 );
             }
         }
+    }
+
+    // ── Native media path ──────────────────────────────────────────────
+    // When native media is enabled, use it by default unless the client
+    // explicitly requests LiveKit as a fallback.
+    let requesting_livekit_fallback = query.fallback.as_deref() == Some("livekit");
+    if state.config.native_media_enabled && !requesting_livekit_fallback {
+        let _ = paracord_db::voice_states::update_voice_state(
+            &state.db,
+            auth.user_id,
+            Some(guild_id),
+            false,
+            false,
+            true,
+            false,
+        )
+        .await;
+
+        state.event_bus.dispatch(
+            "VOICE_STATE_UPDATE",
+            json!({
+                "user_id": auth.user_id.to_string(),
+                "channel_id": channel_id.to_string(),
+                "guild_id": Some(guild_id.to_string()),
+                "self_mute": false,
+                "self_deaf": false,
+                "self_stream": true,
+                "self_video": false,
+                "suppress": false,
+                "mute": false,
+                "deaf": false,
+                "username": &user.username,
+                "avatar_hash": user.avatar_hash,
+            }),
+            Some(guild_id),
+        );
+
+        tracing::info!(
+            "Native media stream started for user={} channel={}",
+            auth.user_id,
+            channel_id
+        );
+
+        return Ok(Json(json!({
+            "native_media": true,
+            "quality_preset": requested_quality,
+        })));
     }
 
     if !state.config.livekit_available {

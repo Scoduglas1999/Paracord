@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { create } from 'zustand';
 import type { Channel } from '../types';
 import { guildApi } from '../api/guilds';
@@ -46,8 +47,9 @@ interface ChannelState {
 }
 
 const _fetchInFlight = new Set<string>();
+const _channelFetchControllers = new Map<string, AbortController>();
 const MAX_FETCH_RETRIES = 2;
-const RETRY_BASE_DELAY_MS = 1500;
+const RETRY_BASE_DELAY_MS = 500;
 
 export const useChannelStore = create<ChannelState>()((set, get) => ({
   channelsByGuild: {},
@@ -58,16 +60,42 @@ export const useChannelStore = create<ChannelState>()((set, get) => ({
   isLoading: false,
 
   fetchChannels: async (guildId) => {
+    // Abort any in-flight fetch for a different guild
+    for (const [key, ctrl] of _channelFetchControllers) {
+      if (key !== guildId) {
+        ctrl.abort();
+        _channelFetchControllers.delete(key);
+        _fetchInFlight.delete(key);
+      }
+    }
+
     if (_fetchInFlight.has(guildId)) return;
     _fetchInFlight.add(guildId);
     set({ isLoading: true });
+
+    const controller = new AbortController();
+    _channelFetchControllers.set(guildId, controller);
+
     let lastErr: unknown;
     for (let attempt = 0; attempt <= MAX_FETCH_RETRIES; attempt++) {
+      if (controller.signal.aborted) {
+        _fetchInFlight.delete(guildId);
+        _channelFetchControllers.delete(guildId);
+        return;
+      }
       try {
         if (attempt > 0) {
           await new Promise((r) => setTimeout(r, RETRY_BASE_DELAY_MS * attempt));
         }
-        const { data } = await guildApi.getChannels(guildId);
+        if (controller.signal.aborted) {
+          _fetchInFlight.delete(guildId);
+          _channelFetchControllers.delete(guildId);
+          return;
+        }
+        const { data } = await guildApi.getChannels(guildId, {
+          timeout: 5_000,
+          signal: controller.signal,
+        });
         const sorted = data.map(normalizeChannel).sort((a, b) => a.position - b.position);
         set((state) => {
           const channelsByGuild = { ...state.channelsByGuild, [guildId]: sorted };
@@ -76,14 +104,21 @@ export const useChannelStore = create<ChannelState>()((set, get) => ({
           return { channelsByGuild, channels, isLoading: false, guildChannelsLoaded };
         });
         _fetchInFlight.delete(guildId);
+        _channelFetchControllers.delete(guildId);
         return;
       } catch (err) {
+        if (axios.isCancel(err) || controller.signal.aborted) {
+          _fetchInFlight.delete(guildId);
+          _channelFetchControllers.delete(guildId);
+          return;
+        }
         lastErr = err;
       }
     }
     set({ isLoading: false });
     toast.error(`Failed to load channels: ${extractApiError(lastErr)}`);
     _fetchInFlight.delete(guildId);
+    _channelFetchControllers.delete(guildId);
   },
 
   selectChannel: (channelId) => set({ selectedChannelId: channelId }),

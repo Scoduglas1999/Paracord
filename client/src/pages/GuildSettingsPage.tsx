@@ -1,14 +1,15 @@
-import { useParams, useNavigate } from 'react-router-dom';
 import { GuildSettings } from '../components/guild/GuildSettings';
 import { useGuildStore } from '../stores/guildStore';
 import { usePermissions } from '../hooks/usePermissions';
 import { Permissions, hasPermission } from '../types';
+import { useUIStore } from '../stores/uiStore';
 
 export function GuildSettingsPage() {
-  const { guildId } = useParams();
-  const navigate = useNavigate();
-  const guilds = useGuildStore(s => s.guilds);
-  const guild = guilds.find(g => g.id === guildId);
+  const guildId = useUIStore((s) => s.guildSettingsId);
+  const setGuildSettingsId = useUIStore((s) => s.setGuildSettingsId);
+
+  const guilds = useGuildStore((s) => s.guilds);
+  const guild = guilds.find((g) => g.id === guildId);
   const { permissions, isAdmin, isLoading } = usePermissions(guildId || null);
   const canManageGuild = isAdmin || hasPermission(permissions, Permissions.MANAGE_GUILD);
 
@@ -30,7 +31,7 @@ export function GuildSettingsPage() {
           <p className="mb-8 text-sm leading-6 text-text-muted">
             You need Manage Server permission to open server settings.
           </p>
-          <button className="btn-primary" onClick={() => navigate(-1)}>
+          <button className="btn-primary" onClick={() => setGuildSettingsId(null)}>
             Go Back
           </button>
         </div>
@@ -42,7 +43,7 @@ export function GuildSettingsPage() {
     <GuildSettings
       guildId={guildId || ''}
       guildName={guild?.name || 'Server'}
-      onClose={() => navigate(-1)}
+      onClose={() => setGuildSettingsId(null)}
     />
   );
 }

@@ -1,3 +1,4 @@
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from './client';
 import type {
   Guild,
@@ -23,7 +24,8 @@ export const guildApi = {
   transferOwnership: (id: string, newOwnerId: string) =>
     apiClient.post(`/guilds/${id}/owner`, { new_owner_id: newOwnerId }),
 
-  getChannels: (id: string) => apiClient.get<Channel[]>(`/guilds/${id}/channels`),
+  getChannels: (id: string, config?: AxiosRequestConfig) =>
+    apiClient.get<Channel[]>(`/guilds/${id}/channels`, config),
   createChannel: (id: string, data: CreateChannelRequest) =>
     apiClient.post<Channel>(`/guilds/${id}/channels`, data),
 

@@ -46,6 +46,20 @@ function resolveAttachmentUrl(url: string): string {
   return resolveResourceUrl(url, getAccessToken());
 }
 
+/**
+ * For federated attachments (those with origin_server), route the download
+ * through the local federated-files proxy endpoint instead of the normal URL.
+ */
+function resolveFederatedAttachmentUrl(att: { url: string; id: string; origin_server?: string }): string {
+  if (att.origin_server) {
+    return resolveResourceUrl(
+      `/api/v1/federated-files/${encodeURIComponent(att.origin_server)}/${att.id}`,
+      getAccessToken(),
+    );
+  }
+  return resolveAttachmentUrl(att.url);
+}
+
 function isImageAttachment(att: { content_type?: string; filename: string }): boolean {
   const contentType = (att.content_type || '').toLowerCase();
   if (contentType.startsWith('image/')) return true;
@@ -214,6 +228,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [attachmentBusyId, setAttachmentBusyId] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [isCoarsePointer, setIsCoarsePointer] = useState(() => {
     if (typeof window === 'undefined') return false;
     return window.matchMedia('(hover: none), (pointer: coarse)').matches;
@@ -618,8 +633,11 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
   const downloadAttachment = async (attachmentId: string, filename: string) => {
     if (attachmentBusyId) return;
     setAttachmentBusyId(attachmentId);
+    setDownloadProgress(0);
     try {
-      const { data } = await fileApi.download(attachmentId);
+      const { data } = await fileApi.download(attachmentId, (percent) => {
+        setDownloadProgress(percent);
+      });
       const blob = data as Blob;
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -629,10 +647,12 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(objectUrl);
+      toast.success(`Downloaded "${filename}"`);
     } catch (err) {
       toast.error(`Failed to download attachment: ${extractApiError(err)}`);
     } finally {
       setAttachmentBusyId(null);
+      setDownloadProgress(null);
     }
   };
 
@@ -1144,13 +1164,22 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
           {msg.attachments && msg.attachments.length > 0 && (
             <div className="mt-1.5 flex flex-col gap-2">
               {msg.attachments.map((att) => {
-                const src = resolveAttachmentUrl(att.url);
+                const src = resolveFederatedAttachmentUrl(att);
+                const isFederated = Boolean(att.origin_server);
+                const federatedBadge = isFederated ? (
+                  <span
+                    className="rounded-md border border-accent-primary/35 bg-accent-primary/12 px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wide text-accent-primary"
+                    title={att.content_hash ? `Hash: ${att.content_hash}` : `From: ${att.origin_server}`}
+                  >
+                    Federated
+                  </span>
+                ) : null;
                 const attachmentIsImage = isImageAttachment(att);
                 if (attachmentIsImage) {
                   const imageAttachments = msg.attachments!.filter(isImageAttachment);
                   const openImageLightbox = () => {
                     const lightboxImages: LightboxImage[] = imageAttachments.map((imageAtt) => ({
-                      src: resolveAttachmentUrl(imageAtt.url),
+                      src: resolveFederatedAttachmentUrl(imageAtt),
                       alt: imageAtt.filename,
                       filename: imageAtt.filename,
                     }));
@@ -1172,6 +1201,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                         />
                       </button>
                       <div className="flex flex-wrap items-center gap-2">
+                        {federatedBadge}
                         <button
                           type="button"
                           className="rounded-md border border-border-subtle bg-bg-mod-subtle px-2.5 py-1 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-mod-strong hover:text-text-primary"
@@ -1185,9 +1215,9 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                           onClick={() => void downloadAttachment(att.id, att.filename)}
                           disabled={attachmentBusyId === att.id}
                         >
-                          {attachmentBusyId === att.id ? 'Downloading...' : 'Download'}
+                          {attachmentBusyId === att.id ? (downloadProgress != null ? `${downloadProgress}%` : 'Downloading...') : 'Download'}
                         </button>
-                        {isOwnMessage && (
+                        {isOwnMessage && !isFederated && (
                           <button
                             type="button"
                             className="rounded-md border border-accent-danger/30 bg-accent-danger/10 px-2.5 py-1 text-xs font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15"
@@ -1207,6 +1237,7 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                     className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-bg-mod-subtle px-3 py-2 text-sm"
                     style={{ maxWidth: 'fit-content' }}
                   >
+                    {federatedBadge}
                     <button
                       type="button"
                       className="max-w-[20rem] truncate text-left text-text-link transition-colors hover:underline"
@@ -1222,9 +1253,9 @@ export function MessageList({ channelId, onReply }: MessageListProps) {
                       onClick={() => void downloadAttachment(att.id, att.filename)}
                       disabled={attachmentBusyId === att.id}
                     >
-                      {attachmentBusyId === att.id ? 'Downloading...' : 'Download'}
+                      {attachmentBusyId === att.id ? (downloadProgress != null ? `${downloadProgress}%` : 'Downloading...') : 'Download'}
                     </button>
-                    {isOwnMessage && (
+                    {isOwnMessage && !isFederated && (
                       <button
                         type="button"
                         className="rounded-md border border-accent-danger/30 bg-accent-danger/10 px-2 py-1 text-xs font-semibold text-accent-danger transition-colors hover:bg-accent-danger/15"

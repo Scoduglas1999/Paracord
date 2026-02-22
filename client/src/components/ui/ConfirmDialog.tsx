@@ -27,7 +27,7 @@ export function ConfirmDialog() {
     <AnimatePresence>
       {isOpen && options && (
         <motion.div
-          className="fixed inset-0 z-[60] flex items-center justify-center px-4"
+          className="fixed inset-0 z-[60] flex items-center justify-center px-4 backdrop-blur-sm"
           style={{ backgroundColor: 'var(--overlay-backdrop)' }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -45,7 +45,7 @@ export function ConfirmDialog() {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 10 }}
             transition={{ duration: 0.18 }}
-            className="glass-modal w-full max-w-[440px] overflow-hidden rounded-2xl border"
+            className="glass-modal w-full max-w-[440px] overflow-hidden rounded-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="px-6 pb-2 pt-6">

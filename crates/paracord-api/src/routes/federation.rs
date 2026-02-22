@@ -2579,6 +2579,252 @@ pub async fn delete_server(
     }
 }
 
+// ── Federation file sharing ─────────────────────────────────────────────────
+
+/// Compute a keyed SHA256 hash for federation file tokens.
+///
+/// Uses `SHA256(key || ":" || message)` as a simple keyed-hash construction.
+/// For short-lived internal tokens this is adequate.
+fn federation_file_hmac(key: &str, message: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b":");
+    hasher.update(message.as_bytes());
+    paracord_federation::hex_encode(&hasher.finalize())
+}
+
+fn mint_federation_file_token(
+    jwt_secret: &str,
+    attachment_id: i64,
+    requester_server: &str,
+) -> (String, i64) {
+    let exp = chrono::Utc::now().timestamp() + 300;
+    let payload = format!("{}:{}:{}", attachment_id, requester_server, exp);
+    let mac = federation_file_hmac(jwt_secret, &payload);
+    let token = format!("{}.{}", payload, mac);
+    (token, exp)
+}
+
+fn validate_federation_file_token(
+    jwt_secret: &str,
+    token: &str,
+    expected_attachment_id: i64,
+) -> Result<(), ApiError> {
+    let dot_pos = token
+        .rfind('.')
+        .ok_or_else(|| ApiError::Unauthorized)?;
+    let payload = &token[..dot_pos];
+    let mac = &token[dot_pos + 1..];
+
+    let expected_mac = federation_file_hmac(jwt_secret, payload);
+    if mac != expected_mac {
+        return Err(ApiError::Unauthorized);
+    }
+
+    let parts: Vec<&str> = payload.splitn(3, ':').collect();
+    if parts.len() != 3 {
+        return Err(ApiError::Unauthorized);
+    }
+    let attachment_id: i64 = parts[0]
+        .parse()
+        .map_err(|_| ApiError::Unauthorized)?;
+    let exp: i64 = parts[2]
+        .parse()
+        .map_err(|_| ApiError::Unauthorized)?;
+
+    if attachment_id != expected_attachment_id {
+        return Err(ApiError::Unauthorized);
+    }
+    if chrono::Utc::now().timestamp() > exp {
+        return Err(ApiError::Unauthorized);
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationFileTokenRequest {
+    pub origin_server: String,
+    pub attachment_id: String,
+    pub room_id: String,
+    pub user_id: String,
+}
+
+pub async fn file_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<FederationFileTokenRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let service = federation_service_from_state(&state);
+    if !service.is_enabled() {
+        return Err(ApiError::Forbidden);
+    }
+
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+    let transport = verify_transport_request(
+        &state,
+        &service,
+        &headers,
+        "POST",
+        "/_paracord/federation/v1/file/token",
+        &body_bytes,
+        Some(body.origin_server.as_str()),
+        true,
+    )
+    .await?;
+
+    let identity = FederatedIdentity::parse(&body.user_id)
+        .ok_or(ApiError::BadRequest("Invalid user_id".to_string()))?;
+    ensure_identity_matches_origin_or_alias(&state, &identity, &body.origin_server).await?;
+    let local_user_id = ensure_remote_user_mapping(&state, &identity).await?;
+
+    let attachment_id: i64 = body
+        .attachment_id
+        .parse()
+        .map_err(|_| ApiError::BadRequest("Invalid attachment_id".to_string()))?;
+    let attachment = paracord_db::attachments::get_attachment(&state.db, attachment_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+
+    // Attachment must be linked to a message
+    let _message_id = attachment.message_id.ok_or(ApiError::NotFound)?;
+
+    let channel_id = attachment
+        .upload_channel_id
+        .ok_or(ApiError::NotFound)?;
+    let channel = paracord_db::channels::get_channel(&state.db, channel_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    let guild_id = channel.guild_id().ok_or(ApiError::BadRequest(
+        "File token requires guild channel".to_string(),
+    ))?;
+    ensure_federation_guild_allowed(guild_id)?;
+
+    let room_id = canonical_local_room_id(&service, guild_id);
+    let has_membership = paracord_db::federation::has_room_membership(
+        &state.db,
+        &room_id,
+        &identity.to_canonical(),
+        guild_id,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    if !has_membership {
+        return Err(ApiError::Forbidden);
+    }
+
+    paracord_core::permissions::ensure_guild_member(&state.db, guild_id, local_user_id)
+        .await
+        .map_err(ApiError::from)?;
+    let guild = paracord_db::guilds::get_guild(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+    let perms = paracord_core::permissions::compute_channel_permissions(
+        &state.db,
+        guild_id,
+        channel_id,
+        guild.owner_id,
+        local_user_id,
+    )
+    .await?;
+    paracord_core::permissions::require_permission(perms, Permissions::VIEW_CHANNEL)?;
+    paracord_core::permissions::require_permission(perms, Permissions::READ_MESSAGE_HISTORY)?;
+
+    let (token, _exp) = mint_federation_file_token(
+        &state.config.jwt_secret,
+        attachment_id,
+        &transport.origin,
+    );
+    let download_url = format!(
+        "/_paracord/federation/v1/file/{}?token={}",
+        attachment_id, token
+    );
+
+    Ok(Json(json!({
+        "token": token,
+        "download_url": download_url,
+        "expires_in_seconds": 300,
+    })))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileDownloadQuery {
+    pub token: String,
+}
+
+pub async fn file_download(
+    State(state): State<AppState>,
+    Path(attachment_id): Path<i64>,
+    Query(query): Query<FileDownloadQuery>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    validate_federation_file_token(
+        &state.config.jwt_secret,
+        &query.token,
+        attachment_id,
+    )?;
+
+    let attachment = paracord_db::attachments::get_attachment(&state.db, attachment_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+        .ok_or(ApiError::NotFound)?;
+
+    let ext = std::path::Path::new(&attachment.filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+    let storage_key = format!("attachments/{}.{}", attachment.id, ext);
+    let stored_data = state
+        .storage_backend
+        .retrieve(&storage_key)
+        .await
+        .map_err(|_| ApiError::NotFound)?;
+    let data = if let Some(cryptor) = state.config.file_cryptor.as_ref() {
+        let aad = format!("attachment:{}", attachment.id);
+        cryptor
+            .decrypt_with_aad(&stored_data, aad.as_bytes())
+            .map_err(|err| ApiError::Internal(anyhow::anyhow!(err.to_string())))?
+    } else {
+        stored_data
+    };
+
+    let content_type = attachment
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let safe_filename: String = attachment
+        .filename
+        .chars()
+        .filter(|ch| *ch != '"' && *ch != '\\' && *ch != '\r' && *ch != '\n')
+        .collect();
+    let disposition = format!("attachment; filename=\"{}\"", safe_filename);
+
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::HeaderValue::from_str(&content_type)
+                    .unwrap_or(axum::http::header::HeaderValue::from_static(
+                        "application/octet-stream",
+                    )),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                axum::http::header::HeaderValue::from_str(&disposition)
+                    .unwrap_or(axum::http::header::HeaderValue::from_static("attachment")),
+            ),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                axum::http::header::HeaderValue::from_static("nosniff"),
+            ),
+        ],
+        data,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -117,9 +117,6 @@ signing_key_path = "{key_file.as_posix()}"
 allow_discovery = true
 
 [network]
-upnp = false
-upnp_confirm_exposure = false
-upnp_lease_seconds = 3600
 windows_firewall_auto_allow = false
 
 [retention]

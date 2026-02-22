@@ -40,8 +40,7 @@ services:
       # TLS — disable inside Docker if terminating TLS at a reverse proxy
       # - PARACORD_TLS_ENABLED=false
 
-      # UPnP — typically disabled inside Docker
-      # - PARACORD_UPNP=false
+      # Port forwarding should be configured at your router/firewall layer
     restart: unless-stopped
     depends_on:
       - livekit

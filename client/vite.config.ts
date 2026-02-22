@@ -35,26 +35,7 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           navigateFallbackDenylist: [/^\/api\//, /^\/gateway/, /^\/livekit/, /^\/health/],
-          runtimeCaching: [
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: "CacheFirst",
-              options: {
-                cacheName: "google-fonts-cache",
-                expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: "CacheFirst",
-              options: {
-                cacheName: "gstatic-fonts-cache",
-                expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-                cacheableResponse: { statuses: [0, 200] },
-              },
-            },
-          ],
+          runtimeCaching: [],
         },
         devOptions: {
           enabled: false,
@@ -95,6 +76,12 @@ export default defineConfig(({ mode }) => {
       target: "esnext",
       minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
       sourcemap: !!process.env.TAURI_DEBUG,
+    },
+    esbuild: {
+      // Strip verbose logging in production builds — keep warn/error for
+      // real issues the user or support might need to see.
+      drop: mode === "production" ? ["debugger"] : [],
+      pure: mode === "production" ? ["console.log", "console.info"] : [],
     },
   };
 });

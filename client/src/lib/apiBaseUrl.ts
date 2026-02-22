@@ -128,6 +128,27 @@ export function resolveApiBaseUrl(): string {
 export const API_BASE_URL = resolveApiBaseUrl();
 
 /**
+ * Build an absolute URL for a v2 API endpoint.  The legacy apiClient uses
+ * `/api/v1` as its baseURL which means paths like `/v2/...` get incorrectly
+ * concatenated as `/api/v1/v2/...`.  This helper resolves the server origin
+ * and returns a full absolute URL that axios will use as-is.
+ */
+export function resolveV2ApiUrl(path: string): string {
+  const base = resolveApiBaseUrl();
+  let origin: string;
+  if (base.startsWith('http')) {
+    try {
+      origin = new URL(base).origin;
+    } catch {
+      origin = typeof window !== 'undefined' ? window.location.origin : '';
+    }
+  } else {
+    origin = typeof window !== 'undefined' ? window.location.origin : '';
+  }
+  return `${origin}/api/v2${path}`;
+}
+
+/**
  * Build an absolute resource URL suitable for `<img>` src and similar
  * browser-native fetches that cannot carry an Authorization header.
  * Appends `?token=<access_token>` when the URL is cross-origin so the
