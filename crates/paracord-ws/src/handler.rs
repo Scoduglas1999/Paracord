@@ -57,12 +57,16 @@ fn event_buffers() -> &'static dashmap::DashMap<String, VecDeque<BufferedEvent>>
     EVENT_BUFFERS.get_or_init(|| {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
             loop {
                 interval.tick().await;
                 if let Some(buffers) = EVENT_BUFFERS.get() {
-                    buffers.retain(|_, buffer| {
-                        buffer.back().map_or(false, |e| e.timestamp.elapsed() <= MAX_REPLAY_AGE)
-                    });
+                    let keys: Vec<String> = buffers.iter().map(|r| r.key().clone()).collect();
+                    for key in keys {
+                        buffers.remove_if(&key, |_, buffer| {
+                            buffer.back().map_or(true, |e| e.timestamp.elapsed() > MAX_REPLAY_AGE)
+                        });
+                    }
                 }
             }
         });
@@ -692,41 +696,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
     connection_guard.user_id = Some(session.user_id);
 
     if resumed {
-        let mut replay_count = 0;
-        if let Some(buffer) = event_buffers().get(&session.session_id) {
-            for event in buffer.iter() {
-                if event.sequence > requested_seq {
-                    let gateway_msg = json!({
-                        "op": OP_DISPATCH,
-                        "t": event.event_type,
-                        "s": event.sequence,
-                        "d": *event.payload
-                    });
-                    if send_ws_text_logged(
-                        &mut sender,
-                        gateway_msg.to_string(),
-                        Some(session.user_id),
-                        Some(session.session_id.as_str()),
-                        "replay",
-                        Some(OP_DISPATCH),
-                        Some(&event.event_type),
-                        Some(event.sequence),
-                    )
-                    .await
-                    .is_ok() {
-                        replay_count += 1;
-                    } else {
-                        return;
-                    }
-                }
-            }
-        }
-        tracing::info!(
-            session_id = %session.session_id,
-            replayed_events = replay_count,
-            "session resumed with event replay"
-        );
-
+        // Send RESUMED first so the client knows the session was accepted
         let resumed_payload = json!({
             "op": OP_DISPATCH,
             "t": EVENT_RESUMED,
@@ -749,6 +719,51 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
         {
             return;
         }
+
+        // Replay missed events (collect into Vec first to avoid holding DashMap lock across .await)
+        let events_to_replay: Vec<(u64, String, Arc<Value>)> = event_buffers()
+            .get(&session.session_id)
+            .map(|buffer| {
+                buffer
+                    .iter()
+                    .filter(|e| e.sequence > requested_seq)
+                    .map(|e| (e.sequence, e.event_type.clone(), e.payload.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut replay_count: u64 = 0;
+        for (seq, event_type, payload) in &events_to_replay {
+            let gateway_msg = json!({
+                "op": OP_DISPATCH,
+                "t": event_type,
+                "s": seq,
+                "d": **payload
+            });
+            if send_ws_text_logged(
+                &mut sender,
+                gateway_msg.to_string(),
+                &compressor,
+                Some(session.user_id),
+                Some(session.session_id.as_str()),
+                "replay",
+                Some(OP_DISPATCH),
+                Some(event_type.as_str()),
+                Some(*seq),
+            )
+            .await
+            .is_ok()
+            {
+                replay_count += 1;
+            } else {
+                return;
+            }
+        }
+        tracing::info!(
+            session_id = %session.session_id,
+            replayed_events = replay_count,
+            "session resumed with event replay"
+        );
     } else {
         // Fresh IDENTIFY (not a resume) — the client just loaded, so any
         // voice state in the DB from a prior session is stale.  Clean it
@@ -1144,7 +1159,7 @@ async fn wait_for_identify_or_resume(
                                     if cached.sequence > requested_seq {
                                         if let Some(buffer) = event_buffers().get(&requested_session_id) {
                                             if let Some(front) = buffer.front() {
-                                                if front.sequence > requested_seq + 1 {
+                                                if front.sequence > requested_seq.saturating_add(1) {
                                                     can_replay = false;
                                                 }
                                             } else {
