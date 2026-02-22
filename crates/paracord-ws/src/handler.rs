@@ -6,7 +6,7 @@ use paracord_core::{observability, AppState};
 use paracord_models::gateway::*;
 use paracord_models::permissions::Permissions;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
@@ -43,6 +43,39 @@ struct CachedSession {
 static SESSION_CACHE: OnceLock<moka::future::Cache<String, CachedSession>> = OnceLock::new();
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 static USER_CONNECTIONS: OnceLock<dashmap::DashMap<i64, usize>> = OnceLock::new();
+
+struct BufferedEvent {
+    sequence: u64,
+    event_type: String,
+    payload: Arc<Value>,
+    timestamp: Instant,
+}
+
+static EVENT_BUFFERS: OnceLock<dashmap::DashMap<String, VecDeque<BufferedEvent>>> = OnceLock::new();
+
+fn event_buffers() -> &'static dashmap::DashMap<String, VecDeque<BufferedEvent>> {
+    EVENT_BUFFERS.get_or_init(|| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if let Some(buffers) = EVENT_BUFFERS.get() {
+                    let keys: Vec<String> = buffers.iter().map(|r| r.key().clone()).collect();
+                    for key in keys {
+                        buffers.remove_if(&key, |_, buffer| {
+                            buffer.back().map_or(true, |e| e.timestamp.elapsed() > MAX_REPLAY_AGE)
+                        });
+                    }
+                }
+            }
+        });
+        dashmap::DashMap::new()
+    })
+}
+
+const MAX_REPLAY_EVENTS: usize = 100;
+const MAX_REPLAY_AGE: Duration = Duration::from_secs(300); // 5 minutes
 
 fn session_cache() -> &'static moka::future::Cache<String, CachedSession> {
     SESSION_CACHE.get_or_init(|| {
@@ -624,7 +657,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
 
     // Wait for IDENTIFY (timeout 30s)
     let identify_timeout = Duration::from_secs(30);
-    let (session, resumed) = match tokio::time::timeout(
+    let (session, resumed, requested_seq) = match tokio::time::timeout(
         identify_timeout,
         wait_for_identify_or_resume(&mut receiver, &state),
     )
@@ -663,6 +696,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
     connection_guard.user_id = Some(session.user_id);
 
     if resumed {
+        // Send RESUMED first so the client knows the session was accepted
         let resumed_payload = json!({
             "op": OP_DISPATCH,
             "t": EVENT_RESUMED,
@@ -685,6 +719,51 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
         {
             return;
         }
+
+        // Replay missed events (collect into Vec first to avoid holding DashMap lock across .await)
+        let events_to_replay: Vec<(u64, String, Arc<Value>)> = event_buffers()
+            .get(&session.session_id)
+            .map(|buffer| {
+                buffer
+                    .iter()
+                    .filter(|e| e.sequence > requested_seq)
+                    .map(|e| (e.sequence, e.event_type.clone(), e.payload.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut replay_count: u64 = 0;
+        for (seq, event_type, payload) in &events_to_replay {
+            let gateway_msg = json!({
+                "op": OP_DISPATCH,
+                "t": event_type,
+                "s": seq,
+                "d": **payload
+            });
+            if send_ws_text_logged(
+                &mut sender,
+                gateway_msg.to_string(),
+                &compressor,
+                Some(session.user_id),
+                Some(session.session_id.as_str()),
+                "replay",
+                Some(OP_DISPATCH),
+                Some(event_type.as_str()),
+                Some(*seq),
+            )
+            .await
+            .is_ok()
+            {
+                replay_count += 1;
+            } else {
+                return;
+            }
+        }
+        tracing::info!(
+            session_id = %session.session_id,
+            replayed_events = replay_count,
+            "session resumed with event replay"
+        );
     } else {
         // Fresh IDENTIFY (not a resume) — the client just loaded, so any
         // voice state in the DB from a prior session is stale.  Clean it
@@ -1028,7 +1107,7 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
 async fn wait_for_identify_or_resume(
     receiver: &mut (impl StreamExt<Item = Result<Message, axum::Error>> + Unpin),
     state: &AppState,
-) -> Option<(Session, bool)> {
+) -> Option<(Session, bool, u64)> {
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
             if let Ok(payload) = serde_json::from_str::<Value>(&text) {
@@ -1068,7 +1147,7 @@ async fn wait_for_identify_or_resume(
                                     .unwrap_or_default();
                             let guild_ids = guilds.iter().map(|g| g.id).collect();
                             let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
-                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false));
+                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false, 0));
                         }
                         if op == OP_RESUME as u64 {
                             let requested_session_id =
@@ -1076,11 +1155,36 @@ async fn wait_for_identify_or_resume(
                             let requested_seq = d.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
                             if let Some(cached) = session_cache().get(&requested_session_id).await {
                                 if cached.user_id == claims.sub {
-                                    let mut resumed =
-                                        Session::new(cached.user_id, cached.guild_ids.clone(), cached.guild_owner_ids.clone());
-                                    resumed.session_id = requested_session_id;
-                                    resumed.sequence = cached.sequence.max(requested_seq);
-                                    return Some((resumed, true));
+                                    let mut can_replay = true;
+                                    if cached.sequence > requested_seq {
+                                        if let Some(buffer) = event_buffers().get(&requested_session_id) {
+                                            if let Some(front) = buffer.front() {
+                                                if front.sequence > requested_seq.saturating_add(1) {
+                                                    can_replay = false;
+                                                }
+                                            } else {
+                                                can_replay = false;
+                                            }
+                                        } else {
+                                            can_replay = false;
+                                        }
+                                    }
+
+                                    if can_replay {
+                                        let mut resumed =
+                                            Session::new(cached.user_id, cached.guild_ids.clone(), cached.guild_owner_ids.clone());
+                                        resumed.session_id = requested_session_id;
+                                        resumed.sequence = cached.sequence.max(requested_seq);
+                                        return Some((resumed, true, requested_seq));
+                                    } else {
+                                        let oldest_buffered = event_buffers().get(&requested_session_id).and_then(|b| b.front().map(|e| e.sequence));
+                                        tracing::info!(
+                                            session_id = %requested_session_id,
+                                            client_seq = requested_seq,
+                                            oldest_buffered = oldest_buffered,
+                                            "replay gap too large, forcing re-identify"
+                                        );
+                                    }
                                 }
                             }
                             // If resume can't be honored (cache miss/mismatch), fall back to a
@@ -1092,7 +1196,7 @@ async fn wait_for_identify_or_resume(
                                     .unwrap_or_default();
                             let guild_ids = guilds.iter().map(|g| g.id).collect();
                             let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
-                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false));
+                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false, 0));
                         }
                     }
                 }
@@ -1284,6 +1388,23 @@ async fn run_session(
                         }
 
                         let seq = session.next_sequence();
+                        
+                        // Buffer the event for potential replay
+                        let mut buffer_entry = event_buffers().entry(session.session_id.clone()).or_default();
+                        while buffer_entry.front().map(|e| e.timestamp.elapsed() > MAX_REPLAY_AGE).unwrap_or(false) {
+                            buffer_entry.pop_front();
+                        }
+                        if buffer_entry.len() >= MAX_REPLAY_EVENTS {
+                            buffer_entry.pop_front();
+                        }
+                        buffer_entry.push_back(BufferedEvent {
+                            sequence: seq,
+                            event_type: event.event_type.clone(),
+                            payload: event.payload.clone(),
+                            timestamp: Instant::now(),
+                        });
+                        drop(buffer_entry);
+
                         let dispatch_str = if let Some(ref pre) = event.serialized_payload {
                             format!(r#"{{"op":0,"t":"{}","s":{},"d":{}}}"#, event.event_type, seq, pre)
                         } else {

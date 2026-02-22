@@ -45,6 +45,8 @@ desktop.ini
 
 # Claude
 CLAUDE.md
+.claude/
+.tldr*
 
 # Docker build files
 Dockerfile.*
@@ -93,3 +95,4 @@ client/ui_mock_screenshot.png
 # Local security docs (private working notes)
 SECURITY_AUDIT*.md
 SECURITY_REMEDIATION_TRACKER.md
+
