@@ -26,7 +26,7 @@ On February 9th, 2026, Discord's CEO announced that they would be starting to ro
 
 Guilds, channels, and DMs with the full messaging experience — send, edit, delete, reply, pin, react with emoji, attach files via drag-and-drop, and see who's typing in real-time. Images embed inline with a lightbox viewer (zoom, pan, keyboard navigation), files show name and size, and messages group by author just like you'd expect. Full-text message search with author and date filters. Markdown toolbar with keyboard shortcuts (Ctrl+B, Ctrl+I, etc.) and right-click context menus for quick actions.
 
-<img width="2553" height="1439" alt="image" src="https://github.com/user-attachments/assets/f431247f-6d2e-4bb5-b1e2-7f65e13144c3" />
+<img width="1848" height="1187" alt="Screenshot 2026-02-22 114840" src="https://github.com/user-attachments/assets/4e684d00-6607-4e5b-9626-181bd6922254" />
 
 ### Threads
 
@@ -44,7 +44,7 @@ Dedicated forum-style channels with tag support for organizing longer-form discu
 
 WebRTC voice powered by a bundled LiveKit SFU. Mute, deafen, pick your mic and speakers, and toggle noise suppression, echo cancellation, and noise gate. Speaking indicators light up in real-time, and join/leave sounds play when people hop in and out of channels. Configurable keybinds for mute, deafen, and push-to-talk. Split-pane layout for viewing streams while staying in the voice channel.
 
-<img width="2558" height="1439" alt="image" src="https://github.com/user-attachments/assets/9ec24fa3-1110-4d21-983f-7df434e39f43" />
+<img width="1848" height="1187" alt="Screenshot 2026-02-22 115020" src="https://github.com/user-attachments/assets/9ef26482-ec43-4e5d-a0f9-5ff486b87908" />
 
 ### Live Streaming
 
@@ -58,6 +58,8 @@ Share your screen or a specific window at up to 4K/100Mbps with six quality pres
 | 4K 60 | 3840x2160 | 60 | 40 Mbps |
 | Movie 50 | 3840x2160 | 60 | 50 Mbps |
 | Movie 100 | 3840x2160 | 60 | 100 Mbps |
+
+<img width="1848" height="1187" alt="Screenshot 2026-02-22 115046" src="https://github.com/user-attachments/assets/d637d00c-1b92-4fe3-bbe6-28aba493388b" />
 
 ### Roles & Permissions
 
