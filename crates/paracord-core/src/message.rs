@@ -34,10 +34,14 @@ impl DmE2eePayload {
                     CoreError::BadRequest("v2 DM E2EE payloads require a header".into())
                 })?;
                 if header.is_empty() || header.len() > MAX_DM_E2EE_HEADER_LEN {
-                    return Err(CoreError::BadRequest("Invalid DM E2EE header length".into()));
+                    return Err(CoreError::BadRequest(
+                        "Invalid DM E2EE header length".into(),
+                    ));
                 }
                 if serde_json::from_str::<serde_json::Value>(header).is_err() {
-                    return Err(CoreError::BadRequest("DM E2EE header must be valid JSON".into()));
+                    return Err(CoreError::BadRequest(
+                        "DM E2EE header must be valid JSON".into(),
+                    ));
                 }
             }
             _ => {
@@ -248,10 +252,7 @@ pub async fn create_message_with_options(
         }
     }
 
-    let e2ee_header = options
-        .dm_e2ee
-        .as_ref()
-        .and_then(|p| p.header.clone());
+    let e2ee_header = options.dm_e2ee.as_ref().and_then(|p| p.header.clone());
 
     let msg = paracord_db::messages::create_message_with_meta(
         pool,

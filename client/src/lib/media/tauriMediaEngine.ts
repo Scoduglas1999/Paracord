@@ -1,8 +1,7 @@
 import type { MediaEngine, ScreenShareConfig } from './mediaEngine';
-import { startNativeSystemAudio, stopNativeSystemAudio } from '../systemAudioCapture';
 
 // Tauri API imports - these resolve at runtime in the Tauri environment
-let invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+let invoke: (cmd: string, args?: Record<string, unknown> | ArrayBuffer | Uint8Array) => Promise<unknown>;
 let listen: (event: string, handler: (event: { payload: unknown }) => void) => Promise<() => void>;
 
 // Dynamic import to avoid bundling issues in browser builds
@@ -19,6 +18,29 @@ const tauriReady = (async () => {
 
 type UnlistenFn = () => void;
 
+function normalizeNativeRelayEndpoint(endpoint: string): string {
+  if (!endpoint) return '';
+  const trimmed = endpoint.trim();
+  if (!trimmed) return trimmed;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname;
+    const port =
+      parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+    if (!host || !port) return trimmed;
+    if (host.includes(':') && !host.startsWith('[')) {
+      return `[${host}]:${port}`;
+    }
+    return `${host}:${port}`;
+  } catch {
+    return trimmed;
+  }
+}
+
 /**
  * Tauri desktop media engine.
  * Communicates with the Rust native media engine via Tauri IPC commands.
@@ -31,21 +53,27 @@ export class TauriMediaEngine implements MediaEngine {
   private screenStream: MediaStream | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   private screenShareEndedCb: (() => void) | null = null;
-  private screenAudioContext: AudioContext | null = null;
-  private screenAudioSource: MediaStreamAudioSourceNode | null = null;
-  private screenAudioProcessor: ScriptProcessorNode | null = null;
   private screenAudioAccumulator: number[] = [];
-  private nativeSystemAudioTrack: MediaStreamTrack | null = null;
   private screenAudioActive = false;
 
   // Video frame extraction
   private videoStream: MediaStream | null = null;
   private videoFrameLoop: number | null = null;
   private screenFrameLoop: number | null = null;
+  private videoSendInFlight = false;
+  private screenSendInFlight = false;
 
   async connect(endpoint: string, token: string, _certHash?: string): Promise<void> {
     await tauriReady;
-    await invoke('start_voice_session', { endpoint, token, roomId: '' });
+    const relayEndpoint = normalizeNativeRelayEndpoint(endpoint);
+    try {
+      await invoke('start_voice_session', { endpoint: relayEndpoint, token, roomId: '' });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `native session start failed (relay=${relayEndpoint}, source=${endpoint}): ${reason}`
+      );
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -89,6 +117,14 @@ export class TauriMediaEngine implements MediaEngine {
 
   async startScreenShare(config: ScreenShareConfig): Promise<void> {
     await tauriReady;
+
+    if (!invoke) {
+      throw new Error('Tauri IPC not available — cannot start screen share');
+    }
+
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('getDisplayMedia API not available in this WebView. Screen sharing requires WebView2 v93+.');
+    }
 
     this.cleanupScreenShare();
     this.screenAudioActive = false;
@@ -181,84 +217,62 @@ export class TauriMediaEngine implements MediaEngine {
     this.stopScreenAudioForwarding();
 
     try {
-      const nativeTrack = await startNativeSystemAudio();
-      if (!nativeTrack) {
-        await invoke('voice_set_screen_audio_enabled', { enabled: false }).catch(() => { });
-        return false;
-      }
-      this.nativeSystemAudioTrack = nativeTrack;
+      const { Channel } = await import('@tauri-apps/api/core');
 
-      const audioOnly = new MediaStream([nativeTrack]);
-      const context = new AudioContext({ sampleRate: 48_000 });
-      const source = context.createMediaStreamSource(audioOnly);
-      const inputChannels = Math.max(1, source.channelCount || 2);
-      const processor = context.createScriptProcessor(2048, inputChannels, 1);
+      // Enable and reset any stale capture session
+      await invoke('set_system_audio_capture_enabled', { enabled: true });
+      await invoke('stop_system_audio_capture').catch(() => {});
 
       this.screenAudioAccumulator = [];
 
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer;
-        const channels = input.numberOfChannels;
-        const frames = input.length;
-        if (channels <= 0 || frames <= 0) return;
-
-        const channelData: Float32Array[] = [];
-        for (let ch = 0; ch < channels; ch += 1) {
-          channelData.push(input.getChannelData(ch));
+      // Receive audio chunks directly from Rust WASAPI capture via Tauri Channel,
+      // bypassing AudioWorklet (which WebView2 blocks due to blob URL CSP).
+      const channel = new Channel<{ samples: number[]; sample_rate: number }>();
+      channel.onmessage = (msg) => {
+        // Rust sends interleaved stereo (L, R, L, R, ...) — downmix to mono
+        const stereo = msg.samples;
+        for (let i = 0; i < stereo.length; i += 2) {
+          const l = stereo[i] ?? 0;
+          const r = stereo[i + 1] ?? 0;
+          this.screenAudioAccumulator.push((l + r) / 2);
         }
 
-        for (let i = 0; i < frames; i += 1) {
-          let sum = 0;
-          for (let ch = 0; ch < channelData.length; ch += 1) {
-            sum += channelData[ch][i] ?? 0;
-          }
-          this.screenAudioAccumulator.push(sum / channelData.length);
-        }
-
+        // Flush 960-sample (20ms @ 48kHz) mono frames to Rust for Opus encoding
         while (this.screenAudioAccumulator.length >= 960) {
           const frame = this.screenAudioAccumulator.splice(0, 960);
           invoke('voice_push_screen_audio_frame', { samples: frame }).catch(() => {});
         }
       };
 
-      source.connect(processor);
-      processor.connect(context.destination);
-      await context.resume().catch(() => {});
-      await invoke('voice_set_screen_audio_enabled', { enabled: true }).catch(() => { });
+      try {
+        await invoke('start_system_audio_capture', { onAudio: channel });
+      } catch (startErr) {
+        // Retry once for "already running" races from overlapping stop/start
+        const errMsg = startErr instanceof Error ? startErr.message : String(startErr);
+        if (!errMsg.toLowerCase().includes('already running')) {
+          throw startErr;
+        }
+        await invoke('stop_system_audio_capture').catch(() => {});
+        await invoke('start_system_audio_capture', { onAudio: channel });
+      }
 
-      this.screenAudioContext = context;
-      this.screenAudioSource = source;
-      this.screenAudioProcessor = processor;
+      await invoke('voice_set_screen_audio_enabled', { enabled: true }).catch(() => {});
       this.screenAudioActive = true;
+      console.info('[TauriMediaEngine] Native system audio capture started (direct channel)');
       return true;
     } catch (err) {
-      console.warn('[TauriMediaEngine] Failed to initialize screen-audio forwarding:', err);
+      console.warn('[TauriMediaEngine] Failed to start screen audio forwarding:', err);
       this.stopScreenAudioForwarding();
       return false;
     }
   }
 
   private stopScreenAudioForwarding(): void {
-    if (this.screenAudioProcessor) {
-      this.screenAudioProcessor.onaudioprocess = null;
-      this.screenAudioProcessor.disconnect();
-      this.screenAudioProcessor = null;
-    }
-    if (this.screenAudioSource) {
-      this.screenAudioSource.disconnect();
-      this.screenAudioSource = null;
-    }
-    if (this.screenAudioContext) {
-      this.screenAudioContext.close().catch(() => {});
-      this.screenAudioContext = null;
-    }
-    if (this.nativeSystemAudioTrack) {
-      this.nativeSystemAudioTrack.stop();
-      this.nativeSystemAudioTrack = null;
-    }
     this.screenAudioAccumulator = [];
     this.screenAudioActive = false;
-    void stopNativeSystemAudio();
+    if (!invoke) return;
+    invoke('stop_system_audio_capture').catch(() => {});
+    invoke('set_system_audio_capture_enabled', { enabled: false }).catch(() => {});
     invoke('voice_set_screen_audio_enabled', { enabled: false }).catch(() => {});
   }
 
@@ -323,17 +337,29 @@ export class TauriMediaEngine implements MediaEngine {
       }
       lastFrameTime = now;
 
-      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+      // Drop frame if previous send hasn't completed (backpressure)
+      const inFlight = isScreen ? this.screenSendInFlight : this.videoSendInFlight;
+
+      if (!inFlight && video.readyState >= video.HAVE_CURRENT_DATA) {
         ctx.drawImage(video, 0, 0, width, height);
         const imageData = ctx.getImageData(0, 0, width, height);
-        // Send RGBA bytes to Rust for encoding
-        invoke(command, {
-          width,
-          height,
-          data: Array.from(imageData.data),
-        }).catch(() => {
-          // VP9 feature may not be enabled; silently skip
-        });
+        const rgba = new Uint8Array(imageData.data.buffer);
+
+        // Pack width(u32 LE) + height(u32 LE) + RGBA bytes into a single
+        // binary buffer.  Tauri v2 sends Uint8Array as
+        // application/octet-stream — no JSON serialisation overhead.
+        const payload = new Uint8Array(8 + rgba.byteLength);
+        const header = new DataView(payload.buffer);
+        header.setUint32(0, width, true);
+        header.setUint32(4, height, true);
+        payload.set(rgba, 8);
+
+        if (isScreen) { this.screenSendInFlight = true; } else { this.videoSendInFlight = true; }
+        invoke(command, payload)
+          .catch(() => { /* VP9 feature may not be enabled; silently skip */ })
+          .finally(() => {
+            if (isScreen) { this.screenSendInFlight = false; } else { this.videoSendInFlight = false; }
+          });
       }
 
       const loopId = requestAnimationFrame(extractFrame);

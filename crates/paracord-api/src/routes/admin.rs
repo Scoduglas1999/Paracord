@@ -103,38 +103,30 @@ pub async fn get_settings(
     let settings = state.runtime.read().await;
 
     // Read storage/federation settings from DB (they are config-level, not in RuntimeSettings)
-    let max_guild_storage_quota = paracord_db::server_settings::get_setting(
-        &state.db,
-        "max_guild_storage_quota",
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| state.config.max_guild_storage_quota.to_string());
-    let federation_file_cache_enabled = paracord_db::server_settings::get_setting(
-        &state.db,
-        "federation_file_cache_enabled",
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| state.config.federation_file_cache_enabled.to_string());
-    let federation_file_cache_max_size = paracord_db::server_settings::get_setting(
-        &state.db,
-        "federation_file_cache_max_size",
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| state.config.federation_file_cache_max_size.to_string());
-    let federation_file_cache_ttl_hours = paracord_db::server_settings::get_setting(
-        &state.db,
-        "federation_file_cache_ttl_hours",
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| state.config.federation_file_cache_ttl_hours.to_string());
+    let max_guild_storage_quota =
+        paracord_db::server_settings::get_setting(&state.db, "max_guild_storage_quota")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| state.config.max_guild_storage_quota.to_string());
+    let federation_file_cache_enabled =
+        paracord_db::server_settings::get_setting(&state.db, "federation_file_cache_enabled")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| state.config.federation_file_cache_enabled.to_string());
+    let federation_file_cache_max_size =
+        paracord_db::server_settings::get_setting(&state.db, "federation_file_cache_max_size")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| state.config.federation_file_cache_max_size.to_string());
+    let federation_file_cache_ttl_hours =
+        paracord_db::server_settings::get_setting(&state.db, "federation_file_cache_ttl_hours")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| state.config.federation_file_cache_ttl_hours.to_string());
 
     Ok(Json(json!({
         "registration_enabled": settings.registration_enabled.to_string(),

@@ -34,7 +34,12 @@ fn is_frontend_dev_proxy_host(host: &str) -> bool {
 fn env_bool(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -183,6 +188,11 @@ pub struct VoiceJoinQuery {
     pub fallback: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct VoiceLeaveQuery {
+    pub session_id: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct StartStreamRequest {
     pub title: Option<String>,
@@ -213,7 +223,10 @@ pub async fn join_voice(
     Path(channel_id): Path<i64>,
     Query(query): Query<VoiceJoinQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available && !state.config.native_media_enabled && !paracord_federation::is_enabled() {
+    if !state.config.livekit_available
+        && !state.config.native_media_enabled
+        && !paracord_federation::is_enabled()
+    {
         return Err(ApiError::ServiceUnavailable(
             "Voice chat is not available — LiveKit server binary not found. Place livekit-server next to the Paracord server executable.".into(),
         ));
@@ -433,13 +446,28 @@ pub async fn join_voice(
         // Browser clients connect via WebTransport (HTTPS/HTTP3) on the
         // unified media port (same UDP port as raw QUIC, ALPN-routed).
         let media_endpoint = format!("https://{}:{}/media", host_no_port, media_port);
+
+        // Build candidate list: LAN IP first (avoids hairpin NAT), then
+        // the Host-derived endpoint.
+        let mut media_endpoint_candidates: Vec<String> = Vec::new();
+        if let Some(local) = env_trimmed("PARACORD_NATIVE_MEDIA_LOCAL_CANDIDATE") {
+            push_unique_url(&mut media_endpoint_candidates, local);
+        }
+        push_unique_url(&mut media_endpoint_candidates, media_endpoint.clone());
+
         let room_name = format!("{}:{}", guild_id, channel_id);
 
+        let issued_at = chrono::Utc::now().timestamp();
         let media_claims = json!({
-            "sub": auth.user_id.to_string(),
+            // paracord-transport::connection::MediaClaims expects a numeric sub.
+            "sub": auth.user_id,
+            // Keep canonical claim names used by the transport layer.
+            "sid": &session_id,
+            "iat": issued_at,
+            "exp": issued_at + 86400,
+            // Extra claims are tolerated by serde and help with diagnostics.
             "session_id": &session_id,
             "room": &room_name,
-            "exp": chrono::Utc::now().timestamp() + 86400,
         });
         let media_token = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(Algorithm::HS256),
@@ -449,10 +477,7 @@ pub async fn join_voice(
         .unwrap_or_default();
 
         // Include the cert hash so browsers can trust self-signed certs
-        let cert_hash = state
-            .native_media
-            .as_ref()
-            .map(|nm| nm.cert_hash.clone());
+        let cert_hash = state.native_media.as_ref().map(|nm| nm.cert_hash.clone());
 
         tracing::info!(
             "Native media voice join issued for user={} channel={}",
@@ -463,6 +488,7 @@ pub async fn join_voice(
         return Ok(Json(json!({
             "native_media": true,
             "media_endpoint": media_endpoint,
+            "media_endpoint_candidates": media_endpoint_candidates,
             "media_token": media_token,
             "cert_hash": cert_hash,
             "room_name": room_name,
@@ -550,7 +576,10 @@ pub async fn start_stream(
     Query(query): Query<VoiceJoinQuery>,
     body: Option<Json<StartStreamRequest>>,
 ) -> Result<Json<Value>, ApiError> {
-    if !state.config.livekit_available && !state.config.native_media_enabled && !paracord_federation::is_enabled() {
+    if !state.config.livekit_available
+        && !state.config.native_media_enabled
+        && !paracord_federation::is_enabled()
+    {
         return Err(ApiError::ServiceUnavailable(
             "Streaming is not available — LiveKit server binary not found.".into(),
         ));
@@ -944,6 +973,7 @@ pub async fn leave_voice(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<i64>,
+    Query(query): Query<VoiceLeaveQuery>,
 ) -> Result<StatusCode, ApiError> {
     let channel = paracord_db::channels::get_channel(&state.db, channel_id)
         .await
@@ -954,7 +984,30 @@ pub async fn leave_voice(
     }
 
     let guild_id = channel.guild_id();
-    let _ = paracord_db::voice_states::remove_voice_state(&state.db, auth.user_id, guild_id).await;
+    let removed = if let Some(expected_session_id) = query.session_id.as_deref() {
+        paracord_db::voice_states::remove_voice_state_if_session(
+            &state.db,
+            auth.user_id,
+            guild_id,
+            expected_session_id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
+    } else {
+        paracord_db::voice_states::remove_voice_state(&state.db, auth.user_id, guild_id)
+            .await
+            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+        true
+    };
+    if !removed {
+        tracing::info!(
+            "Ignoring stale leave_voice request for user={} channel={} session_id={:?}",
+            auth.user_id,
+            channel_id,
+            query.session_id
+        );
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let _participants = state.voice.leave_room(channel_id, auth.user_id).await;
     // Don't eagerly delete the LiveKit room when the last participant leaves.
     // Rapid leave→rejoin cycles cause a race between the delete_room API call

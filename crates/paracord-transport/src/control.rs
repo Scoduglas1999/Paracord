@@ -41,16 +41,10 @@ pub enum ControlMessage {
     Auth { token: String },
 
     /// Subscribe to a user's media track.
-    Subscribe {
-        user_id: i64,
-        track_type: TrackKind,
-    },
+    Subscribe { user_id: i64, track_type: TrackKind },
 
     /// Unsubscribe from a user's media track.
-    Unsubscribe {
-        user_id: i64,
-        track_type: TrackKind,
-    },
+    Unsubscribe { user_id: i64, track_type: TrackKind },
 
     /// Announce a new encryption key epoch.
     /// `encrypted_keys` maps (recipient_user_id, ciphertext).
@@ -93,10 +87,7 @@ pub enum ControlMessage {
     },
 
     /// Server rejects the upload.
-    FileTransferReject {
-        transfer_id: String,
-        reason: String,
-    },
+    FileTransferReject { transfer_id: String, reason: String },
 
     /// Client requests a file download.
     FileDownloadRequest {
@@ -140,9 +131,7 @@ pub enum ControlMessage {
     },
 
     /// Cancel transfer (either side).
-    FileTransferCancel {
-        transfer_id: String,
-    },
+    FileTransferCancel { transfer_id: String },
 }
 
 /// Maximum control message size (256 KiB).
@@ -430,10 +419,7 @@ mod tests {
     fn key_announce_round_trip() {
         let msg = ControlMessage::KeyAnnounce {
             epoch: 5,
-            encrypted_keys: vec![
-                (100, vec![0xDE, 0xAD]),
-                (200, vec![0xBE, 0xEF]),
-            ],
+            encrypted_keys: vec![(100, vec![0xDE, 0xAD]), (200, vec![0xBE, 0xEF])],
         };
         let encoded = msg.encode().unwrap();
         let (decoded, _) = ControlMessage::decode(&encoded).unwrap().unwrap();

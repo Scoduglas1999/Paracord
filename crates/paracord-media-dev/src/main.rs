@@ -26,7 +26,10 @@ use paracord_transport::connection::{ConnectionMode, MediaClaims, MediaConnectio
 use paracord_transport::endpoint::{generate_self_signed_cert, MediaEndpoint};
 
 #[derive(Parser, Debug)]
-#[command(name = "paracord-media-dev", about = "Standalone media server for development")]
+#[command(
+    name = "paracord-media-dev",
+    about = "Standalone media server for development"
+)]
 struct Args {
     /// HTTP signaling server port.
     #[arg(long, default_value = "8444")]
@@ -118,10 +121,7 @@ async fn health_handler() -> &'static str {
     "ok"
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
 
@@ -235,14 +235,8 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
 
                     if let Some(channel_id) = update.channel_id {
                         // Join room
-                        handle_voice_join(
-                            &mut socket,
-                            &state,
-                            uid,
-                            update.guild_id,
-                            channel_id,
-                        )
-                        .await;
+                        handle_voice_join(&mut socket, &state, uid, update.guild_id, channel_id)
+                            .await;
                     } else {
                         // Leave room
                         handle_voice_leave(&mut socket, &state, uid).await;
@@ -252,7 +246,14 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
 
             // OP 11: Heartbeat ACK
             11 => {
-                let _ = send_json(&mut socket, &WsResponse { op: 11, d: json!({}) }).await;
+                let _ = send_json(
+                    &mut socket,
+                    &WsResponse {
+                        op: 11,
+                        d: json!({}),
+                    },
+                )
+                .await;
             }
 
             // OP_MEDIA_KEY_ANNOUNCE (14): relay key to recipients
@@ -493,7 +494,9 @@ async fn quic_accept_loop(endpoint: MediaEndpoint, state: Arc<AppState>) {
             // Look up user's room
             let room_id = {
                 let user_rooms = state.user_rooms.read().await;
-                user_rooms.get(&user_id).map(|(g, c)| format!("guild_{}_channel_{}", g, c))
+                user_rooms
+                    .get(&user_id)
+                    .map(|(g, c)| format!("guild_{}_channel_{}", g, c))
             };
 
             let room_id = match room_id {
@@ -521,11 +524,8 @@ async fn quic_accept_loop(endpoint: MediaEndpoint, state: Arc<AppState>) {
 
 async fn send_json(socket: &mut WebSocket, msg: &WsResponse) -> Result<(), axum::Error> {
     let json = serde_json::to_string(msg).unwrap_or_default();
-    socket
-        .send(Message::Text(json.into()))
-        .await
-        .map_err(|e| {
-            debug!(error = %e, "ws: send error");
-            e
-        })
+    socket.send(Message::Text(json.into())).await.map_err(|e| {
+        debug!(error = %e, "ws: send error");
+        e
+    })
 }

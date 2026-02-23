@@ -79,13 +79,9 @@ impl ConnectionHandle {
     pub fn send_datagram(&self, data: Bytes) -> Result<(), quinn::SendDatagramError> {
         match &self.transport {
             MediaTransport::Quic(conn) => conn.send_datagram(data),
-            MediaTransport::Bridged { outbound_tx, .. } => {
-                outbound_tx
-                    .send(data)
-                    .map_err(|_| quinn::SendDatagramError::ConnectionLost(
-                        quinn::ConnectionError::LocallyClosed,
-                    ))
-            }
+            MediaTransport::Bridged { outbound_tx, .. } => outbound_tx.send(data).map_err(|_| {
+                quinn::SendDatagramError::ConnectionLost(quinn::ConnectionError::LocallyClosed)
+            }),
         }
     }
 
@@ -95,9 +91,7 @@ impl ConnectionHandle {
             MediaTransport::Quic(conn) => conn.read_datagram().await,
             MediaTransport::Bridged { inbound_rx, .. } => {
                 let mut rx = inbound_rx.lock().await;
-                rx.recv()
-                    .await
-                    .ok_or(quinn::ConnectionError::LocallyClosed)
+                rx.recv().await.ok_or(quinn::ConnectionError::LocallyClosed)
             }
         }
     }
@@ -184,7 +178,11 @@ impl RelayForwarder {
                 };
 
                 if datagram.len() < HEADER_SIZE {
-                    warn!(user_id, len = datagram.len(), "relay: datagram too short, dropping");
+                    warn!(
+                        user_id,
+                        len = datagram.len(),
+                        "relay: datagram too short, dropping"
+                    );
                     continue;
                 }
 
@@ -198,9 +196,11 @@ impl RelayForwarder {
                 };
 
                 // Feed audio level to speaker detector
-                forwarder
-                    .speaker_detector
-                    .report_audio_level(user_id, &room_id, header.audio_level);
+                forwarder.speaker_detector.report_audio_level(
+                    user_id,
+                    &room_id,
+                    header.audio_level,
+                );
 
                 // Look up the sender's room and find subscribers
                 forwarder.forward_to_subscribers(user_id, &room_id, &datagram);
@@ -275,10 +275,7 @@ mod tests {
         // We can't easily test with real quinn connections in unit tests,
         // but we can verify the struct construction.
         let mgr = MediaRoomManager::new();
-        let forwarder = RelayForwarder::new(
-            Arc::new(mgr),
-            Arc::new(SpeakerDetector::new()),
-        );
+        let forwarder = RelayForwarder::new(Arc::new(mgr), Arc::new(SpeakerDetector::new()));
         assert_eq!(forwarder.connection_count(), 0);
     }
 }

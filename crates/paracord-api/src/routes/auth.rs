@@ -633,7 +633,13 @@ async fn issue_auth_session(
     let secure = should_use_secure_cookie(state);
     let access_cookie = build_access_cookie(&access_token, state.config.jwt_expiry_seconds, secure);
     let refresh_cookie = build_refresh_cookie(&refresh_token, ttl_days, secure);
-    Ok((access_token, access_cookie, refresh_cookie, session_id, refresh_token))
+    Ok((
+        access_token,
+        access_cookie,
+        refresh_cookie,
+        session_id,
+        refresh_token,
+    ))
 }
 
 /// Result: (access_token, access_cookie, refresh_cookie, session_id, raw_new_refresh_token)
@@ -683,7 +689,13 @@ async fn rotate_auth_session(
     let secure = should_use_secure_cookie(state);
     let access_cookie = build_access_cookie(&access_token, state.config.jwt_expiry_seconds, secure);
     let refresh_cookie = build_refresh_cookie(&new_refresh, ttl_days, secure);
-    Ok((access_token, access_cookie, refresh_cookie, session.id, new_refresh))
+    Ok((
+        access_token,
+        access_cookie,
+        refresh_cookie,
+        session.id,
+        new_refresh,
+    ))
 }
 
 fn user_json(user: &paracord_db::users::UserRow) -> Value {

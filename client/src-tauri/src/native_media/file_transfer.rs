@@ -52,7 +52,9 @@ pub async fn upload_file(
         resume_offset: None,
     };
     let init_frame = StreamFrame::Control(init_msg);
-    let encoded = init_frame.encode().map_err(|e| format!("encode init: {e}"))?;
+    let encoded = init_frame
+        .encode()
+        .map_err(|e| format!("encode init: {e}"))?;
     send_stream
         .write_all(&encoded)
         .await
@@ -68,7 +70,10 @@ pub async fn upload_file(
             .map_err(|e| format!("read accept: {e}"))?
             .ok_or("stream closed before accept")?;
         codec.feed(&read_buf[..n]);
-        if let Some(frame) = codec.decode_next().map_err(|e| format!("decode accept: {e}"))? {
+        if let Some(frame) = codec
+            .decode_next()
+            .map_err(|e| format!("decode accept: {e}"))?
+        {
             match frame {
                 StreamFrame::Control(ControlMessage::FileTransferAccept { .. }) => break,
                 StreamFrame::Control(ControlMessage::FileTransferReject { reason, .. }) => {
@@ -102,7 +107,9 @@ pub async fn upload_file(
         }
 
         let data_frame = StreamFrame::Data(Bytes::copy_from_slice(&chunk_buf[..n]));
-        let encoded = data_frame.encode().map_err(|e| format!("encode data: {e}"))?;
+        let encoded = data_frame
+            .encode()
+            .map_err(|e| format!("encode data: {e}"))?;
         send_stream
             .write_all(&encoded)
             .await
@@ -137,7 +144,10 @@ pub async fn upload_file(
             .map_err(|e| format!("read done: {e}"))?
             .ok_or("stream closed before done")?;
         codec.feed(&read_buf[..n]);
-        if let Some(frame) = codec.decode_next().map_err(|e| format!("decode done: {e}"))? {
+        if let Some(frame) = codec
+            .decode_next()
+            .map_err(|e| format!("decode done: {e}"))?
+        {
             match frame {
                 StreamFrame::Control(ControlMessage::FileTransferDone {
                     transfer_id: tid,
@@ -280,9 +290,7 @@ pub async fn download_file(
         codec.feed(&read_buf[..n]);
     }
 
-    file.flush()
-        .await
-        .map_err(|e| format!("flush file: {e}"))?;
+    file.flush().await.map_err(|e| format!("flush file: {e}"))?;
 
     connection.close("download complete");
 

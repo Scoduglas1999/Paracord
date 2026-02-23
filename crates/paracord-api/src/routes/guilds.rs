@@ -427,11 +427,8 @@ async fn require_manage_guild(
     let roles = paracord_db::roles::get_member_roles(&state.db, user_id, guild_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
-    let perms = paracord_core::permissions::compute_permissions_from_roles(
-        &roles,
-        guild.owner_id,
-        user_id,
-    );
+    let perms =
+        paracord_core::permissions::compute_permissions_from_roles(&roles, guild.owner_id, user_id);
     paracord_core::permissions::require_permission(perms, Permissions::MANAGE_GUILD)?;
     Ok(())
 }
@@ -446,10 +443,9 @@ pub async fn get_storage(
     let usage = paracord_db::guild_storage_policies::get_guild_storage_usage(&state.db, guild_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
-    let policy =
-        paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let policy = paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
 
     let server_quota = state.config.max_guild_storage_quota;
     let quota = policy

@@ -368,7 +368,9 @@ pub async fn delete_bot_application(
     for install in installs {
         let _ =
             paracord_db::members::remove_member(&state.db, app.bot_user_id, install.guild_id).await;
-        state.member_index.remove_member(install.guild_id, app.bot_user_id);
+        state
+            .member_index
+            .remove_member(install.guild_id, app.bot_user_id);
         state.event_bus.dispatch(
             "GUILD_MEMBER_REMOVE",
             json!({

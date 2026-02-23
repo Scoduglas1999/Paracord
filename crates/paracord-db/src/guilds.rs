@@ -132,7 +132,16 @@ pub async fn update_guild(
     hub_settings: Option<&str>,
     bot_settings: Option<&str>,
 ) -> Result<SpaceRow, DbError> {
-    update_space(pool, id, name, description, icon_hash, hub_settings, bot_settings).await
+    update_space(
+        pool,
+        id,
+        name,
+        description,
+        icon_hash,
+        hub_settings,
+        bot_settings,
+    )
+    .await
 }
 
 pub async fn update_space_visibility(
@@ -334,9 +343,17 @@ mod tests {
         let pool = test_pool().await;
         create_test_user(&pool, 1).await;
         create_guild(&pool, 300, "Old Name", 1, None).await.unwrap();
-        let updated = update_guild(&pool, 300, Some("New Name"), Some("A description"), None, None, None)
-            .await
-            .unwrap();
+        let updated = update_guild(
+            &pool,
+            300,
+            Some("New Name"),
+            Some("A description"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(updated.name, "New Name");
         assert_eq!(updated.description.as_deref(), Some("A description"));
     }

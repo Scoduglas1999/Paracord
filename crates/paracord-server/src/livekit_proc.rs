@@ -95,6 +95,7 @@ fn write_livekit_config(
     server_port: u16,
     external_ip: Option<&str>,
     local_ip: Option<&str>,
+    native_media_enabled: bool,
 ) -> std::io::Result<PathBuf> {
     let is_local_only = external_ip.is_none();
 
@@ -113,10 +114,15 @@ fn write_livekit_config(
         lines.push("    use_external_ip: true".to_string());
     }
 
-    // UDP mux on the server port (e.g. 8080).  Paracord only binds TCP
-    // on this port, so LiveKit can use the UDP side for all WebRTC media.
-    // This means only one port needs to be forwarded by the host.
-    lines.push(format!("    udp_port: {server_port}"));
+    // When native QUIC media is enabled the voice port (typically 8443 UDP)
+    // is reserved for the QUIC endpoint. Give LiveKit its own UDP port so
+    // the two don't collide (OS error 10048 on Windows).
+    let lk_udp_port = if native_media_enabled {
+        livekit_port + 2
+    } else {
+        server_port
+    };
+    lines.push(format!("    udp_port: {lk_udp_port}"));
     // ICE/TCP on the LiveKit internal port+1 — provides a fallback for
     // clients on restrictive networks that block UDP.
     let ice_tcp_port = livekit_port + 1;
@@ -147,19 +153,16 @@ fn write_livekit_config(
     lines.push(format!("    {api_key}: {api_secret}"));
     if let Some(ip) = external_ip {
         // TURN provides relay fallback for clients behind symmetric NAT.
-        // The TURN listener shares the server UDP port (already forwarded),
-        // and relay allocations use a small port range above the server port.
-        // NOTE: these relay ports (server_port+1 through +10) do NOT need
-        // to be separately forwarded — TURN relay traffic flows through the
-        // TURN server's listener port (server_port) and gets relayed internally.
+        // Use the same UDP port as LiveKit's RTC mux so there's no extra
+        // port to forward.
         lines.push("turn:".to_string());
         lines.push("    enabled: true".to_string());
         lines.push(format!("    domain: {ip}"));
         lines.push("    tls_port: 0".to_string());
-        lines.push(format!("    udp_port: {server_port}"));
+        lines.push(format!("    udp_port: {lk_udp_port}"));
         lines.push("    external_tls: false".to_string());
-        let relay_start = server_port + 1;
-        let relay_end = server_port + 10;
+        let relay_start = lk_udp_port + 1;
+        let relay_end = lk_udp_port + 10;
         lines.push(format!("    relay_range_start: {relay_start}"));
         lines.push(format!("    relay_range_end: {relay_end}"));
     }
@@ -202,6 +205,7 @@ pub async fn start_livekit(
     server_port: u16,
     external_ip: Option<&str>,
     local_ip: Option<&str>,
+    native_media_enabled: bool,
 ) -> Option<LiveKitProcess> {
     let binary = match find_livekit_binary() {
         Some(path) => {
@@ -257,6 +261,7 @@ pub async fn start_livekit(
         server_port,
         external_ip,
         local_ip,
+        native_media_enabled,
     ) {
         Ok(path) => path,
         Err(e) => {

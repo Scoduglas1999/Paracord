@@ -64,7 +64,9 @@ fn event_buffers() -> &'static dashmap::DashMap<String, VecDeque<BufferedEvent>>
                     let keys: Vec<String> = buffers.iter().map(|r| r.key().clone()).collect();
                     for key in keys {
                         buffers.remove_if(&key, |_, buffer| {
-                            buffer.back().map_or(true, |e| e.timestamp.elapsed() > MAX_REPLAY_AGE)
+                            buffer
+                                .back()
+                                .map_or(true, |e| e.timestamp.elapsed() > MAX_REPLAY_AGE)
                         });
                     }
                 }
@@ -244,13 +246,7 @@ async fn send_ws_text_logged(
     sequence: Option<u64>,
 ) -> Result<(), ()> {
     wire_log_ws_out(
-        user_id,
-        session_id,
-        opcode,
-        &payload,
-        frame_type,
-        event_type,
-        sequence,
+        user_id, session_id, opcode, &payload, frame_type, event_type, sequence,
     );
 
     if let Some(result) = compressor.compress(&payload) {
@@ -539,7 +535,9 @@ async fn collect_presence_recipient_ids(
     guild_ids: &[i64],
 ) -> Vec<i64> {
     // In-memory lookup: zero DB queries for guild members
-    let mut recipients = state.member_index.get_presence_recipients(user_id, guild_ids);
+    let mut recipients = state
+        .member_index
+        .get_presence_recipients(user_id, guild_ids);
     recipients.insert(user_id);
 
     // Friends still need a DB query (not tracked in the member index)
@@ -1073,34 +1071,40 @@ pub async fn handle_connection(socket: WebSocket, state: AppState, compress: boo
         // conditions where a reconnecting client briefly appears offline.
         let state_clone = state.clone();
         let guild_ids = session.guild_ids.clone();
-        state.presence_manager.schedule_offline(session_user_id, async move {
-            // Re-check connection count after the grace period — the user may
-            // have reconnected during the delay.
-            let still_offline = user_connections()
-                .get(&session_user_id)
-                .map(|c| *c)
-                .unwrap_or(0)
-                == 0;
-            if !still_offline {
-                return;
-            }
+        state
+            .presence_manager
+            .schedule_offline(session_user_id, async move {
+                // Re-check connection count after the grace period — the user may
+                // have reconnected during the delay.
+                let still_offline = user_connections()
+                    .get(&session_user_id)
+                    .map(|c| *c)
+                    .unwrap_or(0)
+                    == 0;
+                if !still_offline {
+                    return;
+                }
 
-            state_clone.online_users.write().await.remove(&session_user_id);
-            let offline_presence = default_presence_payload(session_user_id, "offline");
-            state_clone
-                .user_presences
-                .write()
-                .await
-                .insert(session_user_id, offline_presence.clone());
+                state_clone
+                    .online_users
+                    .write()
+                    .await
+                    .remove(&session_user_id);
+                let offline_presence = default_presence_payload(session_user_id, "offline");
+                state_clone
+                    .user_presences
+                    .write()
+                    .await
+                    .insert(session_user_id, offline_presence.clone());
 
-            let offline_presence_recipient_ids =
-                collect_presence_recipient_ids(&state_clone, session_user_id, &guild_ids).await;
-            state_clone.event_bus.dispatch_to_users(
-                EVENT_PRESENCE_UPDATE,
-                offline_presence,
-                offline_presence_recipient_ids,
-            );
-        });
+                let offline_presence_recipient_ids =
+                    collect_presence_recipient_ids(&state_clone, session_user_id, &guild_ids).await;
+                state_clone.event_bus.dispatch_to_users(
+                    EVENT_PRESENCE_UPDATE,
+                    offline_presence,
+                    offline_presence_recipient_ids,
+                );
+            });
     }
 }
 
@@ -1146,8 +1150,13 @@ async fn wait_for_identify_or_resume(
                                     .await
                                     .unwrap_or_default();
                             let guild_ids = guilds.iter().map(|g| g.id).collect();
-                            let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
-                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false, 0));
+                            let guild_owner_ids =
+                                guilds.iter().map(|g| (g.id, g.owner_id)).collect();
+                            return Some((
+                                Session::new(claims.sub, guild_ids, guild_owner_ids),
+                                false,
+                                0,
+                            ));
                         }
                         if op == OP_RESUME as u64 {
                             let requested_session_id =
@@ -1157,9 +1166,12 @@ async fn wait_for_identify_or_resume(
                                 if cached.user_id == claims.sub {
                                     let mut can_replay = true;
                                     if cached.sequence > requested_seq {
-                                        if let Some(buffer) = event_buffers().get(&requested_session_id) {
+                                        if let Some(buffer) =
+                                            event_buffers().get(&requested_session_id)
+                                        {
                                             if let Some(front) = buffer.front() {
-                                                if front.sequence > requested_seq.saturating_add(1) {
+                                                if front.sequence > requested_seq.saturating_add(1)
+                                                {
                                                     can_replay = false;
                                                 }
                                             } else {
@@ -1171,13 +1183,18 @@ async fn wait_for_identify_or_resume(
                                     }
 
                                     if can_replay {
-                                        let mut resumed =
-                                            Session::new(cached.user_id, cached.guild_ids.clone(), cached.guild_owner_ids.clone());
+                                        let mut resumed = Session::new(
+                                            cached.user_id,
+                                            cached.guild_ids.clone(),
+                                            cached.guild_owner_ids.clone(),
+                                        );
                                         resumed.session_id = requested_session_id;
                                         resumed.sequence = cached.sequence.max(requested_seq);
                                         return Some((resumed, true, requested_seq));
                                     } else {
-                                        let oldest_buffered = event_buffers().get(&requested_session_id).and_then(|b| b.front().map(|e| e.sequence));
+                                        let oldest_buffered = event_buffers()
+                                            .get(&requested_session_id)
+                                            .and_then(|b| b.front().map(|e| e.sequence));
                                         tracing::info!(
                                             session_id = %requested_session_id,
                                             client_seq = requested_seq,
@@ -1195,8 +1212,13 @@ async fn wait_for_identify_or_resume(
                                     .await
                                     .unwrap_or_default();
                             let guild_ids = guilds.iter().map(|g| g.id).collect();
-                            let guild_owner_ids = guilds.iter().map(|g| (g.id, g.owner_id)).collect();
-                            return Some((Session::new(claims.sub, guild_ids, guild_owner_ids), false, 0));
+                            let guild_owner_ids =
+                                guilds.iter().map(|g| (g.id, g.owner_id)).collect();
+                            return Some((
+                                Session::new(claims.sub, guild_ids, guild_owner_ids),
+                                false,
+                                0,
+                            ));
                         }
                     }
                 }
@@ -1388,7 +1410,7 @@ async fn run_session(
                         }
 
                         let seq = session.next_sequence();
-                        
+
                         // Buffer the event for potential replay
                         let mut buffer_entry = event_buffers().entry(session.session_id.clone()).or_default();
                         while buffer_entry.front().map(|e| e.timestamp.elapsed() > MAX_REPLAY_AGE).unwrap_or(false) {
@@ -1594,16 +1616,15 @@ async fn handle_client_message(
                         if !member_ok {
                             false
                         } else if let Some(&owner_id) = session.guild_owner_ids.get(&gid) {
-                            let perms =
-                                paracord_core::permissions::compute_channel_permissions(
-                                    &state.db,
-                                    gid,
-                                    cid,
-                                    owner_id,
-                                    session.user_id,
-                                )
-                                .await
-                                .ok();
+                            let perms = paracord_core::permissions::compute_channel_permissions(
+                                &state.db,
+                                gid,
+                                cid,
+                                owner_id,
+                                session.user_id,
+                            )
+                            .await
+                            .ok();
                             if let Some(perms) = perms {
                                 perms.contains(Permissions::VIEW_CHANNEL)
                                     && perms.contains(Permissions::SEND_MESSAGES)
@@ -1876,9 +1897,7 @@ async fn handle_client_message(
             // Client announces a new sender key. Relay to all other
             // participants in the same room via the event bus.
             if let Some(d) = payload.get("d") {
-                if let Ok(announce) =
-                    serde_json::from_value::<MediaKeyAnnounce>(d.clone())
-                {
+                if let Ok(announce) = serde_json::from_value::<MediaKeyAnnounce>(d.clone()) {
                     // Deliver each per-recipient key
                     for encrypted_key in &announce.encrypted_keys {
                         let deliver = json!({
@@ -1907,9 +1926,7 @@ async fn handle_client_message(
             // The relay manages subscription state internally.
             if state.native_media.is_some() {
                 if let Some(d) = payload.get("d") {
-                    if let Ok(sub) =
-                        serde_json::from_value::<MediaSubscribe>(d.clone())
-                    {
+                    if let Ok(sub) = serde_json::from_value::<MediaSubscribe>(d.clone()) {
                         tracing::debug!(
                             "User {} subscribes to user {} track {}",
                             session.user_id,

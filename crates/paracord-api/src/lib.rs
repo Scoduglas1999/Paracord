@@ -399,18 +399,12 @@ pub fn build_router() -> Router<AppState> {
             post(routes::bots::oauth2_authorize),
         )
         // Signal prekey management
-        .route(
-            "/api/v1/users/@me/keys",
-            put(routes::keys::upload_keys),
-        )
+        .route("/api/v1/users/@me/keys", put(routes::keys::upload_keys))
         .route(
             "/api/v1/users/@me/keys/count",
             get(routes::keys::get_key_count),
         )
-        .route(
-            "/api/v1/users/{user_id}/keys",
-            get(routes::keys::get_keys),
-        )
+        .route("/api/v1/users/{user_id}/keys", get(routes::keys::get_keys))
         // Voice
         .route(
             "/api/v1/voice/{channel_id}/join",
@@ -560,37 +554,39 @@ pub fn build_router() -> Router<AppState> {
                         );
                     }
                 })
-                .on_response(|response: &Response, latency: Duration, _span: &tracing::Span| {
-                    let status = response.status();
-                    let latency_ms = latency.as_millis();
-                    let response_bytes = response
-                        .headers()
-                        .get(header::CONTENT_LENGTH)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok());
-                    let response_content_type = response
-                        .headers()
-                        .get(header::CONTENT_TYPE)
-                        .and_then(|v| v.to_str().ok());
-                    if observability::wire_trace_enabled() {
-                        tracing::info!(
-                            target: "wire",
-                            kind = "http_response_out",
-                            status = %status.as_u16(),
-                            latency_ms,
-                            response_bytes,
-                            response_content_type,
-                            "server_out"
-                        );
-                    }
-                    if status.is_server_error() {
-                        tracing::error!(status = %status.as_u16(), latency_ms, "request");
-                    } else if status.is_client_error() {
-                        tracing::warn!(status = %status.as_u16(), latency_ms, "request");
-                    } else {
-                        tracing::info!(status = %status.as_u16(), latency_ms, "request");
-                    }
-                }),
+                .on_response(
+                    |response: &Response, latency: Duration, _span: &tracing::Span| {
+                        let status = response.status();
+                        let latency_ms = latency.as_millis();
+                        let response_bytes = response
+                            .headers()
+                            .get(header::CONTENT_LENGTH)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok());
+                        let response_content_type = response
+                            .headers()
+                            .get(header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok());
+                        if observability::wire_trace_enabled() {
+                            tracing::info!(
+                                target: "wire",
+                                kind = "http_response_out",
+                                status = %status.as_u16(),
+                                latency_ms,
+                                response_bytes,
+                                response_content_type,
+                                "server_out"
+                            );
+                        }
+                        if status.is_server_error() {
+                            tracing::error!(status = %status.as_u16(), latency_ms, "request");
+                        } else if status.is_client_error() {
+                            tracing::warn!(status = %status.as_u16(), latency_ms, "request");
+                        } else {
+                            tracing::info!(status = %status.as_u16(), latency_ms, "request");
+                        }
+                    },
+                ),
         )
 }
 

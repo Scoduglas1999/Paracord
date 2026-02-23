@@ -373,10 +373,9 @@ async fn check_guild_upload_policy(
         None => return Ok(()),
     };
 
-    let policy =
-        paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
+    let policy = paracord_db::guild_storage_policies::get_guild_storage_policy(&state.db, guild_id)
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
 
     let Some(policy) = policy else {
         return Ok(());
@@ -666,7 +665,10 @@ pub async fn download_file(
                 );
                 match cryptor.encrypt_with_aad(&stored_data, aad.as_bytes()) {
                     Ok(reencrypted) => {
-                        if let Err(err) = state.storage_backend.store(&storage_key, &reencrypted).await
+                        if let Err(err) = state
+                            .storage_backend
+                            .store(&storage_key, &reencrypted)
+                            .await
                         {
                             tracing::warn!(
                                 "Failed to re-encrypt attachment {} in storage: {}",
@@ -811,8 +813,7 @@ pub async fn process_uploaded_file(
     if size > state.config.max_upload_size {
         return Err(ApiError::BadRequest("File too large".into()));
     }
-    let db_size =
-        i32::try_from(size).map_err(|_| ApiError::BadRequest("File too large".into()))?;
+    let db_size = i32::try_from(size).map_err(|_| ApiError::BadRequest("File too large".into()))?;
 
     // Compute SHA-256 content hash
     let mut hasher = Sha256::new();
@@ -994,14 +995,11 @@ pub async fn download_federated_file(
             .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
     let mut has_access = false;
     for mapping in &space_mappings {
-        let member = paracord_db::members::get_member(
-            &state.db,
-            auth.user_id,
-            mapping.local_guild_id,
-        )
-        .await
-        .ok()
-        .flatten();
+        let member =
+            paracord_db::members::get_member(&state.db, auth.user_id, mapping.local_guild_id)
+                .await
+                .ok()
+                .flatten();
         if member.is_some() {
             has_access = true;
             break;
@@ -1012,26 +1010,22 @@ pub async fn download_federated_file(
     }
 
     // Check federation file cache for a cached copy
-    if let Ok(Some(cached)) =
-        paracord_db::federation_file_cache::get_cached_file(
-            &state.db,
-            &origin_server,
-            &attachment_id,
-        )
-        .await
+    if let Ok(Some(cached)) = paracord_db::federation_file_cache::get_cached_file(
+        &state.db,
+        &origin_server,
+        &attachment_id,
+    )
+    .await
     {
-        let now_str = chrono::Utc::now()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+        let now_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let is_expired = cached
             .expires_at
             .as_deref()
             .is_some_and(|exp| exp < now_str.as_str());
         if !is_expired {
-            let _ = paracord_db::federation_file_cache::update_cache_access_time(
-                &state.db, cached.id,
-            )
-            .await;
+            let _ =
+                paracord_db::federation_file_cache::update_cache_access_time(&state.db, cached.id)
+                    .await;
 
             let data = state
                 .storage_backend
@@ -1124,8 +1118,7 @@ pub async fn download_federated_file(
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to download file: {}", e)))?;
 
-    let content_type =
-        resp_content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    let content_type = resp_content_type.unwrap_or_else(|| "application/octet-stream".to_string());
     let filename = resp_filename.unwrap_or_else(|| format!("federated_{}", attachment_id));
 
     // Optionally cache the file
@@ -1139,8 +1132,7 @@ pub async fn download_federated_file(
         let cache_size = paracord_db::federation_file_cache::get_total_cache_size(&state.db)
             .await
             .unwrap_or(0);
-        if cache_size + file_data.len() as i64
-            <= state.config.federation_file_cache_max_size as i64
+        if cache_size + file_data.len() as i64 <= state.config.federation_file_cache_max_size as i64
         {
             if state
                 .storage_backend

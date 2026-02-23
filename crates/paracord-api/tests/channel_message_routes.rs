@@ -394,7 +394,11 @@ async fn thread_routes_work() -> anyhow::Result<()> {
             })),
         )
         .await?;
-    assert_eq!(status, StatusCode::CREATED, "unexpected thread payload: {created_thread}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "unexpected thread payload: {created_thread}"
+    );
     let thread_id = created_thread["id"]
         .as_str()
         .context("thread id should be a string")?
@@ -424,7 +428,11 @@ async fn thread_routes_work() -> anyhow::Result<()> {
             Some(json!({ "archived": true })),
         )
         .await?;
-    assert_eq!(status, StatusCode::OK, "unexpected archived payload: {archived}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected archived payload: {archived}"
+    );
     assert_eq!(archived["id"], thread_id);
 
     let (status, archived_threads) = ctx

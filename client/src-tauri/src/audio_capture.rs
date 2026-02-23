@@ -212,15 +212,10 @@ fn capture_loop(
     // Try the Process Loopback Exclusion API first (Windows 10 2004+).
     // This captures all system audio EXCEPT our own process, eliminating echo.
     let my_pid = std::process::id();
-    eprintln!(
-        "[audio_capture] Attempting Process Loopback Exclusion API (exclude PID {})",
-        my_pid
-    );
 
     let result = match win_process_loopback::activate_process_loopback_exclude(my_pid) {
         Ok(client) => {
-            eprintln!("[audio_capture] Process Loopback Exclusion API activated successfully");
-            match capture_loop_with_client(channel, stop_flag, &client) {
+            match capture_loop_with_client(channel, stop_flag, &client, true) {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     eprintln!(
@@ -254,6 +249,7 @@ fn capture_loop_with_client(
     channel: &Channel<AudioChunk>,
     stop_flag: &Arc<AtomicBool>,
     client: &windows::Win32::Media::Audio::IAudioClient,
+    is_process_loopback: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use windows::Win32::Foundation::*;
     use windows::Win32::Media::Audio::*;
@@ -261,8 +257,23 @@ fn capture_loop_with_client(
     use windows::Win32::System::Threading::*;
 
     unsafe {
-        // Get the mix format
-        let format_ptr = client.GetMixFormat()?;
+        // Get the mix format.  The Process Loopback virtual device doesn't
+        // support GetMixFormat (returns E_NOTIMPL), so fall back to querying
+        // the default render endpoint which is what the loopback captures.
+        let format_ptr = match client.GetMixFormat() {
+            Ok(p) => p,
+            Err(_) if is_process_loopback => {
+                let enumerator: IMMDeviceEnumerator = windows::Win32::System::Com::CoCreateInstance(
+                    &MMDeviceEnumerator,
+                    None,
+                    windows::Win32::System::Com::CLSCTX_ALL,
+                )?;
+                let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+                let render_client: IAudioClient = device.Activate(windows::Win32::System::Com::CLSCTX_ALL, None)?;
+                render_client.GetMixFormat()?
+            }
+            Err(e) => return Err(e.into()),
+        };
         let format = &*format_ptr;
 
         let sample_rate = format.nSamplesPerSec;
@@ -271,38 +282,51 @@ fn capture_loop_with_client(
         let bits_per_sample = format.wBitsPerSample as usize;
         let bytes_per_sample = bits_per_sample / 8;
 
-        // Initialize in shared mode with loopback + event-driven buffering.
-        // AUDCLNT_STREAMFLAGS_LOOPBACK is required even for the Process
-        // Loopback virtual device — it tells the audio engine we're capturing.
         // Per MSDN, both hnsBufferDuration and hnsPeriodicity MUST be 0
         // for shared-mode streams using event-driven buffering.
-        client.Initialize(
+        let stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        if let Err(e) = client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            stream_flags,
             0,
             0,
             format_ptr,
             None,
-        )?;
+        ) {
+            CoTaskMemFree(Some(format_ptr as *const _ as *const core::ffi::c_void));
+            return Err(e.into());
+        }
 
         // Free the format memory allocated by GetMixFormat
         CoTaskMemFree(Some(format_ptr as *const _ as *const core::ffi::c_void));
 
         // Set up event handle for buffer notifications
         let event = CreateEventW(None, false, false, None)?;
-        client.SetEventHandle(event)?;
+        if let Err(e) = client.SetEventHandle(event) {
+            let _ = CloseHandle(event);
+            return Err(e.into());
+        }
 
         // Get the capture client and buffer size
-        let capture: IAudioCaptureClient = client.GetService()?;
+        let capture: IAudioCaptureClient = match client.GetService() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = CloseHandle(event);
+                return Err(e.into());
+            }
+        };
         let buffer_size = client.GetBufferSize()?;
 
+        let mode = if is_process_loopback { "process loopback exclusion" } else { "loopback" };
         eprintln!(
-            "[audio_capture] Started (process loopback exclusion): {}Hz, {} ch, {} bits/sample, {} frames buffer",
-            sample_rate, num_channels, bits_per_sample, buffer_size
+            "[audio_capture] Started ({mode}): {sample_rate}Hz, {num_channels} ch, {bits_per_sample}-bit, {buffer_size} frames",
         );
 
         // Start the audio stream
-        client.Start()?;
+        if let Err(e) = client.Start() {
+            let _ = CloseHandle(event);
+            return Err(e.into());
+        }
 
         while !stop_flag.load(Ordering::Relaxed) {
             // Wait for buffer event with 100ms timeout

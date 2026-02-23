@@ -7,13 +7,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
+mod bots;
 mod cli;
 mod config;
 #[cfg(feature = "embed-ui")]
 mod embedded_ui;
 mod livekit_proc;
 mod tls;
-mod bots;
 
 #[derive(Clone, Default)]
 struct AtRestRuntimeProfile {
@@ -232,6 +232,7 @@ async fn main() -> Result<()> {
             server_public_port,
             detected_external_ip.as_deref(),
             detected_local_ip.as_deref(),
+            config.voice.native_media,
         )
         .await
         {
@@ -382,6 +383,13 @@ async fn main() -> Result<()> {
         let local_candidate_url = format!("{ws_scheme}://{local_ip}:{proxy_port}/livekit");
         std::env::set_var("PARACORD_LIVEKIT_LOCAL_CANDIDATE_URL", &local_candidate_url);
         tracing::info!("LiveKit local candidate URL: {}", local_candidate_url);
+
+        // Same pattern for native QUIC media: provide the LAN IP so clients
+        // on the same network don't need hairpin NAT through the public IP.
+        let media_port = config.voice.port;
+        let native_local = format!("https://{}:{}/media", local_ip, media_port);
+        std::env::set_var("PARACORD_NATIVE_MEDIA_LOCAL_CANDIDATE", &native_local);
+        tracing::info!("Native media local candidate URL: {}", native_local);
     }
 
     if let Some(public_url) = &config.server.public_url {
@@ -484,8 +492,7 @@ async fn main() -> Result<()> {
         use paracord_transport::endpoint::{generate_self_signed_cert, MediaEndpoint};
 
         let media_port = config.voice.port;
-        let media_addr: std::net::SocketAddr =
-            format!("0.0.0.0:{}", media_port).parse()?;
+        let media_addr: std::net::SocketAddr = format!("0.0.0.0:{}", media_port).parse()?;
         match generate_self_signed_cert() {
             Ok(tls) => {
                 // Compute SHA-256 hash of the DER certificate for WebTransport
@@ -502,7 +509,7 @@ async fn main() -> Result<()> {
 
                 // Single unified endpoint: ALPN `h3` for WebTransport browsers,
                 // `paracord-media` for raw QUIC desktop/federation clients.
-                // Clients that send no ALPN are also accepted (routed to raw QUIC).
+                // Clients MUST send a matching ALPN (rustls requires it).
                 match MediaEndpoint::bind_unified(
                     media_addr,
                     tls,
@@ -553,8 +560,7 @@ async fn main() -> Result<()> {
 
     // ── QUIC file transfer partial upload cleanup ─────────────────────────────
     if config.voice.native_media {
-        let partial_dir =
-            std::path::Path::new(&config.storage.path).join("partial");
+        let partial_dir = std::path::Path::new(&config.storage.path).join("partial");
         paracord_transport::file_transfer::PartialUploadManager::spawn_cleanup_task(
             partial_dir,
             shutdown_notify.clone(),
@@ -1297,11 +1303,7 @@ async fn run_retention_once(
                     {
                         Ok(rows) => rows,
                         Err(err) => {
-                            tracing::warn!(
-                                "Guild {} retention query failed: {}",
-                                guild_id,
-                                err
-                            );
+                            tracing::warn!("Guild {} retention query failed: {}", guild_id, err);
                             break;
                         }
                     };
@@ -1351,15 +1353,13 @@ async fn run_retention_once(
 
         // LRU eviction if total cache size exceeds the configured maximum.
         // We read the limit from server_settings DB, falling back to a 1GB default.
-        let cache_max_size: u64 = paracord_db::server_settings::get_setting(
-            db,
-            "federation_file_cache_max_size",
-        )
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1_073_741_824);
+        let cache_max_size: u64 =
+            paracord_db::server_settings::get_setting(db, "federation_file_cache_max_size")
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1_073_741_824);
 
         if let Ok(total_size) = paracord_db::federation_file_cache::get_total_cache_size(db).await {
             if (total_size as u64) > cache_max_size {
@@ -1380,10 +1380,7 @@ async fn run_retention_once(
                         evicted += 1;
                     }
                     if evicted > 0 {
-                        tracing::info!(
-                            "Federation cache LRU evicted {} entrie(s)",
-                            evicted
-                        );
+                        tracing::info!("Federation cache LRU evicted {} entrie(s)", evicted);
                     }
                 }
             }
@@ -1698,7 +1695,9 @@ async fn unified_media_accept_loop(
     jwt_secret: String,
     db: paracord_db::DbPool,
 ) {
-    tracing::info!("Unified media accept loop started (ALPN routing: h3 → WebTransport, other → raw QUIC)");
+    tracing::info!(
+        "Unified media accept loop started (ALPN routing: h3 → WebTransport, other → raw QUIC)"
+    );
     loop {
         let incoming = match endpoint.accept().await {
             Some(i) => i,
@@ -1729,10 +1728,7 @@ async fn unified_media_accept_loop(
             // Inspect the negotiated ALPN to determine connection type.
             let alpn = conn
                 .handshake_data()
-                .and_then(|data| {
-                    data.downcast::<quinn::crypto::rustls::HandshakeData>()
-                        .ok()
-                })
+                .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
                 .and_then(|hs| hs.protocol.clone());
 
             let is_h3 = alpn.as_deref() == Some(b"h3");
@@ -1877,8 +1873,7 @@ async fn handle_webtransport_connection(
                     };
 
                     // Validate JWT
-                    let validation =
-                        jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+                    let validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
                     let token_data = match jsonwebtoken::decode::<serde_json::Value>(
                         token,
                         &jsonwebtoken::DecodingKey::from_secret(jwt_secret.as_bytes()),
@@ -1958,11 +1953,10 @@ async fn handle_webtransport_connection(
 
     // Spawn datagram bridge (handles QSID framing).
     // The first WebTransport session on a fresh connection has QSID = 0.
-    let (outbound_tx, inbound_rx) =
-        paracord_transport::webtransport::spawn_webtransport_bridge(
-            wt_session.quinn_conn().clone(),
-            0,
-        );
+    let (outbound_tx, inbound_rx) = paracord_transport::webtransport::spawn_webtransport_bridge(
+        wt_session.quinn_conn().clone(),
+        0,
+    );
 
     // Create bridged connection handle and start forwarding
     let handle = paracord_relay::relay::ConnectionHandle::new_bridged(
@@ -2029,4 +2023,3 @@ mod tests {
             .contains("invalid federation signing key at"));
     }
 }
-

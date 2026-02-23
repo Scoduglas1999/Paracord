@@ -258,10 +258,9 @@ pub async fn get_member_count(pool: &DbPool, guild_id: i64) -> Result<i64, DbErr
 }
 
 pub async fn get_all_memberships(pool: &DbPool) -> Result<Vec<(i64, i64)>, DbError> {
-    let rows: Vec<(i64, i64)> =
-        sqlx::query_as("SELECT guild_id, user_id FROM members")
-            .fetch_all(pool)
-            .await?;
+    let rows: Vec<(i64, i64)> = sqlx::query_as("SELECT guild_id, user_id FROM members")
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 

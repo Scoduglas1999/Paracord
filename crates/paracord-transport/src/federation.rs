@@ -679,14 +679,8 @@ mod tests {
         let fed_conn_b = accept_task.await.unwrap().unwrap();
 
         // Verify metadata
-        assert_eq!(
-            fed_conn_a.meta().remote_origin,
-            "server-b.example.com"
-        );
-        assert_eq!(
-            fed_conn_b.meta().remote_origin,
-            "server-a.example.com"
-        );
+        assert_eq!(fed_conn_a.meta().remote_origin, "server-b.example.com");
+        assert_eq!(fed_conn_b.meta().remote_origin, "server-a.example.com");
         assert_eq!(fed_conn_a.meta().remote_public_key, pub_b);
         assert_eq!(fed_conn_b.meta().remote_public_key, pub_a);
 

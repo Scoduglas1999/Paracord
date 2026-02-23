@@ -135,7 +135,12 @@ impl SimulcastEncoder {
                         actual: data.len(),
                     });
                 }
-                rgba_to_i420(data, self.input_width, self.input_height, &mut self.i420_buf);
+                rgba_to_i420(
+                    data,
+                    self.input_width,
+                    self.input_height,
+                    &mut self.i420_buf,
+                );
                 &self.i420_buf
             }
         };
@@ -269,15 +274,17 @@ mod vpx_impl {
                     1 as c_int,
                 );
 
+                let keyframe_interval = if config.keyframe_interval > 0 {
+                    config.keyframe_interval
+                } else {
+                    300 // default: ~10 seconds at 30fps
+                };
+
                 Ok(Self {
                     ctx,
                     config,
                     frame_count: 0,
-                    keyframe_interval: if config.keyframe_interval > 0 {
-                        config.keyframe_interval
-                    } else {
-                        300 // default: ~10 seconds at 30fps
-                    },
+                    keyframe_interval,
                 })
             }
         }
@@ -351,8 +358,8 @@ mod vpx_impl {
                     &image,
                     pts,
                     1,
-                    flags as c_ulong,
-                    VPX_DL_REALTIME as c_ulong,
+                    flags as i32,
+                    VPX_DL_REALTIME as _,
                 );
                 if ret != VPX_CODEC_OK {
                     return Err(VideoError::EncodeFailed(format!(

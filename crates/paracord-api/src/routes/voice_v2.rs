@@ -7,9 +7,9 @@ use paracord_core::AppState;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::voice::{VoiceJoinQuery, VoiceLeaveQuery};
 use crate::error::ApiError;
 use crate::middleware::AuthUser;
-use super::voice::VoiceJoinQuery;
 
 #[derive(Deserialize)]
 pub struct VoiceStateUpdateRequest {
@@ -38,8 +38,9 @@ pub async fn leave_voice_v2(
     state: State<AppState>,
     auth: AuthUser,
     Path(channel_id): Path<i64>,
+    query: Query<VoiceLeaveQuery>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    super::voice::leave_voice(state, auth, Path(channel_id)).await
+    super::voice::leave_voice(state, auth, Path(channel_id), query).await
 }
 
 pub async fn recover_voice_v2(

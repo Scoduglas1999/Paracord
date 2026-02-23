@@ -155,8 +155,7 @@ impl<T> JitterBuffer<T> {
 
         // Before playout starts, wait until we have enough buffered
         if !self.playing {
-            if self.packets.len() < self.target_depth as usize
-                && !self.packets.contains_key(&next)
+            if self.packets.len() < self.target_depth as usize && !self.packets.contains_key(&next)
             {
                 return None;
             }

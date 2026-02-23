@@ -38,7 +38,7 @@ function voiceTimingLog(msg: string): void {
     const w = window as unknown as { __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: unknown) => Promise<unknown> } };
     const invoke = w.__TAURI_INTERNALS__?.invoke;
     if (typeof invoke === 'function') {
-      invoke('append_client_log', { line: msg }).catch(() => {});
+      invoke('append_client_log', { line: msg }).catch(() => { });
     }
   } catch { /* non-fatal */ }
 }
@@ -446,17 +446,17 @@ const MIN_DISCONNECT_QUIET_PERIOD_MS = isTauri() ? 3_500 : 2_500;
 const TAURI_FAST_CONNECT = isTauri();
 const LIVEKIT_CONNECT_OPTIONS = TAURI_FAST_CONNECT
   ? ({
-      // Desktop WebView can stall for long periods on failed signal handshakes.
-      // Keep internal retries minimal and let our outer candidate retry loop run.
-      maxRetries: 0,
-      websocketTimeout: 10_000,
-      peerConnectionTimeout: 12_000,
-    } as const)
+    // Desktop WebView can stall for long periods on failed signal handshakes.
+    // Keep internal retries minimal and let our outer candidate retry loop run.
+    maxRetries: 0,
+    websocketTimeout: 10_000,
+    peerConnectionTimeout: 12_000,
+  } as const)
   : ({
-      maxRetries: 4,
-      websocketTimeout: 45_000,
-      peerConnectionTimeout: 50_000,
-    } as const);
+    maxRetries: 4,
+    websocketTimeout: 45_000,
+    peerConnectionTimeout: 50_000,
+  } as const);
 const LIVEKIT_CONNECT_ATTEMPTS_PER_CANDIDATE = TAURI_FAST_CONNECT ? 1 : 2;
 const LIVEKIT_CONNECT_RETRY_BASE_DELAY_MS = TAURI_FAST_CONNECT ? 250 : 400;
 const LIVEKIT_CONNECT_ATTEMPT_TIMEOUT_MS = TAURI_FAST_CONNECT ? 12_000 : 25_000;
@@ -583,7 +583,7 @@ async function connectWithAttemptTimeout(room: Room, url: string, token: string)
   const connectPromise = room.connect(url, token, LIVEKIT_CONNECT_OPTIONS);
   // Suppress late rejections when the timeout branch wins and the underlying
   // connect promise eventually settles after we've moved on.
-  void connectPromise.catch(() => {});
+  void connectPromise.catch(() => { });
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutHandle = setTimeout(() => {
       reject(new Error(`LiveKit connect attempt timed out after ${LIVEKIT_CONNECT_ATTEMPT_TIMEOUT_MS}ms`));
@@ -945,7 +945,7 @@ function startLocalAudioUplinkMonitor(room: Room): void {
           micUplinkStalledIntervals: localAudioStalledIntervals,
         });
         console.warn('[voice] Mic uplink appears stalled; restarting microphone track.');
-        await setMicrophoneEnabledWithFallback(room, true, getSavedInputDeviceId()).catch(() => {});
+        await setMicrophoneEnabledWithFallback(room, true, getSavedInputDeviceId()).catch(() => { });
         localAudioLastBytesSent = null;
         localAudioStalledIntervals = 0;
         localAudioRecoveryInFlight = false;
@@ -1631,7 +1631,7 @@ function attachRemoteAudioTrack(
       // Autoplay was blocked by browser policy. Retry on the next user
       // interaction so audio starts flowing once the user clicks/taps.
       const resumeOnGesture = () => {
-        audio.play().catch(() => {});
+        audio.play().catch(() => { });
         document.removeEventListener('click', resumeOnGesture);
         document.removeEventListener('keydown', resumeOnGesture);
       };
@@ -1982,7 +1982,7 @@ function registerRoomListeners(
         const savedOutputId = getSavedOutputDeviceId() || '';
         const voiceEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-voice-audio]');
         for (const el of voiceEls) {
-          el.setSinkId?.(savedOutputId).catch(() => {});
+          el.setSinkId?.(savedOutputId).catch(() => { });
         }
         const localUserId = useAuthStore.getState().user?.id;
         const participants = new Map(state.participants);
@@ -2133,7 +2133,7 @@ function registerRoomListeners(
     if (!room.canPlaybackAudio) {
       console.warn('[voice] Audio playback blocked â€” will retry on next user gesture');
       const resume = () => {
-        room.startAudio().catch(() => {});
+        room.startAudio().catch(() => { });
         document.removeEventListener('click', resume);
         document.removeEventListener('keydown', resume);
       };
@@ -2278,6 +2278,7 @@ interface VoiceStoreState {
   livekitToken: string | null;
   livekitUrl: string | null;
   roomName: string | null;
+  voiceSessionId: string | null;
   room: Room | null;
   micInputActive: boolean;
   micInputLevel: number;
@@ -2342,6 +2343,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
   livekitToken: null,
   livekitUrl: null,
   roomName: null,
+  voiceSessionId: null,
   room: null,
   micInputActive: false,
   micInputLevel: 0,
@@ -2400,7 +2402,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     // Tear down any existing native media engine from a prior connection.
     const existingEngine = get().mediaEngine;
     if (existingEngine) {
-      existingEngine.disconnect().catch(() => {});
+      existingEngine.disconnect().catch(() => { });
       set({ mediaEngine: null, useNativeMedia: isTauri() });
     }
     const existingRoom = get().room;
@@ -2438,6 +2440,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     detachAllAttachedRemoteAudio();
     let room: Room | null = null;
     let joinedServer = false;
+    let joinedSessionId: string | null = null;
     // Bail early if this join was superseded during the quiet period.
     if (activeJoinAttempt !== joinAttempt) {
       return;
@@ -2461,11 +2464,15 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         url: data?.url ?? null,
         urlCandidates: Array.isArray(data?.url_candidates) ? data.url_candidates : [],
       });
+      joinedSessionId =
+        typeof data?.session_id === 'string' && data.session_id.length > 0
+          ? data.session_id
+          : null;
       // Bail if superseded during the API call — avoids creating a Room
       // and starting a LiveKit connect that will just be torn down.
       if (activeJoinAttempt !== joinAttempt) {
         // Roll back the server join so the voice state stays clean.
-        voiceApi.leaveChannel(channelId).catch(() => {});
+        voiceApi.leaveChannel(channelId, { sessionId: joinedSessionId ?? undefined }).catch(() => { });
         set({ joining: false, joiningChannelId: null });
         return;
       }
@@ -2478,12 +2485,25 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       const serverNativeMedia = data.native_media === true;
       const storeNativeMedia = get().useNativeMedia;
       if (serverNativeMedia || storeNativeMedia) {
-        const mediaEndpoint = data.media_endpoint || data.url;
+        // Build candidate list: prefer server-provided candidates, fall back
+        // to the single media_endpoint field.
+        const mediaCandidates: string[] = (
+          Array.isArray(data.media_endpoint_candidates) && data.media_endpoint_candidates.length > 0
+            ? data.media_endpoint_candidates
+            : [data.media_endpoint, data.url]
+        ).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
         const mediaToken = data.media_token || data.token;
-        voiceTimingLog(`[voice] +${elapsed()} native media path, endpoint=${mediaEndpoint}`);
+        if (mediaCandidates.length === 0) {
+          throw new Error(
+            'Server did not return a media endpoint. ' +
+            `(media_endpoint=${data.media_endpoint}, url=${data.url}, ` +
+            `media_endpoint_candidates=${JSON.stringify(data.media_endpoint_candidates)})`
+          );
+        }
+        voiceTimingLog(`[voice] +${elapsed()} native media path, candidates=${JSON.stringify(mediaCandidates)}`);
         logVoiceDiagnostic(`[voice] +${elapsed()} native media engine connect`, {
           channelId,
-          endpoint: mediaEndpoint,
+          endpointCandidates: mediaCandidates,
           serverNativeMedia,
           storeNativeMedia,
         });
@@ -2538,7 +2558,65 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             set({ speakingUsers: new Set(speakers.keys()) });
           });
 
-          await engine.connect(mediaEndpoint, mediaToken, data.cert_hash || undefined);
+          // Try each candidate endpoint in order (LAN first, then public).
+          let connected = false;
+          let lastErr: unknown;
+          for (const candidate of mediaCandidates) {
+            try {
+              voiceTimingLog(`[voice] +${elapsed()} native media trying candidate: ${candidate}`);
+              await engine.connect(candidate, mediaToken, data.cert_hash || undefined);
+              voiceTimingLog(`[voice] +${elapsed()} native media connected via ${candidate}`);
+              connected = true;
+              break;
+            } catch (err) {
+              console.warn(`[voice] Native media connect candidate failed: ${candidate}`, err);
+              logVoiceDiagnostic('[voice] Native media connect candidate failed', { candidate, error: err instanceof Error ? err.message : String(err) });
+              lastErr = err;
+              // Disconnect engine before trying next candidate so it can rebind
+              await engine.disconnect().catch(() => { });
+              engine = await createMediaEngine();
+              // Re-wire callbacks on fresh engine
+              engine.onParticipantJoin((userId) => {
+                playVoiceJoinSound();
+                const currentParticipants = new Map(get().participants);
+                const currentChannelParticipants = new Map(get().channelParticipants);
+                const voiceState: VoiceState = {
+                  user_id: userId,
+                  channel_id: channelId,
+                  guild_id: guildId || undefined,
+                  session_id: '',
+                  deaf: false, mute: false, self_mute: false, self_deaf: false,
+                  self_stream: false, self_video: false, suppress: false,
+                };
+                currentParticipants.set(userId, voiceState);
+                const channelMembers = (currentChannelParticipants.get(channelId) || [])
+                  .filter((p) => p.user_id !== userId);
+                channelMembers.push(voiceState);
+                currentChannelParticipants.set(channelId, channelMembers);
+                set({ participants: currentParticipants, channelParticipants: currentChannelParticipants });
+              });
+              engine.onParticipantLeave((userId) => {
+                playVoiceLeaveSound();
+                const currentParticipants = new Map(get().participants);
+                const currentChannelParticipants = new Map(get().channelParticipants);
+                currentParticipants.delete(userId);
+                const channelMembers = (currentChannelParticipants.get(channelId) || [])
+                  .filter((p) => p.user_id !== userId);
+                if (channelMembers.length === 0) {
+                  currentChannelParticipants.delete(channelId);
+                } else {
+                  currentChannelParticipants.set(channelId, channelMembers);
+                }
+                set({ participants: currentParticipants, channelParticipants: currentChannelParticipants });
+              });
+              engine.onSpeakingChange((speakers) => {
+                set({ speakingUsers: new Set(speakers.keys()) });
+              });
+            }
+          }
+          if (!connected) {
+            throw lastErr ?? new Error('All native media candidates failed');
+          }
 
           // Apply initial mute/deaf state
           if (shouldMuteOnJoin) {
@@ -2586,6 +2664,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
               livekitToken: null,
               livekitUrl: null,
               roomName: data.room_name,
+              voiceSessionId: joinedSessionId,
               room: null,
               participants,
               channelParticipants,
@@ -2605,7 +2684,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           console.error('[voice] Native media engine failed:', nativeMessage);
           logVoiceDiagnostic('[voice] Native media engine failed', { error: nativeMessage });
           if (engine) {
-            await engine.disconnect().catch(() => {});
+            await engine.disconnect().catch(() => { });
           }
 
           // Attempt LiveKit fallback if the server indicated it's available
@@ -2614,11 +2693,15 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             logVoiceDiagnostic('[voice] Attempting LiveKit fallback');
             try {
               // Leave the native-media session so the server clears state
-              await voiceApi.leaveChannel(channelId).catch(() => {});
+              await voiceApi.leaveChannel(channelId, { sessionId: joinedSessionId ?? undefined }).catch(() => { });
               // Re-join with explicit LiveKit fallback request
               const { data: lkData } = await voiceApi.joinChannel(channelId, { fallback: 'livekit' });
               // Overwrite `data` so the LiveKit path below uses the fallback response
               Object.assign(data, lkData);
+              joinedSessionId =
+                typeof lkData?.session_id === 'string' && lkData.session_id.length > 0
+                  ? lkData.session_id
+                  : null;
               // Fall through to the LiveKit path below
             } catch (lkErr) {
               console.error('[voice] LiveKit fallback also failed:', lkErr);
@@ -2751,6 +2834,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
             livekitToken: null,
             livekitUrl: null,
             roomName: null,
+            voiceSessionId: null,
             room: null,
             joining: false,
             joiningChannelId: null,
@@ -2957,6 +3041,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           livekitToken: data.token,
           livekitUrl: normalizedUrl,
           roomName: data.room_name,
+          voiceSessionId: joinedSessionId,
           room,
           participants,
           channelParticipants,
@@ -3008,7 +3093,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       }
       detachAllAttachedRemoteAudio();
       if (joinedServer) {
-        await voiceApi.leaveChannel(channelId).catch((err) => {
+        await voiceApi.leaveChannel(channelId, { sessionId: joinedSessionId ?? undefined }).catch((err) => {
           console.warn('[voice] rollback leave API error after failed join:', err);
         });
       }
@@ -3042,6 +3127,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         livekitToken: null,
         livekitUrl: null,
         roomName: null,
+        voiceSessionId: null,
         connectionError: message,
         connectionErrorChannelId: channelId,
         watchedStreamerId: null,
@@ -3055,7 +3141,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
 
   leaveChannel: async () => {
     activeJoinAttempt = ++joinAttemptSeq;
-    const { channelId, selfStream } = get();
+    const { channelId, selfStream, voiceSessionId } = get();
     const authUser = useAuthStore.getState().user;
 
     // ── Stop active stream BEFORE tearing down connections ──────────
@@ -3065,7 +3151,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
       currentEngine.stopScreenShare();
     }
     if (selfStream && channelId) {
-      voiceApi.stopStream(channelId).catch(() => {});
+      voiceApi.stopStream(channelId).catch(() => { });
     }
 
     // ── Native media engine teardown ────────────────────────────────
@@ -3128,6 +3214,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         livekitToken: null,
         livekitUrl: null,
         roomName: null,
+        voiceSessionId: null,
         room: null,
         joining: false,
         joiningChannelId: null,
@@ -3154,7 +3241,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     // so a slow/hung server doesn't block anything. The server also detects
     // our departure when the WebSocket/WebRTC connection drops.
     if (channelId) {
-      voiceApi.leaveChannel(channelId).catch((err) => {
+      voiceApi.leaveChannel(channelId, { sessionId: voiceSessionId ?? undefined }).catch((err) => {
         console.warn('[voice] leave channel API error (continuing disconnect):', err);
       });
     }
@@ -3246,11 +3333,11 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         // Use the same quality presets as the LiveKit path so resolution,
         // framerate, and bitrate targets match what the user selected.
         const nativePresetMap: Record<string, ScreenCapturePreset> = {
-          '720p30':    { width: 1280, height: 720,  frameRate: 30, maxBitrate: 8_000_000,   hint: 'motion' },
-          '1080p60':   { width: 1920, height: 1080, frameRate: 60, maxBitrate: 25_000_000,  hint: 'motion' },
-          '1440p60':   { width: 2560, height: 1440, frameRate: 60, maxBitrate: 35_000_000,  hint: 'motion' },
-          '4k60':      { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000,  hint: 'motion' },
-          'movie-50':  { width: 3840, height: 2160, frameRate: 60, maxBitrate: 60_000_000,  hint: 'motion' },
+          '720p30': { width: 1280, height: 720, frameRate: 30, maxBitrate: 8_000_000, hint: 'motion' },
+          '1080p60': { width: 1920, height: 1080, frameRate: 60, maxBitrate: 25_000_000, hint: 'motion' },
+          '1440p60': { width: 2560, height: 1440, frameRate: 60, maxBitrate: 35_000_000, hint: 'motion' },
+          '4k60': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000, hint: 'motion' },
+          'movie-50': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 60_000_000, hint: 'motion' },
           'movie-100': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 100_000_000, hint: 'motion' },
         };
         const capture = nativePresetMap[qualityPreset] ?? nativePresetMap['1080p60'];
@@ -3326,8 +3413,9 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
           };
         });
       } catch (error) {
+        logVoiceDiagnostic('[voice] startStream native error', { error: String(error), type: typeof error, isError: error instanceof Error, name: (error as { name?: string })?.name, message: (error as { message?: string })?.message });
         mediaEngine.stopScreenShare();
-        voiceApi.stopStream(channelId).catch(() => {});
+        voiceApi.stopStream(channelId).catch(() => { });
         set({ selfStream: false, streamAudioWarning: null, systemAudioCaptureActive: false });
         throw error;
       }
@@ -3342,60 +3430,19 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     }
     set({ streamAudioWarning: null, systemAudioCaptureActive: false });
     try {
-      // 1. Register stream state on the server.
-      // When connected via LiveKit fallback (native media was intended but
-      // failed), pass fallback=livekit so the server uses the LiveKit path.
-      const isLivekitFallback = get().useNativeMedia && !get().mediaEngine;
-      const { data } = await voiceApi.startStream(channelId, {
-        quality_preset: qualityPreset,
-        ...(isLivekitFallback ? { fallback: 'livekit' } : {}),
-      });
-
-      // Keep the existing LiveKit session and publish screen share in-place.
-      // Join tokens already allow screen-share sources for speakers.
-      const normalizedUrl = normalizeLivekitUrl(data.url, data.url_candidates);
-
-      const streamNotif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
-      const streamOutputId = normalizeDeviceId(
-        typeof streamNotif['audioOutputDeviceId'] === 'string'
-          ? (streamNotif['audioOutputDeviceId'] as string)
-          : undefined
-      );
-      const streamInputId = normalizeDeviceId(
-        typeof streamNotif['audioInputDeviceId'] === 'string'
-          ? (streamNotif['audioInputDeviceId'] as string)
-          : undefined
-      );
-      if (streamOutputId) {
-        await room.switchActiveDevice('audiooutput', streamOutputId).catch(() => { });
-      }
-
-      // Keep microphone state aligned with current mute/deafen state.
-      const shouldEnableMic = !(get().selfMute || get().selfDeaf);
-      await setMicrophoneEnabledWithFallback(room, shouldEnableMic, streamInputId);
-      if (shouldEnableMic) {
-        startLocalAudioUplinkMonitor(room as Room);
-      }
-      setAttachedRemoteAudioMuted(get().selfDeaf);
-      syncRemoteAudioTracks(room, get().selfDeaf);
-
-      // Voice audio no longer needs to be rerouted to a different device.
-      // The Process Loopback Exclusion API excludes our own process audio
-      // at the OS level, so voice plays on the normal default device.
-
-      // 2. Start screen share
+      // 1. Start screen share FIRST to preserve the transient user activation
       //    with resolution/framerate constraints matching the preset.
       //    We configure BOTH capture constraints (resolution/fps the browser
       //    captures at) AND encoding parameters (bitrate/fps the WebRTC
       //    encoder targets). Without explicit encoding params LiveKit falls
       //    back to very conservative defaults causing blocky, low-fps streams.
       const presetMap: Record<string, ScreenCapturePreset> = {
-        '720p30':      { width: 1280, height: 720,  frameRate: 30, maxBitrate: 8_000_000,   hint: 'motion' },
-        '1080p60':     { width: 1920, height: 1080, frameRate: 60, maxBitrate: 25_000_000,  hint: 'motion' },
-        '1440p60':     { width: 2560, height: 1440, frameRate: 60, maxBitrate: 35_000_000,  hint: 'motion' },
-        '4k60':        { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000,  hint: 'motion' },
-        'movie-50':    { width: 3840, height: 2160, frameRate: 60, maxBitrate: 60_000_000,  hint: 'motion' },
-        'movie-100':   { width: 3840, height: 2160, frameRate: 60, maxBitrate: 100_000_000, hint: 'motion' },
+        '720p30': { width: 1280, height: 720, frameRate: 30, maxBitrate: 8_000_000, hint: 'motion' },
+        '1080p60': { width: 1920, height: 1080, frameRate: 60, maxBitrate: 25_000_000, hint: 'motion' },
+        '1440p60': { width: 2560, height: 1440, frameRate: 60, maxBitrate: 35_000_000, hint: 'motion' },
+        '4k60': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 50_000_000, hint: 'motion' },
+        'movie-50': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 60_000_000, hint: 'motion' },
+        'movie-100': { width: 3840, height: 2160, frameRate: 60, maxBitrate: 100_000_000, hint: 'motion' },
       };
       const capture = presetMap[qualityPreset] ?? presetMap['1080p60'];
       const isTauriApp = isTauri();
@@ -3440,6 +3487,43 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
         dtx: false,
         red: false,
       });
+
+      // 2. Register stream state on the server.
+      // When connected via LiveKit fallback (native media was intended but
+      // failed), pass fallback=livekit so the server uses the LiveKit path.
+      const isLivekitFallback = get().useNativeMedia && !get().mediaEngine;
+      const { data } = await voiceApi.startStream(channelId, {
+        quality_preset: qualityPreset,
+        ...(isLivekitFallback ? { fallback: 'livekit' } : {}),
+      });
+
+      // Keep the existing LiveKit session and publish screen share in-place.
+      // Join tokens already allow screen-share sources for speakers.
+      const normalizedUrl = normalizeLivekitUrl(data.url, data.url_candidates);
+
+      const streamNotif = (useAuthStore.getState().settings?.notifications ?? {}) as Record<string, unknown>;
+      const streamOutputId = normalizeDeviceId(
+        typeof streamNotif['audioOutputDeviceId'] === 'string'
+          ? (streamNotif['audioOutputDeviceId'] as string)
+          : undefined
+      );
+      const streamInputId = normalizeDeviceId(
+        typeof streamNotif['audioInputDeviceId'] === 'string'
+          ? (streamNotif['audioInputDeviceId'] as string)
+          : undefined
+      );
+      if (streamOutputId) {
+        await room.switchActiveDevice('audiooutput', streamOutputId).catch(() => { });
+      }
+
+      // Keep microphone state aligned with current mute/deafen state.
+      const shouldEnableMic = !(get().selfMute || get().selfDeaf);
+      await setMicrophoneEnabledWithFallback(room, shouldEnableMic, streamInputId);
+      if (shouldEnableMic) {
+        startLocalAudioUplinkMonitor(room as Room);
+      }
+      setAttachedRemoteAudioMuted(get().selfDeaf);
+      syncRemoteAudioTracks(room, get().selfDeaf);
 
       const screenShareVideoPub = room.localParticipant.getTrackPublication(Track.Source.ScreenShare);
       const screenShareVideoTrack = screenShareVideoPub?.track?.mediaStreamTrack;
@@ -3642,7 +3726,7 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     if (mediaEngine) {
       mediaEngine.stopScreenShare();
     }
-    room?.localParticipant.setScreenShareEnabled(false).catch(() => {});
+    room?.localParticipant.setScreenShareEnabled(false).catch(() => { });
     void stopNativeSystemAudio();
     // Restore voice audio that was suppressed to prevent echo in stream capture.
     suppressVoiceForStream(false);
@@ -3650,12 +3734,12 @@ export const useVoiceStore = create<VoiceStoreState>()((set, get) => ({
     const savedOutputId = getSavedOutputDeviceId() || '';
     const voiceEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-voice-audio]');
     for (const el of voiceEls) {
-      el.setSinkId?.(savedOutputId).catch(() => {});
+      el.setSinkId?.(savedOutputId).catch(() => { });
     }
     // Revert stream audio elements back to the default device
     const streamEls = document.querySelectorAll<HTMLAudioElement>('[data-paracord-stream-audio]');
     for (const el of streamEls) {
-      el.setSinkId?.('default').catch(() => {});
+      el.setSinkId?.('default').catch(() => { });
     }
     // Also update the local user's voice-state entry so that
     // participants-derived flags reflect the stream ending immediately,
@@ -4020,10 +4104,10 @@ if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
     const state = useVoiceStore.getState();
     if (state.mediaEngine) {
-      state.mediaEngine.disconnect().catch(() => {});
+      state.mediaEngine.disconnect().catch(() => { });
     }
     if (state.room) {
-      state.room.disconnect().catch(() => {});
+      state.room.disconnect().catch(() => { });
     }
   });
 }

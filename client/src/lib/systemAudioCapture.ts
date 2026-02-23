@@ -1,5 +1,6 @@
 import { isTauri } from './tauriEnv';
 import { SystemAudioBridge } from './systemAudioWorklet';
+import { logVoiceDiagnostic } from './desktopDiagnostics';
 
 let activeBridge: SystemAudioBridge | null = null;
 
@@ -18,6 +19,7 @@ export async function startNativeSystemAudio(): Promise<MediaStreamTrack | null>
   let bridge: SystemAudioBridge | null = null;
 
   try {
+    logVoiceDiagnostic('[voice] system audio: starting');
     const { invoke, Channel } = await import('@tauri-apps/api/core');
     await invoke('set_system_audio_capture_enabled', { enabled: true });
 
@@ -30,9 +32,11 @@ export async function startNativeSystemAudio(): Promise<MediaStreamTrack | null>
       activeBridge = null;
     }
 
+    logVoiceDiagnostic('[voice] system audio: creating AudioWorklet bridge');
     bridge = new SystemAudioBridge();
     const workingBridge = bridge;
     const track = await workingBridge.start();
+    logVoiceDiagnostic('[voice] system audio: bridge started, requesting Rust capture');
 
     const channel = new Channel<{ samples: number[]; sample_rate: number }>();
     channel.onmessage = (msg) => {
@@ -54,7 +58,9 @@ export async function startNativeSystemAudio(): Promise<MediaStreamTrack | null>
     console.info('[voice] Native system audio capture started (stereo)');
     return track;
   } catch (err) {
+    const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.warn('[voice] Failed to start native system audio capture:', err);
+    logVoiceDiagnostic('[voice] system audio capture FAILED', { error: errMsg });
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('set_system_audio_capture_enabled', { enabled: false });

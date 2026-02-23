@@ -331,13 +331,7 @@ pub fn i420_to_rgba(i420: &[u8], width: u32, height: u32, rgba: &mut [u8]) {
 /// This is intentionally simple; a production pipeline would use a proper
 /// scaler (e.g. libyuv or lanczos). For simulcast we need quick downscaling
 /// to feed multiple encoder instances.
-pub fn downscale_i420(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> Vec<u8> {
+pub fn downscale_i420(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     let sw = src_w as usize;
     let sh = src_h as usize;
     let dw = dst_w as usize;
@@ -443,8 +437,8 @@ mod tests {
         let mut rgba = vec![0u8; (w * h * 4) as usize];
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[0] = 200; // R
-            pixel[1] = 50;  // G
-            pixel[2] = 30;  // B
+            pixel[1] = 50; // G
+            pixel[2] = 30; // B
             pixel[3] = 255; // A
         }
 

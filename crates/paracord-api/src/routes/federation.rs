@@ -1716,7 +1716,9 @@ async fn dispatch_federated_member_leave(state: &AppState, payload: &FederationE
         &identity.to_canonical(),
     )
     .await;
-    state.member_index.remove_member(guild_id, mapping.local_user_id);
+    state
+        .member_index
+        .remove_member(guild_id, mapping.local_user_id);
     state.event_bus.dispatch(
         "GUILD_MEMBER_REMOVE",
         json!({
@@ -2208,7 +2210,9 @@ pub async fn leave(
             .await
             .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?;
         removed = true;
-        state.member_index.remove_member(guild_id, mapping.local_user_id);
+        state
+            .member_index
+            .remove_member(guild_id, mapping.local_user_id);
         state.event_bus.dispatch(
             "GUILD_MEMBER_REMOVE",
             json!({
@@ -2611,9 +2615,7 @@ fn validate_federation_file_token(
     token: &str,
     expected_attachment_id: i64,
 ) -> Result<(), ApiError> {
-    let dot_pos = token
-        .rfind('.')
-        .ok_or_else(|| ApiError::Unauthorized)?;
+    let dot_pos = token.rfind('.').ok_or_else(|| ApiError::Unauthorized)?;
     let payload = &token[..dot_pos];
     let mac = &token[dot_pos + 1..];
 
@@ -2626,12 +2628,8 @@ fn validate_federation_file_token(
     if parts.len() != 3 {
         return Err(ApiError::Unauthorized);
     }
-    let attachment_id: i64 = parts[0]
-        .parse()
-        .map_err(|_| ApiError::Unauthorized)?;
-    let exp: i64 = parts[2]
-        .parse()
-        .map_err(|_| ApiError::Unauthorized)?;
+    let attachment_id: i64 = parts[0].parse().map_err(|_| ApiError::Unauthorized)?;
+    let exp: i64 = parts[2].parse().map_err(|_| ApiError::Unauthorized)?;
 
     if attachment_id != expected_attachment_id {
         return Err(ApiError::Unauthorized);
@@ -2691,9 +2689,7 @@ pub async fn file_token(
     // Attachment must be linked to a message
     let _message_id = attachment.message_id.ok_or(ApiError::NotFound)?;
 
-    let channel_id = attachment
-        .upload_channel_id
-        .ok_or(ApiError::NotFound)?;
+    let channel_id = attachment.upload_channel_id.ok_or(ApiError::NotFound)?;
     let channel = paracord_db::channels::get_channel(&state.db, channel_id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
@@ -2734,11 +2730,8 @@ pub async fn file_token(
     paracord_core::permissions::require_permission(perms, Permissions::VIEW_CHANNEL)?;
     paracord_core::permissions::require_permission(perms, Permissions::READ_MESSAGE_HISTORY)?;
 
-    let (token, _exp) = mint_federation_file_token(
-        &state.config.jwt_secret,
-        attachment_id,
-        &transport.origin,
-    );
+    let (token, _exp) =
+        mint_federation_file_token(&state.config.jwt_secret, attachment_id, &transport.origin);
     let download_url = format!(
         "/_paracord/federation/v1/file/{}?token={}",
         attachment_id, token
@@ -2761,11 +2754,7 @@ pub async fn file_download(
     Path(attachment_id): Path<i64>,
     Query(query): Query<FileDownloadQuery>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
-    validate_federation_file_token(
-        &state.config.jwt_secret,
-        &query.token,
-        attachment_id,
-    )?;
+    validate_federation_file_token(&state.config.jwt_secret, &query.token, attachment_id)?;
 
     let attachment = paracord_db::attachments::get_attachment(&state.db, attachment_id)
         .await
@@ -2806,10 +2795,9 @@ pub async fn file_download(
         [
             (
                 axum::http::header::CONTENT_TYPE,
-                axum::http::header::HeaderValue::from_str(&content_type)
-                    .unwrap_or(axum::http::header::HeaderValue::from_static(
-                        "application/octet-stream",
-                    )),
+                axum::http::header::HeaderValue::from_str(&content_type).unwrap_or(
+                    axum::http::header::HeaderValue::from_static("application/octet-stream"),
+                ),
             ),
             (
                 axum::http::header::CONTENT_DISPOSITION,
@@ -2898,11 +2886,7 @@ mod tests {
 
     #[test]
     fn federation_content_accepts_reasonable_collection() {
-        let ok = Value::Array(
-            (0..5_000)
-                .map(|idx| Value::Number(idx.into()))
-                .collect(),
-        );
+        let ok = Value::Array((0..5_000).map(|idx| Value::Number(idx.into())).collect());
         assert!(validate_federation_content(&ok).is_ok());
     }
 }

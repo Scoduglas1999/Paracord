@@ -127,8 +127,8 @@ impl H3Session {
             let (parts, _body) = request.into_parts();
 
             // Check if this is a WebTransport CONNECT request
-            let is_webtransport = parts.extensions.get::<Protocol>()
-                == Some(&Protocol::WEB_TRANSPORT);
+            let is_webtransport =
+                parts.extensions.get::<Protocol>() == Some(&Protocol::WEB_TRANSPORT);
 
             if is_webtransport {
                 return Ok(Some(WebTransportSession {
@@ -271,10 +271,8 @@ pub fn spawn_webtransport_bridge(
     tokio::sync::mpsc::UnboundedSender<Bytes>,
     tokio::sync::mpsc::UnboundedReceiver<Bytes>,
 ) {
-    let (outbound_tx, mut outbound_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Bytes>();
-    let (inbound_tx, inbound_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
 
     let qsid_prefix = Bytes::from(encode_quic_varint(qsid));
     let conn_out = quinn_conn.clone();
@@ -299,9 +297,7 @@ pub fn spawn_webtransport_bridge(
             match quinn_conn.read_datagram().await {
                 Ok(datagram) => {
                     // Strip the QSID varint prefix
-                    if let Some((_qsid_val, prefix_len)) =
-                        decode_quic_varint(&datagram)
-                    {
+                    if let Some((_qsid_val, prefix_len)) = decode_quic_varint(&datagram) {
                         if prefix_len <= datagram.len() {
                             let raw = datagram.slice(prefix_len..);
                             if inbound_tx.send(raw).is_err() {

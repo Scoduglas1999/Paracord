@@ -94,6 +94,8 @@ impl VoiceTestContext {
             user_presences: Arc::new(RwLock::new(HashMap::new())),
             permission_cache: build_permission_cache(),
             federation_service: None,
+            member_index: Arc::new(paracord_core::member_index::MemberIndex::empty()),
+            presence_manager: Arc::new(paracord_core::presence_manager::PresenceManager::new()),
             native_media: None,
         };
 
@@ -185,7 +187,9 @@ async fn create_voice_test_user_token(
     Ok(token)
 }
 
-async fn create_guild_and_voice_channel(ctx: &VoiceTestContext) -> anyhow::Result<(String, String)> {
+async fn create_guild_and_voice_channel(
+    ctx: &VoiceTestContext,
+) -> anyhow::Result<(String, String)> {
     // Create a guild
     let (status, payload) = ctx
         .request_json(
@@ -241,12 +245,18 @@ async fn native_plus_livekit_returns_native_only_with_livekit_available() -> any
     assert_eq!(status, StatusCode::OK, "voice join: {payload}");
     // Should be native media response
     assert_eq!(payload["native_media"], json!(true));
-    assert!(payload["media_endpoint"].is_string(), "expected media_endpoint");
+    assert!(
+        payload["media_endpoint"].is_string(),
+        "expected media_endpoint"
+    );
     assert!(payload["media_token"].is_string(), "expected media_token");
     // Should indicate LiveKit is available as fallback
     assert_eq!(payload["livekit_available"], json!(true));
     // Should NOT contain LiveKit fields
-    assert!(payload["token"].is_null(), "should not contain LiveKit token");
+    assert!(
+        payload["token"].is_null(),
+        "should not contain LiveKit token"
+    );
 
     Ok(())
 }
@@ -396,6 +406,94 @@ async fn v2_join_accepts_fallback_query_param() -> anyhow::Result<()> {
         status,
         StatusCode::SERVICE_UNAVAILABLE,
         "should not get service unavailable when livekit_available=true"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn v2_leave_ignores_stale_session_id() -> anyhow::Result<()> {
+    let ctx = VoiceTestContext::new(true, true).await?;
+    let (guild_id, channel_id) = create_guild_and_voice_channel(&ctx).await?;
+
+    let (status, join_one) = ctx
+        .request_json(
+            Method::POST,
+            &format!("/api/v2/voice/{channel_id}/join"),
+            None,
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "first join: {join_one}");
+    let session_one = join_one["session_id"]
+        .as_str()
+        .context("expected first join session_id")?
+        .to_string();
+
+    let (status, join_two) = ctx
+        .request_json(
+            Method::POST,
+            &format!("/api/v2/voice/{channel_id}/join"),
+            None,
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "second join: {join_two}");
+    let session_two = join_two["session_id"]
+        .as_str()
+        .context("expected second join session_id")?
+        .to_string();
+    assert_ne!(
+        session_one, session_two,
+        "rejoin should mint a fresh session"
+    );
+
+    let (status, stale_leave_payload) = ctx
+        .request_json(
+            Method::POST,
+            &format!("/api/v2/voice/{channel_id}/leave?session_id={session_one}"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "stale leave should be no-op: {stale_leave_payload}"
+    );
+
+    let (_status, me_payload) = ctx
+        .request_json(Method::GET, "/api/v1/users/@me", None)
+        .await?;
+    let user_id = me_payload["id"]
+        .as_str()
+        .context("expected /users/@me id")?
+        .parse::<i64>()?;
+    let guild_id_i64 = guild_id.parse::<i64>()?;
+
+    let state_after_stale =
+        paracord_db::voice_states::get_user_voice_session(&ctx.db, user_id, Some(guild_id_i64))
+            .await?;
+    let state_after_stale = state_after_stale.context("voice state should survive stale leave")?;
+    assert_eq!(state_after_stale.session_id, session_two);
+    assert_eq!(state_after_stale.channel_id.to_string(), channel_id);
+
+    let (status, fresh_leave_payload) = ctx
+        .request_json(
+            Method::POST,
+            &format!("/api/v2/voice/{channel_id}/leave?session_id={session_two}"),
+            None,
+        )
+        .await?;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "fresh leave should clear state: {fresh_leave_payload}"
+    );
+
+    let state_after_fresh =
+        paracord_db::voice_states::get_user_voice_session(&ctx.db, user_id, Some(guild_id_i64))
+            .await?;
+    assert!(
+        state_after_fresh.is_none(),
+        "voice state should be gone after matching-session leave"
     );
 
     Ok(())

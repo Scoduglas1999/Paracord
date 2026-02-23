@@ -67,10 +67,7 @@ pub async fn stop_voice_session(state: State<'_, MediaState>) -> Result<(), Stri
 // ── Mute / deaf / device switching ──────────────────────────────────────────
 
 #[tauri::command]
-pub async fn voice_set_mute(
-    muted: bool,
-    state: State<'_, MediaState>,
-) -> Result<(), String> {
+pub async fn voice_set_mute(muted: bool, state: State<'_, MediaState>) -> Result<(), String> {
     let guard = state.session.lock().await;
     let session = guard.as_ref().ok_or("no active session")?;
     session
@@ -84,10 +81,7 @@ pub async fn voice_set_mute(
 }
 
 #[tauri::command]
-pub async fn voice_set_deaf(
-    deafened: bool,
-    state: State<'_, MediaState>,
-) -> Result<(), String> {
+pub async fn voice_set_deaf(deafened: bool, state: State<'_, MediaState>) -> Result<(), String> {
     let guard = state.session.lock().await;
     let session = guard.as_ref().ok_or("no active session")?;
     session
@@ -139,28 +133,21 @@ pub async fn voice_switch_output_device(
 // ── Video commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn voice_enable_video(
-    enabled: bool,
-    state: State<'_, MediaState>,
-) -> Result<(), String> {
+pub async fn voice_enable_video(enabled: bool, state: State<'_, MediaState>) -> Result<(), String> {
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
     super::video_pipeline::set_video_enabled(session, enabled)
 }
 
 #[tauri::command]
-pub async fn voice_start_screen_share(
-    state: State<'_, MediaState>,
-) -> Result<(), String> {
+pub async fn voice_start_screen_share(state: State<'_, MediaState>) -> Result<(), String> {
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
     super::video_pipeline::start_screen_share(session)
 }
 
 #[tauri::command]
-pub async fn voice_stop_screen_share(
-    state: State<'_, MediaState>,
-) -> Result<(), String> {
+pub async fn voice_stop_screen_share(state: State<'_, MediaState>) -> Result<(), String> {
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
     super::video_pipeline::stop_screen_share(session);
@@ -168,28 +155,40 @@ pub async fn voice_stop_screen_share(
     Ok(())
 }
 
+/// Parse a binary frame payload: `[width:u32 LE][height:u32 LE][RGBA bytes…]`
+fn parse_frame_payload<'a>(request: &'a tauri::ipc::Request<'a>) -> Result<(u32, u32, &'a [u8]), String> {
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.as_slice(),
+        tauri::ipc::InvokeBody::Json(_) => return Err("expected binary frame data".into()),
+    };
+    if body.len() < 8 {
+        return Err("frame payload too short".into());
+    }
+    let width = u32::from_le_bytes(body[0..4].try_into().unwrap());
+    let height = u32::from_le_bytes(body[4..8].try_into().unwrap());
+    Ok((width, height, &body[8..]))
+}
+
 #[tauri::command]
 pub async fn voice_push_video_frame(
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
+    let (width, height, rgba) = parse_frame_payload(&request)?;
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
-    super::video_pipeline::encode_and_send_video_frame(session, width, height, &data, false)
+    super::video_pipeline::encode_and_send_video_frame(session, width, height, rgba, false)
 }
 
 #[tauri::command]
 pub async fn voice_push_screen_frame(
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, MediaState>,
 ) -> Result<(), String> {
+    let (width, height, rgba) = parse_frame_payload(&request)?;
     let mut guard = state.session.lock().await;
     let session = guard.as_mut().ok_or("no active session")?;
-    super::video_pipeline::encode_and_send_video_frame(session, width, height, &data, true)
+    super::video_pipeline::encode_and_send_video_frame(session, width, height, rgba, true)
 }
 
 #[tauri::command]
@@ -199,7 +198,9 @@ pub async fn voice_set_screen_audio_enabled(
 ) -> Result<(), String> {
     let guard = state.session.lock().await;
     let session = guard.as_ref().ok_or("no active session")?;
-    session.screen_audio_enabled.store(enabled, Ordering::SeqCst);
+    session
+        .screen_audio_enabled
+        .store(enabled, Ordering::SeqCst);
     Ok(())
 }
 

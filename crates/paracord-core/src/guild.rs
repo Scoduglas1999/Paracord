@@ -85,7 +85,15 @@ pub async fn update_guild(
     let perms = permissions::compute_permissions_from_roles(&roles, guild.owner_id, user_id);
     permissions::require_permission(perms, Permissions::MANAGE_GUILD)?;
 
-    let updated =
-        paracord_db::guilds::update_guild(pool, guild_id, name, description, icon_hash, hub_settings, bot_settings).await?;
+    let updated = paracord_db::guilds::update_guild(
+        pool,
+        guild_id,
+        name,
+        description,
+        icon_hash,
+        hub_settings,
+        bot_settings,
+    )
+    .await?;
     Ok(updated)
 }

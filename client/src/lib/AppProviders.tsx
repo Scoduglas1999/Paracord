@@ -12,9 +12,15 @@ import { ConnectionStatusBar } from '../components/ConnectionStatusBar';
 import { UpdateNotification } from '../components/UpdateNotification';
 import { ToastContainer } from '../components/ui/Toast';
 import { ImageLightbox } from '../components/ui/ImageLightbox';
+import { logVoiceDiagnostic } from './desktopDiagnostics';
 
 function AppInitializer({ children }: { children: ReactNode }) {
   // Initialize gateway connection when authenticated
+  const gwToken = useAuthStore((s) => s.token);
+  const gwHydrated = useServerListStore((s) => s.hydrated);
+  const gwTokensHydrated = useServerListStore((s) => s.tokensHydrated);
+  const gwServerCount = useServerListStore((s) => s.servers.length);
+  logVoiceDiagnostic('[diag] AppInitializer render', { hasToken: !!gwToken, hydrated: gwHydrated, tokensHydrated: gwTokensHydrated, serverCount: gwServerCount });
   useGateway();
   // Apply theme CSS variables on mount and when theme changes
   useTheme();

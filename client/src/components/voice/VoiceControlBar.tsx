@@ -7,9 +7,11 @@ import { cn } from '../../lib/utils';
 import { Tooltip } from '../ui/Tooltip';
 
 function getStreamErrorMessage(error: unknown): string {
+    console.error('[stream] getStreamErrorMessage raw error:', error, 'type:', typeof error);
     const err = error as { name?: string; message?: string };
     const name = err?.name || '';
-    const rawMessage = err?.message || '';
+    // Tauri IPC errors are thrown as plain strings; handle both Error objects and strings.
+    const rawMessage = err?.message || (typeof error === 'string' ? error : String(error || ''));
     const message = rawMessage.toLowerCase();
 
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
@@ -30,11 +32,17 @@ function getStreamErrorMessage(error: unknown): string {
     if (message.includes('secure') || message.includes('https')) {
         return 'Screen sharing requires a secure context. Use localhost or HTTPS.';
     }
-
-    if (name) {
-        return `Unable to start stream (${name}). ${rawMessage || 'Check browser permissions and try again.'}`;
+    if (message.includes('vpx') || message.includes('screen share encoding')) {
+        return 'Screen sharing requires the VP9 encoder (libvpx). Install libvpx and rebuild with the vpx feature.';
     }
-    return `Unable to start stream. ${rawMessage || 'Check browser permissions and try again.'}`;
+
+    // Always show the actual error so we can diagnose issues.
+    // Build a detailed fallback that includes whatever we can extract.
+    const detail = rawMessage || (error != null ? JSON.stringify(error) : '(no error details)');
+    if (name) {
+        return `Unable to start stream (${name}): ${detail}`;
+    }
+    return `Unable to start stream: ${detail}`;
 }
 
 export function VoiceControlBar({

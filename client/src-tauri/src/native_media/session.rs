@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -78,6 +79,9 @@ pub struct NativeMediaSession {
     pub screen_encoder: Option<Box<dyn paracord_codec::video::encoder::VideoEncoder>>,
     #[cfg(feature = "vpx")]
     pub video_decoders: HashMap<u32, Box<dyn paracord_codec::video::decoder::VideoDecoder>>,
+    /// Reusable buffer for RGBA→I420 conversion before VP9 encoding.
+    #[cfg(feature = "vpx")]
+    pub i420_convert_buf: Vec<u8>,
 
     pub video_send_task: Option<JoinHandle<()>>,
     pub screen_send_task: Option<JoinHandle<()>>,
@@ -97,12 +101,39 @@ unsafe impl Send for NativeMediaSession {}
 unsafe impl Sync for NativeMediaSession {}
 
 impl NativeMediaSession {
+    async fn resolve_endpoint_addr(endpoint_addr: &str) -> Result<SocketAddr, String> {
+        if let Ok(addr) = endpoint_addr.parse::<SocketAddr>() {
+            return Ok(addr);
+        }
+
+        if let Ok(url) = url::Url::parse(endpoint_addr) {
+            let host = url
+                .host_str()
+                .ok_or_else(|| format!("endpoint URL missing host: {endpoint_addr}"))?;
+            let port = url
+                .port_or_known_default()
+                .ok_or_else(|| format!("endpoint URL missing port: {endpoint_addr}"))?;
+
+            if let Ok(ip) = host.parse::<IpAddr>() {
+                return Ok(SocketAddr::new(ip, port));
+            }
+
+            let mut resolved = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|e| format!("dns lookup failed for {host}:{port}: {e}"))?;
+            if let Some(addr) = resolved.next() {
+                return Ok(addr);
+            }
+            return Err(format!(
+                "dns lookup returned no addresses for {host}:{port}"
+            ));
+        }
+
+        Err(format!("bad endpoint addr: {endpoint_addr}"))
+    }
+
     /// Connect to a QUIC media relay and set up codec pipelines.
-    pub async fn connect(
-        endpoint_addr: &str,
-        token: &str,
-        room_id: &str,
-    ) -> Result<Self, String> {
+    pub async fn connect(endpoint_addr: &str, token: &str, room_id: &str) -> Result<Self, String> {
         use paracord_transport::connection::ConnectionMode;
 
         // Create a client-only QUIC endpoint
@@ -113,9 +144,7 @@ impl NativeMediaSession {
             MediaEndpoint::client(bind_addr).map_err(|e| format!("endpoint create: {e}"))?;
 
         // Parse remote address
-        let remote_addr: std::net::SocketAddr = endpoint_addr
-            .parse()
-            .map_err(|e| format!("bad endpoint addr: {e}"))?;
+        let remote_addr = Self::resolve_endpoint_addr(endpoint_addr).await?;
 
         // Connect and authenticate
         let connecting = endpoint
@@ -124,15 +153,15 @@ impl NativeMediaSession {
         let quinn_conn = connecting
             .await
             .map_err(|e| format!("QUIC handshake: {e}"))?;
-        let connection = MediaConnection::connect_and_auth(quinn_conn, token, ConnectionMode::Relay)
-            .await
-            .map_err(|e| format!("auth: {e}"))?;
+        let connection =
+            MediaConnection::connect_and_auth(quinn_conn, token, ConnectionMode::Relay)
+                .await
+                .map_err(|e| format!("auth: {e}"))?;
 
         // Set up audio components
         let opus_encoder = OpusEncoder::new().map_err(|e| format!("opus encoder: {e}"))?;
         let noise_suppressor = NoiseSuppressor::new();
-        let audio_playback =
-            AudioPlayback::start().map_err(|e| format!("audio playback: {e}"))?;
+        let audio_playback = AudioPlayback::start().map_err(|e| format!("audio playback: {e}"))?;
 
         // Start audio capture
         let (audio_capture, pcm_rx) =
@@ -183,6 +212,8 @@ impl NativeMediaSession {
             screen_encoder: None,
             #[cfg(feature = "vpx")]
             video_decoders: HashMap::new(),
+            #[cfg(feature = "vpx")]
+            i420_convert_buf: Vec::new(),
             video_send_task: None,
             screen_send_task: None,
             video_ssrc,

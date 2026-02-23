@@ -6,12 +6,12 @@ use tauri::Manager;
 
 #[cfg(windows)]
 fn configure_webview2_overrides(app: &tauri::App) {
-    use webview2_com::ServerCertificateErrorDetectedEventHandler;
-    use webview2_com::ScreenCaptureStartingEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2_14, ICoreWebView2_27,
         COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
     };
+    use webview2_com::ScreenCaptureStartingEventHandler;
+    use webview2_com::ServerCertificateErrorDetectedEventHandler;
     use windows_core::Interface;
 
     let Some(main_webview) = app.get_webview_window("main") else {
@@ -28,9 +28,8 @@ fn configure_webview2_overrides(app: &tauri::App) {
             let handler =
                 ServerCertificateErrorDetectedEventHandler::create(Box::new(|_, args| {
                     if let Some(args) = args {
-                        let _ = args.SetAction(
-                            COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW,
-                        );
+                        let _ = args
+                            .SetAction(COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW);
                     }
                     Ok(())
                 }));
@@ -45,13 +44,12 @@ fn configure_webview2_overrides(app: &tauri::App) {
         // Setting Handled=true tells WebView2 that the host app owns the screen
         // capture UI, so the default Chromium infobar is not shown.
         if let Ok(core27) = core.cast::<ICoreWebView2_27>() {
-            let handler =
-                ScreenCaptureStartingEventHandler::create(Box::new(|_, args| {
-                    if let Some(args) = args {
-                        let _ = args.SetHandled(true);
-                    }
-                    Ok(())
-                }));
+            let handler = ScreenCaptureStartingEventHandler::create(Box::new(|_, args| {
+                if let Some(args) = args {
+                    let _ = args.SetHandled(true);
+                }
+                Ok(())
+            }));
 
             let mut token = 0_i64;
             if let Err(e) = core27.add_ScreenCaptureStarting(&handler, &mut token) {

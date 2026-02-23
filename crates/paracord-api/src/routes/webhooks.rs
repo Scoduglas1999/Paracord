@@ -253,11 +253,7 @@ fn format_github_event(event_type: &str, payload: &Value) -> String {
             );
             if let Some(commits) = commits {
                 for commit in commits.iter().take(5) {
-                    let sha = commit["id"]
-                        .as_str()
-                        .unwrap_or("")
-                        .get(..7)
-                        .unwrap_or("");
+                    let sha = commit["id"].as_str().unwrap_or("").get(..7).unwrap_or("");
                     let message = commit["message"]
                         .as_str()
                         .unwrap_or("")
@@ -268,10 +264,7 @@ fn format_github_event(event_type: &str, payload: &Value) -> String {
                     msg.push_str(&format!("\n> [`{}`]({}) {}", sha, url, message));
                 }
                 if commits.len() > 5 {
-                    msg.push_str(&format!(
-                        "\n> ... and {} more commits",
-                        commits.len() - 5
-                    ));
+                    msg.push_str(&format!("\n> ... and {} more commits", commits.len() - 5));
                 }
             }
             msg

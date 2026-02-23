@@ -15,7 +15,9 @@ pub fn set_video_enabled(session: &mut NativeMediaSession, enabled: bool) -> Res
                 use paracord_codec::video::encoder::Vp9Encoder;
                 use paracord_codec::video::{EncoderConfig, PixelFormat, SimulcastLayer};
 
-                let config = EncoderConfig::for_layer(SimulcastLayer::Medium, PixelFormat::Rgba);
+                // VP9 encoder requires I420; RGBA→I420 conversion happens in
+                // encode_and_send_video_frame before calling encode().
+                let config = EncoderConfig::for_layer(SimulcastLayer::Medium, PixelFormat::I420);
                 let encoder =
                     Vp9Encoder::new(config).map_err(|e| format!("vp9 encoder init: {e}"))?;
                 session.video_encoder = Some(Box::new(encoder));
@@ -41,7 +43,9 @@ pub fn start_screen_share(session: &mut NativeMediaSession) -> Result<(), String
             use paracord_codec::video::encoder::Vp9Encoder;
             use paracord_codec::video::{EncoderConfig, PixelFormat, SimulcastLayer};
 
-            let config = EncoderConfig::for_layer(SimulcastLayer::High, PixelFormat::Rgba);
+            // VP9 encoder requires I420; RGBA→I420 conversion happens in
+            // encode_and_send_video_frame before calling encode().
+            let config = EncoderConfig::for_layer(SimulcastLayer::High, PixelFormat::I420);
             let encoder =
                 Vp9Encoder::new(config).map_err(|e| format!("vp9 screen encoder init: {e}"))?;
             session.screen_encoder = Some(Box::new(encoder));
@@ -71,14 +75,14 @@ pub fn stop_screen_share(session: &mut NativeMediaSession) {
 /// `is_screen` selects whether to use the screen or camera encoder/SSRC.
 pub fn encode_and_send_video_frame(
     session: &mut NativeMediaSession,
-    _width: u32,
-    _height: u32,
+    width: u32,
+    height: u32,
     rgba_data: &[u8],
     is_screen: bool,
 ) -> Result<(), String> {
     #[cfg(feature = "vpx")]
     {
-        use paracord_codec::video::encoder::VideoEncoder;
+        use paracord_codec::video::{rgba_to_i420, PixelFormat};
 
         let (encoder, ssrc, seq) = if is_screen {
             let enc = session
@@ -94,9 +98,15 @@ pub fn encode_and_send_video_frame(
             (enc, session.video_ssrc, &mut session.video_seq)
         };
 
+        // Convert RGBA → I420 before encoding (VP9 encoder requires I420).
+        let i420_size = PixelFormat::I420.frame_size(width, height);
+        let i420_buf = &mut session.i420_convert_buf;
+        i420_buf.resize(i420_size, 0u8);
+        rgba_to_i420(rgba_data, width, height, i420_buf);
+
         let pts = *seq as i64;
         let encoded_frames = encoder
-            .encode(pts, rgba_data, false)
+            .encode(pts, i420_buf, false)
             .map_err(|e| format!("video encode: {e}"))?;
 
         for frame in encoded_frames {

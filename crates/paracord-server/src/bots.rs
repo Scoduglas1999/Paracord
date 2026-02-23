@@ -166,11 +166,7 @@ async fn handle_auto_mod(
 ) {
     let auto_mod = bot_settings.get("auto_mod");
     if auto_mod.is_none()
-        || auto_mod
-            .unwrap()
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            != Some(true)
+        || auto_mod.unwrap().get("enabled").and_then(|v| v.as_bool()) != Some(true)
     {
         return;
     }

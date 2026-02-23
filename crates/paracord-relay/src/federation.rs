@@ -58,12 +58,7 @@ impl FederationRelay {
     }
 
     /// Register a remote participant joining a room from a federated server.
-    pub fn add_remote_participant(
-        &self,
-        room_id: &str,
-        server_origin: &str,
-        user_id: i64,
-    ) {
+    pub fn add_remote_participant(&self, room_id: &str, server_origin: &str, user_id: i64) {
         let mut room = self
             .rooms
             .entry(room_id.to_string())
@@ -79,19 +74,12 @@ impl FederationRelay {
 
         info!(
             room_id,
-            server_origin,
-            user_id,
-            "federation: remote participant added"
+            server_origin, user_id, "federation: remote participant added"
         );
     }
 
     /// Remove a remote participant from a federated room.
-    pub fn remove_remote_participant(
-        &self,
-        room_id: &str,
-        server_origin: &str,
-        user_id: i64,
-    ) {
+    pub fn remove_remote_participant(&self, room_id: &str, server_origin: &str, user_id: i64) {
         if let Some(mut room) = self.rooms.get_mut(room_id) {
             if let Some(users) = room.remote_servers.get_mut(server_origin) {
                 users.remove(&user_id);
@@ -168,8 +156,11 @@ impl FederationRelay {
         let ssrc = header.ssrc;
 
         // Feed audio level to speaker detector
-        self.speaker_detector
-            .report_audio_level(ssrc as i64, &format!("fed-{}", from_origin), header.audio_level);
+        self.speaker_detector.report_audio_level(
+            ssrc as i64,
+            &format!("fed-{}", from_origin),
+            header.audio_level,
+        );
 
         // Find which room this packet belongs to (by checking which federated
         // room has this origin registered)

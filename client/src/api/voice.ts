@@ -12,6 +12,8 @@ export interface VoiceJoinResponse {
   native_media?: boolean;
   /** WebTransport / QUIC relay endpoint for native media sessions. */
   media_endpoint?: string;
+  /** Candidate endpoints to try for native media (LAN IP first, then public). */
+  media_endpoint_candidates?: string[];
   /** Auth token for the native media relay (separate from the LiveKit token). */
   media_token?: string;
   /** When true, LiveKit is available as a fallback if native media fails. */
@@ -47,10 +49,20 @@ export const voiceApi = {
         timeout: 30_000,
       },
     ),
-  leaveChannel: (channelId: string) =>
-    apiClient.post(resolveV2VoiceUrl(`/api/v2/voice/${channelId}/leave`), undefined, {
-      timeout: 30_000,
-    }),
+  leaveChannel: (
+    channelId: string,
+    options?: {
+      sessionId?: string;
+      timeoutMs?: number;
+    },
+  ) => {
+    const qs = options?.sessionId
+      ? `?session_id=${encodeURIComponent(options.sessionId)}`
+      : '';
+    return apiClient.post(resolveV2VoiceUrl(`/api/v2/voice/${channelId}/leave${qs}`), undefined, {
+      timeout: options?.timeoutMs ?? 10_000,
+    });
+  },
   startStream: (
     channelId: string,
     options?: { title?: string; quality_preset?: string; fallback?: 'livekit' }

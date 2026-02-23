@@ -163,7 +163,11 @@ impl EventBus {
                 .serialized_payload
                 .as_ref()
                 .map(|serialized| serialized.len())
-                .unwrap_or_else(|| serde_json::to_string(&*event.payload).map(|s| s.len()).unwrap_or(0));
+                .unwrap_or_else(|| {
+                    serde_json::to_string(&*event.payload)
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                });
             let scope = if event.target_user_ids.is_some() {
                 "users"
             } else if event.guild_id.is_some() {

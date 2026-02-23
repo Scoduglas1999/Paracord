@@ -165,19 +165,40 @@ impl AudioCapture {
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
                 &stream_config,
-                build_data_callback::<f32>(acc, resamp, tx.clone(), stop, device_channels, device_sample_rate),
+                build_data_callback::<f32>(
+                    acc,
+                    resamp,
+                    tx.clone(),
+                    stop,
+                    device_channels,
+                    device_sample_rate,
+                ),
                 error_callback,
                 None,
             )?,
             SampleFormat::I16 => device.build_input_stream(
                 &stream_config,
-                build_data_callback::<i16>(acc, resamp, tx.clone(), stop, device_channels, device_sample_rate),
+                build_data_callback::<i16>(
+                    acc,
+                    resamp,
+                    tx.clone(),
+                    stop,
+                    device_channels,
+                    device_sample_rate,
+                ),
                 error_callback,
                 None,
             )?,
             SampleFormat::U16 => device.build_input_stream(
                 &stream_config,
-                build_data_callback::<u16>(acc, resamp, tx.clone(), stop, device_channels, device_sample_rate),
+                build_data_callback::<u16>(
+                    acc,
+                    resamp,
+                    tx.clone(),
+                    stop,
+                    device_channels,
+                    device_sample_rate,
+                ),
                 error_callback,
                 None,
             )?,
@@ -185,7 +206,14 @@ impl AudioCapture {
                 warn!(format = ?sample_format, "unsupported sample format, trying f32");
                 device.build_input_stream(
                     &stream_config,
-                    build_data_callback::<f32>(acc, resamp, tx.clone(), stop, device_channels, device_sample_rate),
+                    build_data_callback::<f32>(
+                        acc,
+                        resamp,
+                        tx.clone(),
+                        stop,
+                        device_channels,
+                        device_sample_rate,
+                    ),
                     error_callback,
                     None,
                 )?

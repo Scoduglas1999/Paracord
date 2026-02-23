@@ -694,7 +694,9 @@ pub async fn send_message(
         .map(str::to_string);
     if let Some(candidate) = nonce.as_ref() {
         if candidate.len() > MAX_MESSAGE_NONCE_LEN {
-            return Err(ApiError::BadRequest("Message nonce must be 1-64 characters".into()));
+            return Err(ApiError::BadRequest(
+                "Message nonce must be 1-64 characters".into(),
+            ));
         }
     }
 

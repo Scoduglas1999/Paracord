@@ -24,7 +24,7 @@ rubato = "0.15"
 
 # Video (optional, feature-gated)
 vpx-encode = { version = "0.6", features = ["vp9"], optional = true }
-env-libvpx-sys = { version = "5.1", optional = true }
+env-libvpx-sys = { version = "5.1", features = ["generate"], optional = true }
 
 # Crypto (frame encryption)
 aes-gcm = { workspace = true }

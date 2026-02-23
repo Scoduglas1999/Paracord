@@ -36,6 +36,8 @@ export default defineConfig(({ mode }) => {
         workbox: {
           navigateFallbackDenylist: [/^\/api\//, /^\/gateway/, /^\/livekit/, /^\/health/],
           runtimeCaching: [],
+          skipWaiting: true,
+          clientsClaim: true,
         },
         devOptions: {
           enabled: false,

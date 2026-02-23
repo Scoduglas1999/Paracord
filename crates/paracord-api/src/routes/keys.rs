@@ -19,8 +19,9 @@ fn is_valid_base64(s: &str, expected_len: usize) -> bool {
     if s.len() != expected_len {
         return false;
     }
-    s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '-' || c == '_')
+    s.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '-' || c == '_'
+    })
 }
 
 #[derive(Deserialize)]
@@ -76,9 +77,10 @@ pub async fn upload_keys(
 
     if let Some(opks) = &body.one_time_prekeys {
         if opks.len() > MAX_OPK_PER_REQUEST {
-            return Err(ApiError::BadRequest(
-                format!("Too many one-time prekeys (max {})", MAX_OPK_PER_REQUEST),
-            ));
+            return Err(ApiError::BadRequest(format!(
+                "Too many one-time prekeys (max {})",
+                MAX_OPK_PER_REQUEST
+            )));
         }
         for opk in opks {
             if !is_valid_base64(&opk.public_key, EXPECTED_KEY_BASE64_LEN) {
@@ -118,9 +120,7 @@ pub async fn get_keys(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e.to_string())))?
         .ok_or(ApiError::NotFound)?;
 
-    let identity_key = user.public_key.ok_or_else(|| {
-        ApiError::NotFound
-    })?;
+    let identity_key = user.public_key.ok_or_else(|| ApiError::NotFound)?;
 
     let spk = paracord_db::prekeys::get_signed_prekey(&state.db, user_id)
         .await

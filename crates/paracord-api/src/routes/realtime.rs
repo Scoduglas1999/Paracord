@@ -136,7 +136,9 @@ struct RealtimeStreamState {
 
 impl Drop for RealtimeStreamState {
     fn drop(&mut self) {
-        self.app_state.event_bus.unregister_session(&self.session_id);
+        self.app_state
+            .event_bus
+            .unregister_session(&self.session_id);
     }
 }
 
@@ -212,7 +214,9 @@ pub async fn stream_events(
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<i64>().ok())
                                 {
-                                    st.app_state.event_bus.add_session_guild(&st.session_id, gid);
+                                    st.app_state
+                                        .event_bus
+                                        .add_session_guild(&st.session_id, gid);
                                 }
                             }
                         }
@@ -339,7 +343,8 @@ pub async fn post_command(
 
             let mut recipients: std::collections::HashSet<i64> = std::collections::HashSet::new();
             recipients.insert(auth.user_id);
-            if let Ok(guilds) = paracord_db::guilds::get_user_guilds(&state.db, auth.user_id).await {
+            if let Ok(guilds) = paracord_db::guilds::get_user_guilds(&state.db, auth.user_id).await
+            {
                 for guild in guilds {
                     if let Ok(member_ids) =
                         paracord_db::members::get_guild_member_user_ids(&state.db, guild.id).await
@@ -361,7 +366,9 @@ pub async fn post_command(
         }
         "voice_state_update" => {
             let payload: VoiceStateCommandPayload = serde_json::from_value(req.payload.clone())
-                .map_err(|e| ApiError::BadRequest(format!("invalid voice_state_update payload: {e}")))?;
+                .map_err(|e| {
+                    ApiError::BadRequest(format!("invalid voice_state_update payload: {e}"))
+                })?;
             let requested_guild_id = parse_i64_id(payload.guild_id.as_deref());
             let channel_id = parse_i64_id(payload.channel_id.as_deref());
             let self_mute = payload.self_mute.unwrap_or(false);
@@ -395,7 +402,8 @@ pub async fn post_command(
                     auth.user_id,
                 )
                 .await?;
-                if !perms.contains(Permissions::VIEW_CHANNEL) || !perms.contains(Permissions::CONNECT)
+                if !perms.contains(Permissions::VIEW_CHANNEL)
+                    || !perms.contains(Permissions::CONNECT)
                 {
                     return Err(ApiError::Forbidden);
                 }

@@ -189,9 +189,7 @@ impl MediaConnection {
     }
 
     /// Open a new bidirectional stream (for control messages).
-    pub async fn open_bi(
-        &self,
-    ) -> Result<(quinn::SendStream, quinn::RecvStream), ConnectionError> {
+    pub async fn open_bi(&self) -> Result<(quinn::SendStream, quinn::RecvStream), ConnectionError> {
         Ok(self.conn.open_bi().await?)
     }
 

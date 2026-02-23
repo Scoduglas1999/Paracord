@@ -62,14 +62,12 @@ pub fn wire_trace_enabled() -> bool {
 }
 
 pub fn wire_trace_payloads_enabled() -> bool {
-    *WIRE_TRACE_PAYLOADS_ENABLED
-        .get_or_init(|| env_bool("PARACORD_WIRE_TRACE_PAYLOADS", false))
+    *WIRE_TRACE_PAYLOADS_ENABLED.get_or_init(|| env_bool("PARACORD_WIRE_TRACE_PAYLOADS", false))
 }
 
 fn wire_trace_payload_max_bytes() -> usize {
-    *WIRE_TRACE_PAYLOAD_MAX_BYTES.get_or_init(|| {
-        env_usize("PARACORD_WIRE_TRACE_PAYLOAD_MAX_BYTES", 1024).min(16 * 1024)
-    })
+    *WIRE_TRACE_PAYLOAD_MAX_BYTES
+        .get_or_init(|| env_usize("PARACORD_WIRE_TRACE_PAYLOAD_MAX_BYTES", 1024).min(16 * 1024))
 }
 
 pub fn wire_trace_payload_preview(raw: &str) -> Option<String> {

@@ -37,6 +37,21 @@ impl VoiceStateRow {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct VoiceSessionRow {
+    pub channel_id: i64,
+    pub session_id: String,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::any::AnyRow> for VoiceSessionRow {
+    fn from_row(row: &'r sqlx::any::AnyRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            channel_id: row.try_get("channel_id")?,
+            session_id: row.try_get("session_id")?,
+        })
+    }
+}
+
 pub async fn upsert_voice_state(
     pool: &DbPool,
     user_id: i64,
@@ -88,6 +103,22 @@ pub async fn get_user_voice_state(
     Ok(row)
 }
 
+pub async fn get_user_voice_session(
+    pool: &DbPool,
+    user_id: i64,
+    space_id: Option<i64>,
+) -> Result<Option<VoiceSessionRow>, DbError> {
+    let row = sqlx::query_as::<_, VoiceSessionRow>(
+        "SELECT channel_id, session_id
+         FROM voice_states WHERE user_id = $1 AND COALESCE(space_id, 0) = COALESCE($2, 0)",
+    )
+    .bind(user_id)
+    .bind(space_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 pub async fn get_all_user_voice_states(
     pool: &DbPool,
     user_id: i64,
@@ -115,6 +146,28 @@ pub async fn remove_voice_state(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Remove a voice state only if it still matches the expected session.
+/// Returns true when a row was removed.
+pub async fn remove_voice_state_if_session(
+    pool: &DbPool,
+    user_id: i64,
+    space_id: Option<i64>,
+    session_id: &str,
+) -> Result<bool, DbError> {
+    let result = sqlx::query(
+        "DELETE FROM voice_states
+         WHERE user_id = $1
+           AND COALESCE(space_id, 0) = COALESCE($2, 0)
+           AND session_id = $3",
+    )
+    .bind(user_id)
+    .bind(space_id)
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Remove all voice state entries. Used on server startup to clear stale

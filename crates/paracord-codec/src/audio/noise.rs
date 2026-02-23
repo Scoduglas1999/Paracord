@@ -111,9 +111,7 @@ mod tests {
     fn process_tone_no_crash() {
         let mut suppressor = NoiseSuppressor::new();
         let tone: Vec<f32> = (0..FRAME_SIZE)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.5
-            })
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.5)
             .collect();
         let result = suppressor.process_frame(&tone);
         assert_eq!(result.len(), FRAME_SIZE);
@@ -124,7 +122,9 @@ mod tests {
         let mut suppressor = NoiseSuppressor::new();
         suppressor.set_enabled(false);
 
-        let pcm: Vec<f32> = (0..FRAME_SIZE).map(|i| i as f32 / FRAME_SIZE as f32).collect();
+        let pcm: Vec<f32> = (0..FRAME_SIZE)
+            .map(|i| i as f32 / FRAME_SIZE as f32)
+            .collect();
         let result = suppressor.process_frame(&pcm);
         assert_eq!(result, pcm);
     }

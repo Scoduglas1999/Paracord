@@ -11,7 +11,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tracing;
 
 use crate::control::{ControlMessage, StreamFrame, StreamFrameCodec, StreamFrameError};
@@ -187,11 +187,7 @@ impl PartialUploadManager {
     }
 
     /// Truncate a partial file to a specific size (for resume correction).
-    pub async fn truncate_to(
-        &self,
-        transfer_id: &str,
-        size: u64,
-    ) -> Result<(), FileTransferError> {
+    pub async fn truncate_to(&self, transfer_id: &str, size: u64) -> Result<(), FileTransferError> {
         let path = self.temp_path(transfer_id);
         let file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -205,10 +201,7 @@ impl PartialUploadManager {
     }
 
     /// Spawn a background task that cleans up partial files older than 1 hour.
-    pub fn spawn_cleanup_task(
-        partial_dir: PathBuf,
-        shutdown: Arc<tokio::sync::Notify>,
-    ) {
+    pub fn spawn_cleanup_task(partial_dir: PathBuf, shutdown: Arc<tokio::sync::Notify>) {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(300));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -404,11 +397,10 @@ pub async fn handle_upload_stream(
 
                     // Send progress ACK every ~1MB
                     if bytes_received - last_ack_at >= PROGRESS_ACK_INTERVAL {
-                        let progress =
-                            StreamFrame::Control(ControlMessage::FileTransferProgress {
-                                transfer_id: transfer_id.clone(),
-                                bytes_received,
-                            });
+                        let progress = StreamFrame::Control(ControlMessage::FileTransferProgress {
+                            transfer_id: transfer_id.clone(),
+                            bytes_received,
+                        });
                         send.write_all(&progress.encode()?)
                             .await
                             .map_err(|e| FileTransferError::Io(e.to_string()))?;

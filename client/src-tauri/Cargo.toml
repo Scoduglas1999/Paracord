@@ -27,6 +27,7 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.22"
@@ -49,6 +50,6 @@ libpulse-binding = "2"
 libpulse-simple-binding = "2"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "vpx"]
 custom-protocol = ["tauri/custom-protocol"]
 vpx = ["paracord-codec/vpx"]

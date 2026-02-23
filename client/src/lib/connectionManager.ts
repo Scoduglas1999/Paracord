@@ -14,6 +14,7 @@ import { inflateSync } from 'fflate';
 import type { Activity, GatewayPayload } from '../types';
 import { GatewayEvents } from '../gateway/events';
 import { dispatchGatewayEvent } from '../gateway/dispatch';
+import { logVoiceDiagnostic } from './desktopDiagnostics';
 
 export const LOCAL_SERVER_ID = '__local__';
 
@@ -196,7 +197,11 @@ class ConnectionManager {
 
   private async connectLocalInternal(): Promise<void> {
     const token = useAuthStore.getState().token;
-    if (!token) return;
+    if (!token) {
+      logVoiceDiagnostic('[gateway] connectLocalInternal: no authStore token, skipping');
+      return;
+    }
+    logVoiceDiagnostic('[gateway] connectLocalInternal: have token, proceeding');
 
     const existing = this.connections.get(LOCAL_SERVER_ID);
     if (existing) {
@@ -420,10 +425,43 @@ class ConnectionManager {
   }
 
   private connectRealtimeSse(conn: ServerConnection): void {
-    if (!this.isCurrentConnection(conn)) return;
-    if (conn.connecting || conn.eventSource) return;
+    if (!this.isCurrentConnection(conn)) {
+      logVoiceDiagnostic('[gateway] SSE skipped: not current connection', { server: conn.serverId });
+      return;
+    }
+    if (conn.connecting || conn.eventSource) {
+      logVoiceDiagnostic('[gateway] SSE skipped: already connecting or has eventSource', { connecting: conn.connecting, hasES: !!conn.eventSource, server: conn.serverId });
+      return;
+    }
     const token = this.tokenForConnection(conn);
-    if (!token) return;
+    if (!token) {
+      logVoiceDiagnostic('[gateway] SSE skipped: no token for server', { server: conn.serverId });
+      return;
+    }
+    // Prevent duplicate SSE connections to the same server URL.
+    // When the local server is also in the server list, two ServerConnection
+    // objects point to the same URL.  Opening two EventSources with the same
+    // session causes an infinite reconnect loop because the server evicts the
+    // older stream when the newer one opens.
+    const normalizedUrl = conn.serverUrl.replace(/\/+$/, '');
+    for (const other of this.connections.values()) {
+      if (
+        other !== conn &&
+        other.serverUrl.replace(/\/+$/, '') === normalizedUrl &&
+        (other.eventSource || other.connecting)
+      ) {
+        logVoiceDiagnostic('[gateway] SSE skipped: another connection already has SSE to same URL', {
+          server: conn.serverId,
+          otherServer: other.serverId,
+          url: normalizedUrl,
+        });
+        // Mark this connection as connected since the other one covers it
+        conn.connected = true;
+        conn.connecting = false;
+        this.syncUiConnectionStatus();
+        return;
+      }
+    }
 
     if (conn.reconnectTimer) {
       clearTimeout(conn.reconnectTimer);
@@ -437,6 +475,7 @@ class ConnectionManager {
     this.syncUiConnectionStatus();
     void (async () => {
       try {
+        logVoiceDiagnostic('[gateway] SSE session POST starting', { server: conn.serverId, url: conn.serverUrl });
         const sessionResp = await conn.apiClient.post<{
           session_id?: string;
           cursor?: number;
@@ -444,6 +483,7 @@ class ConnectionManager {
           timeout: 10_000,
         });
         if (!this.isCurrentConnection(conn) || !conn.allowReconnect) return;
+        logVoiceDiagnostic('[gateway] SSE session POST ok', { session_id: sessionResp.data?.session_id });
         if (sessionResp.data?.session_id) {
           conn.sessionId = sessionResp.data.session_id;
         }
@@ -459,14 +499,20 @@ class ConnectionManager {
         const streamUrl = `${base}/api/v2/rt/events?${params.toString()}`;
         conn.streamUrl = streamUrl;
 
+        // Redact token from log
+        const logUrl = streamUrl.replace(/token=[^&]+/, 'token=***');
+        logVoiceDiagnostic('[gateway] SSE EventSource opening', { url: logUrl });
+
         const es = new EventSource(streamUrl, { withCredentials: true });
         conn.eventSource = es;
 
         es.onopen = () => {
           if (!this.isCurrentConnection(conn) || conn.eventSource !== es) {
+            logVoiceDiagnostic('[gateway] SSE onopen but stale connection, closing');
             es.close();
             return;
           }
+          logVoiceDiagnostic('[gateway] SSE connected', { server: conn.serverId });
           conn.connecting = false;
           conn.connected = true;
           conn.reconnectAttempts = 0;
@@ -496,8 +542,14 @@ class ConnectionManager {
           handleRealtimeEvent(msg.data);
         });
 
-        es.onerror = () => {
+        es.onerror = (errEvt) => {
           if (!this.isCurrentConnection(conn) || conn.eventSource !== es) return;
+          logVoiceDiagnostic('[gateway] SSE error', {
+            server: conn.serverId,
+            readyState: es.readyState,
+            wasConnected: conn.connected,
+            type: (errEvt as Event)?.type,
+          });
           conn.connecting = false;
           conn.connected = false;
           conn.eventSource = null;
@@ -512,7 +564,8 @@ class ConnectionManager {
             this.syncUiConnectionStatus();
           }
         };
-      } catch {
+      } catch (err) {
+        logVoiceDiagnostic('[gateway] SSE setup failed', { server: conn.serverId, error: err });
         if (!this.isCurrentConnection(conn)) return;
         conn.connecting = false;
         conn.connected = false;
@@ -759,7 +812,7 @@ class ConnectionManager {
         status,
         activities,
         custom_status: customStatus,
-      }).catch(() => {});
+      }).catch(() => { });
       return;
     }
     this.send(conn, {
@@ -789,7 +842,7 @@ class ConnectionManager {
         channel_id: channelId,
         self_mute: selfMute,
         self_deaf: selfDeaf,
-      }).catch(() => {});
+      }).catch(() => { });
       return;
     }
     this.send(conn, {
@@ -886,22 +939,40 @@ class ConnectionManager {
   /** Connect to all saved servers */
   async connectAll(): Promise<void> {
     if (this.offline) {
+      logVoiceDiagnostic('[gateway] connectAll: offline, skipping');
       this.syncUiConnectionStatus();
       return;
     }
     const servers = useServerListStore.getState().servers;
+    const localToken = useAuthStore.getState().token;
+    logVoiceDiagnostic('[gateway] connectAll', { serverCount: servers.length, useRealtimeV2: this.useRealtimeV2, hasAuthToken: !!localToken, serverIds: servers.map(s => s.id) });
     const keepIds = new Set<string>();
-    if (servers.length === 0) {
-      keepIds.add(LOCAL_SERVER_ID);
-      await this.connectLocal();
-    } else {
-      await Promise.allSettled(servers.map((s) => this.connectServer(s.id)));
+
+    // Determine the local server URL so we can detect when a server entry
+    // in the list points to the same host, avoiding duplicate SSE connections
+    // that fight each other for the same session.
+    const localUrl = this.resolveLocalServerUrl().replace(/\/+$/, '');
+
+    if (servers.length > 0) {
+      const results = await Promise.allSettled(servers.map((s) => this.connectServer(s.id)));
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') logVoiceDiagnostic('[gateway] connectServer FAILED', { serverId: servers[i]?.id, reason: String(r.reason) });
+      });
       for (const server of servers) {
         keepIds.add(server.id);
       }
-      if (this.connections.has(LOCAL_SERVER_ID)) {
-        this.disconnectServer(LOCAL_SERVER_ID);
-      }
+    }
+
+    // Only connect the __local__ server if no server entry already covers
+    // the same URL.  When the user adds the local server to their server
+    // list, that entry already establishes the SSE connection — opening a
+    // second one causes an infinite reconnect loop.
+    const localAlreadyCovered = servers.some(
+      (s) => s.url.replace(/\/+$/, '') === localUrl,
+    );
+    if (localToken && !localAlreadyCovered) {
+      keepIds.add(LOCAL_SERVER_ID);
+      await this.connectLocal();
     }
 
     for (const serverId of Array.from(this.connections.keys())) {

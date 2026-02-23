@@ -176,28 +176,19 @@ mod vpx_impl {
 
                     // Copy Y plane (handle stride != width)
                     for row in 0..h as usize {
-                        let src = std::slice::from_raw_parts(
-                            y_ptr.add(row * y_stride),
-                            w as usize,
-                        );
+                        let src = std::slice::from_raw_parts(y_ptr.add(row * y_stride), w as usize);
                         data.extend_from_slice(src);
                     }
 
                     // Copy U plane
                     for row in 0..uv_h {
-                        let src = std::slice::from_raw_parts(
-                            u_ptr.add(row * u_stride),
-                            uv_w,
-                        );
+                        let src = std::slice::from_raw_parts(u_ptr.add(row * u_stride), uv_w);
                         data.extend_from_slice(src);
                     }
 
                     // Copy V plane
                     for row in 0..uv_h {
-                        let src = std::slice::from_raw_parts(
-                            v_ptr.add(row * v_stride),
-                            uv_w,
-                        );
+                        let src = std::slice::from_raw_parts(v_ptr.add(row * v_stride), uv_w);
                         data.extend_from_slice(src);
                     }
 
@@ -452,7 +443,10 @@ mod tests {
         // Decode
         let decoded = decoder.decode(&encoded[0]).unwrap();
         assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0].data, original, "null round-trip should be lossless");
+        assert_eq!(
+            decoded[0].data, original,
+            "null round-trip should be lossless"
+        );
         assert_eq!(decoded[0].width, w);
         assert_eq!(decoded[0].height, h);
         assert_eq!(decoded[0].pts, 0);

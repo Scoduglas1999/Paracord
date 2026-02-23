@@ -536,4 +536,3 @@ pub fn get_foreground_application() -> Option<ForegroundApplication> {
         None
     }
 }
-

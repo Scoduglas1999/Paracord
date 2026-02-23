@@ -2,7 +2,8 @@
 
 use audiopus::{
     coder::{Decoder as OpusDecoderInner, Encoder as OpusEncoderInner},
-    packet::Packet, Application, Bitrate, Channels, MutSignals, SampleRate,
+    packet::Packet,
+    Application, Bitrate, Channels, MutSignals, SampleRate,
 };
 use thiserror::Error;
 
@@ -175,7 +176,10 @@ mod tests {
 
         // Check that decoded signal has non-trivial energy
         let energy: f32 = decoded.iter().map(|s| s * s).sum::<f32>() / decoded.len() as f32;
-        assert!(energy > 0.01, "decoded tone has too little energy: {energy}");
+        assert!(
+            energy > 0.01,
+            "decoded tone has too little energy: {energy}"
+        );
     }
 
     #[test]
